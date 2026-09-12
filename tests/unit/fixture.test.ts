@@ -33,4 +33,12 @@ describe('样本 EPUB', () => {
     const ch1 = await zip.file('OEBPS/ch1.xhtml')!.async('string')
     expect(ch1.length).toBeGreaterThan(4000)
   })
+
+  it('生成的 EPUB 字节完全相同,确保确定性', async () => {
+    const bytes1 = await buildFixtureEpub()
+    const bytes2 = await buildFixtureEpub()
+
+    expect(bytes1.length).toBe(bytes2.length)
+    expect(bytes1).toEqual(bytes2)
+  })
 })
