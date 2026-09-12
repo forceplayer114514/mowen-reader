@@ -57,6 +57,11 @@ button:hover {
   margin-bottom: 20px;
 }
 
+.library__status {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
 .library__grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));

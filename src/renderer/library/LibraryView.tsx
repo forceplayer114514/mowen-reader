@@ -189,7 +189,7 @@ export default function LibraryView({ onOpenBook }: Props) {
         <button onClick={onPickFolder} data-testid="pick-folder">
           扫描文件夹
         </button>
-        {busy && <span className="book-card__author">{busy}…</span>}
+        {busy && <span className="library__status">{busy}…</span>}
         {error && <span style={{ color: 'var(--danger)' }}>{error}</span>}
       </div>
 
