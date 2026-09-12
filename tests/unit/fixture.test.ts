@@ -34,11 +34,16 @@ describe('样本 EPUB', () => {
     expect(ch1.length).toBeGreaterThan(4000)
   })
 
-  it('生成的 EPUB 字节完全相同,确保确定性', async () => {
-    const bytes1 = await buildFixtureEpub()
-    const bytes2 = await buildFixtureEpub()
+  it(
+    '生成的 EPUB 字节完全相同,确保确定性(两次构建间隔超过 DOS 时间戳的 2 秒粒度)',
+    async () => {
+      const bytes1 = await buildFixtureEpub()
+      await new Promise((r) => setTimeout(r, 2500))
+      const bytes2 = await buildFixtureEpub()
 
-    expect(bytes1.length).toBe(bytes2.length)
-    expect(bytes1).toEqual(bytes2)
-  })
+      expect(bytes1.length).toBe(bytes2.length)
+      expect(bytes1).toEqual(bytes2)
+    },
+    15000
+  )
 })

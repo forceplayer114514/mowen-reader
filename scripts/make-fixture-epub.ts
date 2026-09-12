@@ -33,7 +33,11 @@ export async function buildFixtureEpub(): Promise<Uint8Array> {
   const zip = new JSZip()
 
   // mimetype 必须是压缩包里第一个条目且不压缩,否则部分阅读器拒绝打开
-  zip.file('mimetype', 'application/epub+zip', { compression: 'STORE', date: new Date(0) })
+  zip.file('mimetype', 'application/epub+zip', {
+    compression: 'STORE',
+    date: new Date(0),
+    createFolders: false
+  })
 
   zip.file(
     'META-INF/container.xml',
@@ -43,7 +47,7 @@ export async function buildFixtureEpub(): Promise<Uint8Array> {
     <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
   </rootfiles>
 </container>`,
-    { date: new Date(0) }
+    { date: new Date(0), createFolders: false }
   )
 
   const manifest = CHAPTERS.map(
@@ -69,7 +73,7 @@ export async function buildFixtureEpub(): Promise<Uint8Array> {
     ${spine}
   </spine>
 </package>`,
-    { date: new Date(0) }
+    { date: new Date(0), createFolders: false }
   )
 
   zip.file(
@@ -85,11 +89,14 @@ ${CHAPTERS.map((c) => `      <li><a href="${c.id}.xhtml">${c.title}</a></li>`).j
     </ol>
   </nav>
 </body></html>`,
-    { date: new Date(0) }
+    { date: new Date(0), createFolders: false }
   )
 
   for (const c of CHAPTERS) {
-    zip.file(`OEBPS/${c.id}.xhtml`, chapterXhtml(c.title, c.seed), { date: new Date(0) })
+    zip.file(`OEBPS/${c.id}.xhtml`, chapterXhtml(c.title, c.seed), {
+      date: new Date(0),
+      createFolders: false
+    })
   }
 
   return zip.generateAsync({ type: 'uint8array' })
