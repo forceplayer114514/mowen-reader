@@ -1,9 +1,10 @@
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { stageMany, stageOne } from '../../src/main/books/stage'
 import { allowSource, clearAllowedSources } from '../../src/main/books/source-gate'
+import { booksDir } from '../../src/main/paths'
 
 let dataDir: string
 let workDir: string
@@ -66,5 +67,41 @@ describe('stageMany', () => {
 
   it('空数组返回空数组', async () => {
     expect(await stageMany([])).toEqual([])
+  })
+})
+
+describe('符号链接拒绝', () => {
+  it('已允许但指向真实文件的符号链接会被拒绝', async () => {
+    const target = join(workDir, '真实文件.epub')
+    writeFileSync(target, 'REAL')
+    const link = join(workDir, '链接.epub')
+    symlinkSync(target, link)
+    allowSource(link)
+    await expect(stageOne(link)).rejects.toThrow(/不接受符号链接/)
+  })
+
+  it('符号链接被拒绝后,目标文件的内容不会被复制进库', async () => {
+    const target = join(workDir, '真实文件2.epub')
+    writeFileSync(target, 'REAL-SECRET')
+    const link = join(workDir, '链接2.epub')
+    symlinkSync(target, link)
+    allowSource(link)
+    await expect(stageOne(link)).rejects.toThrow()
+    expect(readdirSync(booksDir())).toHaveLength(0)
+  })
+
+  it('stageMany 中途遇到符号链接会中断,不再处理后面的路径', async () => {
+    const a = join(workDir, 'a.epub')
+    const target = join(workDir, '真实文件3.epub')
+    const link = join(workDir, 'bad-link.epub')
+    const c = join(workDir, 'c.epub')
+    writeFileSync(a, 'A')
+    writeFileSync(target, 'REAL3')
+    symlinkSync(target, link)
+    writeFileSync(c, 'C')
+    allowSource(a)
+    allowSource(link)
+    allowSource(c)
+    await expect(stageMany([a, link, c])).rejects.toThrow(/不接受符号链接/)
   })
 })
