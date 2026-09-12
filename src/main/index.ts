@@ -12,7 +12,7 @@ function createWindow(): void {
     show: false,
     title: 'AI 阅读器',
     webPreferences: {
-      preload: join(import.meta.dirname, '../preload/index.mjs'),
+      preload: join(import.meta.dirname, '../preload/index.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true
