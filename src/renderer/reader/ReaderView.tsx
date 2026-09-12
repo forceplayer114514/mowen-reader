@@ -6,6 +6,13 @@ import type { ReaderEngine, ThemeName, TocItem, VisibleRange } from './types'
 
 const FONT_MIN = 14
 const FONT_MAX = 28
+/** 恢复阅读位置时,校验落点最多重试这么多次(见 boot() 里的用法和注释)。 */
+const MAX_POSITION_VERIFY_ATTEMPTS = 3
+
+/** 等下一帧再继续——给 epub.js 一点时间把刚创建窗口时还没定型的排版尺寸重新测量一遍。 */
+function waitForFrame(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()))
+}
 
 interface Props {
   book: BookRecord
@@ -94,19 +101,30 @@ export default function ReaderView({ book, onBack }: Props) {
         await engine.display(book.lastReadCfi ?? undefined)
         if (cancelled) return
 
-        // 恢复上次读到的位置时,这次 display() 经常会落在比保存的位置更靠前的地方
+        // 恢复上次读到的位置时,这次 display() 有时会落在比保存的位置更靠前的地方
         // (亲测偏差正好是几个物理翻页)。原因是 epub.js 把 CFI 换算成滚动偏移量靠的
         // 是 manager.moveTo() 里的 view.locationOf()/this.layout.delta(见
         // node_modules/epubjs/src/managers/default/index.js 的 display()/moveTo()),
         // 这次调用发生在这本书在这个全新窗口里第一次真正跑完排版之前,量出来的列宽
-        // /偏移还没定型,算出的滚动位置自然是错的。上次翻页停在哪一页(book.lastReadCfi)
-        // 是拿同一个 CFI、在同一个窗口里再调一次 display() 算出来的,这次调用发生在
-        // 第一次排版已经跑完之后,量出来的列宽是准的,能正确落到保存的那一页——不需要
-        // 额外等待或 setTimeout,只要是"已经排过一次版的第二次调用"就行,亲测有效。
-        // 首次打开新书(没有 lastReadCfi)不存在这个问题,不需要这次额外调用。
+        // /偏移还没定型,算出的滚动位置自然是错的。这个时机窗口有多长跟机器快慢有关,
+        // 不能靠"反正再调一次 display() 时机就够晚了"这种运气——机器足够快或足够慢,
+        // 两次调用都可能落进同一个还没定型的窗口。这里改成校验而不是假设:display()
+        // 之后用 currentCfi() 回读引擎实际落到了哪里,跟目标位置比对,不一致就等一帧
+        // (给排版一点时间定型)再重新 display() 一次,最多重试 MAX_POSITION_VERIFY_ATTEMPTS
+        // 次;还是不一致就安静放弃,不能无限重试卡住阅读。首次打开新书(没有
+        // lastReadCfi)不存在这个问题,不需要这段校验。
         if (book.lastReadCfi) {
-          await engine.display(book.lastReadCfi)
-          if (cancelled) return
+          const target = book.lastReadCfi
+          for (
+            let attempt = 0;
+            attempt < MAX_POSITION_VERIFY_ATTEMPTS && engine.currentCfi() !== target;
+            attempt++
+          ) {
+            await waitForFrame()
+            if (cancelled) return
+            await engine.display(target)
+            if (cancelled) return
+          }
         }
 
         // open()/display() 期间位置索引可能已经在 onRelocated 订阅注册之后、
