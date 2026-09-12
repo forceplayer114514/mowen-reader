@@ -8,6 +8,8 @@ const FONT_MIN = 14
 const FONT_MAX = 28
 /** 恢复阅读位置时,校验落点最多重试这么多次(见 boot() 里的用法和注释)。 */
 const MAX_POSITION_VERIFY_ATTEMPTS = 3
+/** 打开书之后一直拿不到一次成功的 getVisible(),等这么久就判定书是真的读不出来。 */
+const VISIBLE_STUCK_TIMEOUT_MS = 5000
 
 /** 等下一帧再继续——给 epub.js 一点时间把刚创建窗口时还没定型的排版尺寸重新测量一遍。 */
 function waitForFrame(): Promise<void> {
@@ -35,6 +37,23 @@ export default function ReaderView({ book, onBack }: Props) {
     let engine: ReaderEngine | null = null
     let unsubscribeRelocated: (() => void) | null = null
     let unsubscribeKey: (() => void) | null = null
+    let stuckTimer: ReturnType<typeof setTimeout> | null = null
+    let hasVisible = false
+
+    function clearStuckTimer(): void {
+      if (stuckTimer !== null) {
+        clearTimeout(stuckTimer)
+        stuckTimer = null
+      }
+    }
+
+    // 拿到一次成功的 getVisible() 结果统一走这里:标记"已经成功过"并撤掉兜底的
+    // 超时提示,避免一本能正常读的书只是稍微慢一点,就被误判成"打不开"。
+    function handleVisible(v: VisibleRange): void {
+      hasVisible = true
+      clearStuckTimer()
+      if (!cancelled) setVisible(v)
+    }
 
     async function boot(): Promise<void> {
       if (!hostRef.current) return
@@ -62,10 +81,11 @@ export default function ReaderView({ book, onBack }: Props) {
         let locationsSaved = savedLocations !== null
         unsubscribeRelocated = engine.onRelocated(() => {
           void engine!.getVisible().then((v) => {
-            if (!cancelled) setVisible(v)
+            handleVisible(v)
           }).catch(() => {
             // 书还没有打开时 getVisible() 会抛错。display() 运行前回调就可能被触发，
-            // 此时没有任何内容可见，静默处理这个失败即可。
+            // 此时没有任何内容可见，静默处理这个失败即可——如果书其实读不出来，
+            // 下面的 stuckTimer 兜底会在几秒后把这个情况变成界面上的错误提示。
           })
           const cfi = engine!.currentCfi()
           if (cfi) {
@@ -96,6 +116,19 @@ export default function ReaderView({ book, onBack }: Props) {
           savedLocations
         })
         if (cancelled) return
+
+        // 打开成功之后,如果 VISIBLE_STUCK_TIMEOUT_MS 之内一直等不到一次成功的
+        // getVisible(),说明这本书是真的读不出来——跟下面 display() 刚返回时
+        // 那种正常的排版空档不是一回事(那种情况几十毫秒内就会被 onRelocated
+        // 补上)。这里用一个兜底计时器把这种真正的失败反映到界面上,而不是让
+        // 阅读界面一直空白,连页码和错误提示都没有。一旦 handleVisible() 被
+        // 调用过一次(不管是下面这次直接调用还是 onRelocated 里的那次),
+        // 计时器会被清掉,不会误报。
+        stuckTimer = setTimeout(() => {
+          if (!cancelled && !hasVisible) {
+            setError('书本内容长时间无法显示,可能是文件已损坏')
+          }
+        }, VISIBLE_STUCK_TIMEOUT_MS)
 
         setToc(engine.toc())
         await engine.display(book.lastReadCfi ?? undefined)
@@ -154,12 +187,14 @@ export default function ReaderView({ book, onBack }: Props) {
         // 补上,这个 error 状态也不会被清掉,footer 里会一直挂着这条误报。
         try {
           const v = await engine.getVisible()
-          if (!cancelled) setVisible(v)
+          handleVisible(v)
         } catch {
           // 见上面注释:这是 display() 刚返回、relocated 事件还没来得及触发的
-          // 正常空档,不是书打不开。
+          // 正常空档,不是书打不开——如果确实打不开,上面的 stuckTimer 兜底
+          // 会在超时后把它变成界面上的错误提示,这里不需要再处理一次。
         }
       } catch (e) {
+        clearStuckTimer()
         if (!cancelled) setError(e instanceof Error ? e.message : '这本书打不开')
       }
     }
@@ -167,6 +202,7 @@ export default function ReaderView({ book, onBack }: Props) {
     void boot()
     return () => {
       cancelled = true
+      clearStuckTimer()
       unsubscribeRelocated?.()
       unsubscribeKey?.()
       engine?.destroy()
