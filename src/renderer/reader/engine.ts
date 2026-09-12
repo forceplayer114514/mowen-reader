@@ -129,8 +129,37 @@ export function createEngine(container: HTMLElement): ReaderEngine {
    */
   function teardown(): void {
     rendition?.off('keydown', handleContentKeydown)
-    rendition?.destroy()
-    book?.destroy()
+    // rendition.q 里可能还排着一个我们自己调用过、还没跑到的 display() 任务(见
+    // ReaderView.boot() 里 `await engine.display(...)`):它是 epub.js 内部靠
+    // requestAnimationFrame 驱动的队列,当前这一帧不一定跑得到它。如果不在这里
+    // 先 q.stop() 清空排队项,这个任务会在之后某一帧才真正执行到
+    // Rendition._display(),届时下面 book.destroy() 已经把 book.locations 内部
+    // 状态清掉了,但 rendition.book 这个引用本身没变,_display() 一开始就会摸
+    // `this.book.locations.length()`,对着已销毁的 Locations 抛 TypeError——这是
+    // 一次脱离了当前调用栈的异步执行,没有任何 try/catch 接得住,会变成未捕获的
+    // 全局异常,把整个 React 渲染树崩掉。跟 destroyStale() 里对新书 stale
+    // rendition 做的处理一样,先停队列,把还没跑的任务直接扔掉。
+    rendition?.q.stop()
+    // rendition/book 在这里可能和 destroyStale() 里一样是"半成品"状态:open() 已经
+    // 把它们发布到闭包变量(book = nextBook; rendition = nextRendition 那一步已经跑
+    // 过),但 epub.js 内部 manager.render() 还没真正跑完——render() 之前
+    // DefaultViewManager 的 this.container 还是 undefined,它自己的
+    // removeEventListeners() 会直接对 undefined 调用 removeEventListener 抛
+    // TypeError(见上面 destroyStale() 的注释)。这条路径此前没有 try/catch,
+    // 用户在 boot() 还没跑完时就点击返回书架,会让这个 TypeError 从 React 的
+    // effect 清理函数里原样抛出去、没有任何错误边界接住,把整个渲染树崩掉、
+    // 界面变成一片空白且再也回不去书架。跟 destroyStale() 一样兜底,不能让
+    // 清理旧对象的动作把调用方炸掉。
+    try {
+      rendition?.destroy()
+    } catch {
+      // 忽略:render() 还没跑到,没有 manager/stage 可清
+    }
+    try {
+      book?.destroy()
+    } catch {
+      // 忽略:与上面同理
+    }
     // epub.js 的 Stage.attachTo 只会往容器里追加自己的 stage 元素,不会清理旧的,
     // 所以这里手动清空容器,否则连续 open() 会在 DOM 里叠出多个 iframe。
     container.replaceChildren()

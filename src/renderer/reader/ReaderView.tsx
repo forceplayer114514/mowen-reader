@@ -121,9 +121,26 @@ export default function ReaderView({ book, onBack }: Props) {
           }
         }
 
-        const v = await engine.getVisible()
-        if (cancelled) return
-        setVisible(v)
+        // epub.js 的 Rendition._display() 会在 manager.render() 完成、也就是我们的
+        // display() 这个 await 返回的那一刻就 resolve,但它自己紧接着触发的
+        // reportLocation() 是另外排进内部队列、靠 requestAnimationFrame 驱动的异步步骤
+        // (见 node_modules/epubjs/src/rendition.js reportLocation()),要再等一帧才会
+        // 真正把 rendition.location 填上。也就是说 display() 刚返回的这一刻,
+        // rendition.location 几乎总是还是 undefined,这里立刻调用 getVisible() 十有
+        // 八九会撞上这个空档而抛"书还没打开"。跟上面 onRelocated 回调里的同一个
+        // getVisible() 调用一样处理:失败就静默跳过,不当作书打不开的致命错误——
+        // 上面的 onRelocated 订阅马上会等到这次 display() 真正触发的 relocated 事件,
+        // 到时候会用同一个 getVisible() 正常拿到结果并 setVisible()。
+        // 如果在这里把这次失败当成致命错误(之前的写法),会把还没出错的阅读界面
+        // 整页替换成"书还没打开"的错误提示,而且后面 visible 一旦被 onRelocated
+        // 补上,这个 error 状态也不会被清掉,footer 里会一直挂着这条误报。
+        try {
+          const v = await engine.getVisible()
+          if (!cancelled) setVisible(v)
+        } catch {
+          // 见上面注释:这是 display() 刚返回、relocated 事件还没来得及触发的
+          // 正常空档,不是书打不开。
+        }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : '这本书打不开')
       }
