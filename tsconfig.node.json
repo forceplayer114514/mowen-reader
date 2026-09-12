@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "lib": ["ES2023"] },
+  "include": ["src/main", "src/preload", "src/shared", "scripts"]
+}
