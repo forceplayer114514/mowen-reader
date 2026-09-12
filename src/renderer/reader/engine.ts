@@ -33,6 +33,10 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   let toc: TocItem[] = []
   let listeners: (() => void)[] = []
   let locationsReady = false
+  // 每次 open()/destroy() 自增一次,给这次调用发出的所有异步延续盖一个“批次号”。
+  // 延续恢复执行时先比对批次号,号不一样说明这次 open 已经被下一次 open 或 destroy 取代,
+  // 直接放弃、不再碰任何闭包变量——用来防止过期的 open() 续写覆盖新书的状态。
+  let generation = 0
 
   function flatToc(items: NavItem[], depth: number, out: TocItem[]): void {
     for (const item of items) {
@@ -47,38 +51,73 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     for (const cb of listeners) cb()
   }
 
+  /**
+   * 销毁当前的 rendition/book,清空容器,把状态复位到初始值。
+   * 供 open()(重新打开前先清场)和 destroy()(退出阅读界面)共用。
+   * 注意:这不是对外的 destroy() ——它不清空 listeners,重新 open 之后旧的
+   * onRelocated 订阅者应当继续收到新书的通知。
+   */
+  function teardown(): void {
+    rendition?.destroy()
+    book?.destroy()
+    // epub.js 的 Stage.attachTo 只会往容器里追加自己的 stage 元素,不会清理旧的,
+    // 所以这里手动清空容器,否则连续 open() 会在 DOM 里叠出多个 iframe。
+    container.replaceChildren()
+    rendition = null
+    book = null
+    toc = []
+    locationsReady = false
+  }
+
   return {
     async open(data: ArrayBuffer, opts: OpenOptions): Promise<void> {
-      book = ePub(data)
-      rendition = book.renderTo(container, {
+      teardown()
+      const epoch = ++generation
+
+      const nextBook = ePub(data)
+      const nextRendition = nextBook.renderTo(container, {
         width: '100%',
         height: '100%',
         flow: 'paginated',
         spread: 'none',
         allowScriptedContent: false
       })
-      rendition.themes.register('light', THEMES.light)
-      rendition.themes.register('dark', THEMES.dark)
-      rendition.themes.select(opts.theme)
-      rendition.themes.fontSize(`${opts.fontSize}px`)
+      nextRendition.themes.register('light', THEMES.light)
+      nextRendition.themes.register('dark', THEMES.dark)
+      nextRendition.themes.select(opts.theme)
+      nextRendition.themes.fontSize(`${opts.fontSize}px`)
 
-      await book.ready
-      const nav = await book.loaded.navigation
+      await nextBook.ready
+      // destroy() 或另一次 open() 可能在 await 期间抢先执行,批次号已经变了就不再往下走,
+      // 避免对已经被 teardown 过的 book/rendition 继续操作。
+      if (epoch !== generation) return
+
+      const nav = await nextBook.loaded.navigation
+      if (epoch !== generation) return
+
       const items: TocItem[] = []
       flatToc(nav.toc, 0, items)
+
+      // 到这里两次 epoch 检查都通过,这次 open() 没有被取代,才正式发布到闭包变量。
+      book = nextBook
+      rendition = nextRendition
       toc = items
 
       if (opts.savedLocations) {
-        book.locations.load(opts.savedLocations)
+        nextBook.locations.load(opts.savedLocations)
         locationsReady = true
       } else {
-        void book.locations.generate(LOCATION_CHUNK).then(() => {
+        void nextBook.locations.generate(LOCATION_CHUNK).then(() => {
+          // 同一本书可能因为 open() 被再次调用而在 generate() 完成前就已经过期,
+          // 这里必须再查一次批次号,否则旧书生成完成的那一刻会把 locationsReady
+          // 错误地置为 true,污染的是新书(或已销毁状态)的读数。
+          if (epoch !== generation) return
           locationsReady = true
           notify()
         })
       }
 
-      rendition.on('relocated', notify)
+      nextRendition.on('relocated', notify)
     },
 
     async display(target?: string): Promise<void> {
@@ -129,6 +168,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
         // rendition.getContents() 在这版 epub.js 的类型声明里被错标成单个 Contents,
         // 运行时实际返回数组,这里只在本文件内断言,不改动对外类型。
         const contents = rendition.getContents() as unknown as Contents[]
+        // 注:翻页动画进行中 getContents() 可能瞬时返回空数组,此时 body 取不到,text 会退化成空字符串。
         const body = contents[0]?.document?.body
         text = (body?.textContent ?? '').replace(/\s+/g, ' ').trim()
       }
@@ -172,13 +212,12 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     },
 
     destroy(): void {
+      // 先递增批次号,让任何还没跑完的 open() 延续(book.ready / navigation /
+      // locations.generate 的 then)在恢复执行时立刻发现自己已经过期并退出,
+      // 不再触碰马上要被 teardown 的 book/rendition。
+      generation++
+      teardown()
       listeners = []
-      rendition?.destroy()
-      book?.destroy()
-      rendition = null
-      book = null
-      toc = []
-      locationsReady = false
     }
   }
 }
