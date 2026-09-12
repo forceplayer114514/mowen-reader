@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
 import {
+  closeAllApps,
   importFixture,
   launch,
   pressAndSettle,
@@ -8,6 +9,15 @@ import {
   waitForStableIndicator,
   type Harness
 } from './helpers'
+
+// 不管测试是正常跑完还是中途断言失败提前退出,都要把这个测试里 launch() 启动过的
+// 所有 Electron app 关掉——否则一次失败就会在测试结束的那行 close() 之前直接跳出,
+// 留下的进程和临时数据目录在 CI 上跑几次失败就会越攒越多。见 helpers.ts 里
+// closeAllApps() 的注释:它对重复关闭是安全的,所以正文里为了验证"关掉重开"这类
+// 场景而主动调用的 app.close() 不需要跟这里的收尾互相协调。
+test.afterEach(async () => {
+  await closeAllApps()
+})
 
 test('导入一本书后书架上能看到书名和作者', async () => {
   const h: Harness = await launch()
@@ -18,7 +28,6 @@ test('导入一本书后书架上能看到书名和作者', async () => {
   // 页面里同一段文字出现两次而撞上 strict mode violation。
   await expect(h.page.locator('.book-card__title')).toHaveText('测试之书')
   await expect(h.page.locator('.book-card__author')).toHaveText('测试作者')
-  await h.app.close()
 })
 
 test('打开书能看到正文,右方向键能翻页且页码递增', async () => {
@@ -37,7 +46,6 @@ test('打开书能看到正文,右方向键能翻页且页码递增', async () =
 
   await h.page.keyboard.press('ArrowLeft')
   await expect(indicator).toHaveText(before!, { timeout: 15_000 })
-  await h.app.close()
 })
 
 test('目录列出三章,点第二章后底部章节名跟着变', async () => {
@@ -55,7 +63,6 @@ test('目录列出三章,点第二章后底部章节名跟着变', async () => {
   await expect(h.page.getByTestId('reader-foot')).toContainText('第二章 那个夏天', {
     timeout: 20_000
   })
-  await h.app.close()
 })
 
 test('关掉应用重开,回到上次读到的位置', async () => {
@@ -80,7 +87,6 @@ test('关掉应用重开,回到上次读到的位置', async () => {
   await expect(second.page.getByTestId('page-indicator')).toHaveText(stopped!, {
     timeout: 60_000
   })
-  await second.app.close()
 })
 
 // --- 以下是任务补充的风险场景,brief 的四个用例之外 ---
@@ -102,7 +108,6 @@ test('先点进书内正文(iframe 内部),方向键依然能翻页', async () =
 
   await h.page.keyboard.press('ArrowRight')
   await expect(indicator).not.toHaveText(before!, { timeout: 15_000 })
-  await h.app.close()
 })
 
 test('放大字号后页码指示器不变,阅读位置也还在原处', async () => {
@@ -154,8 +159,6 @@ test('放大字号后页码指示器不变,阅读位置也还在原处', async (
     finalFoot?.slice(0, finalFoot.length - finalIndicator.length),
     '往回翻页之后章节名变了,阅读位置像是跳到了别的章节'
   ).toBe(beforeFoot?.slice(0, beforeFoot.length - beforeIndicator!.length))
-
-  await h.app.close()
 })
 
 test('书还在加载时就离开阅读界面,不崩溃且能回到书架', async () => {
@@ -180,7 +183,6 @@ test('书还在加载时就离开阅读界面,不崩溃且能回到书架', asyn
   expect(pageErrors, `不应该有未捕获的异常:${pageErrors.map((e) => e.message).join('; ')}`).toEqual(
     []
   )
-  await h.app.close()
 })
 
 test('切换主题后重启应用,设置仍然是切换后的主题', async () => {
@@ -210,6 +212,4 @@ test('切换主题后重启应用,设置仍然是切换后的主题', async () =
   await expect(second.page.getByRole('button', { name: '日间' })).toBeVisible()
   const dataTheme = await second.page.evaluate(() => document.documentElement.dataset.theme)
   expect(dataTheme).toBe('dark')
-
-  await second.app.close()
 })

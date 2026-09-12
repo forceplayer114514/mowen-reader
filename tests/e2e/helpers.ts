@@ -11,6 +11,11 @@ export interface Harness {
   fixturePath: string
 }
 
+// 记录本进程里所有 launch() 启动过、还没关掉的 Electron app,供 closeAllApps()
+// 在测试结束时统一收尾——不管测试是正常跑完还是中途断言失败提前退出,都要保证
+// 每个启动过的进程和它的临时数据目录不会变成 CI 里的僵尸进程。
+const launchedApps: ElectronApplication[] = []
+
 /** 每次启动都用全新的数据目录,测试之间互不影响。传入 userData 可复用上一次的数据。 */
 export async function launch(userData?: string): Promise<Harness> {
   const dir = userData ?? mkdtempSync(join(tmpdir(), 'reader-e2e-'))
@@ -22,9 +27,25 @@ export async function launch(userData?: string): Promise<Harness> {
     args: [resolve('out/main/index.js')],
     env: { ...process.env, READER_USER_DATA: dir, READER_E2E: '1', NODE_ENV: 'test' }
   })
+  launchedApps.push(app)
   const page = await app.firstWindow()
   await page.waitForLoadState('domcontentloaded')
   return { app, page, userData: dir, fixturePath }
+}
+
+/**
+ * 关掉这个测试里 launch() 启动过的所有 Electron app,应该在 test.afterEach 里调用。
+ * 用 splice 先把数组清空再逐个 close(),这样即使某个 app 之前已经在测试正文里
+ * 主动关过(比如"关掉重开"这类需要先关掉前一个实例才能验证持久化的用例),
+ * 这里重复调用 close() 也不会把同一个 app 关两次导致状态错乱——而且每个
+ * close() 调用本身也用 catch 兜底,已经关闭的 app 再关一次最多是个 no-op
+ * 或者抛一个可以安全忽略的错误,不会让收尾逻辑本身失败并掩盖测试的真实结果。
+ */
+export async function closeAllApps(): Promise<void> {
+  const apps = launchedApps.splice(0, launchedApps.length)
+  for (const app of apps) {
+    await app.close().catch(() => {})
+  }
 }
 
 export async function importFixture(h: Harness): Promise<void> {
