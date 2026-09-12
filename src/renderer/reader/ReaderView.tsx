@@ -58,13 +58,19 @@ export default function ReaderView({ book, onBack }: Props) {
             if (!cancelled) setVisible(v)
           })
           const cfi = engine!.currentCfi()
-          if (cfi) void window.api.saveProgress(book.id, cfi)
+          if (cfi) {
+            // 存阅读进度失败先静默处理:偶发失败不值得打断阅读体验,下次翻页/
+            // relocate 触发时会用最新位置重试,不会残留未处理的 rejection。
+            void window.api.saveProgress(book.id, cfi).catch(() => {})
+          }
 
           if (!locationsSaved) {
             const json = engine!.exportLocations()
             if (json) {
               locationsSaved = true
-              void window.api.saveLocations(book.id, json)
+              // 位置索引写入失败同样静默:损失的只是下次开书时重新计算索引的时间,
+              // 不影响当前阅读,但仍要接住 rejection,不能变成未处理的 promise 拒绝。
+              void window.api.saveLocations(book.id, json).catch(() => {})
             }
           }
         })
@@ -79,9 +85,6 @@ export default function ReaderView({ book, onBack }: Props) {
           theme: savedTheme,
           savedLocations
         })
-        // open() 期间 cancelled 可能已经变 true(视图在大书加载完之前就被卸载了):
-        // 不检查的话下面 setToc()/display() 会在已销毁的 engine 上继续跑,
-        // display() 还会因为 cleanup 已经 destroy() 过 engine 而抛错。
         if (cancelled) return
 
         setToc(engine.toc())
@@ -96,7 +99,7 @@ export default function ReaderView({ book, onBack }: Props) {
           const json = engine.exportLocations()
           if (json) {
             locationsSaved = true
-            void window.api.saveLocations(book.id, json)
+            void window.api.saveLocations(book.id, json).catch(() => {})
           }
         }
 
@@ -128,7 +131,11 @@ export default function ReaderView({ book, onBack }: Props) {
     setFontSize((old) => {
       const size = Math.min(FONT_MAX, Math.max(FONT_MIN, old + delta))
       engineRef.current?.setFontSize(size)
-      void window.api.setSetting('fontSize', String(size))
+      // 乐观更新了字号状态,写盘失败要在页脚提示,否则界面和存储的值会不一致却毫无提示。
+      setError(null)
+      window.api.setSetting('fontSize', String(size)).catch(() => {
+        setError('字号没有保存,下次打开可能会恢复默认')
+      })
       return size
     })
   }, [])
@@ -138,7 +145,11 @@ export default function ReaderView({ book, onBack }: Props) {
       const nextTheme: ThemeName = old === 'light' ? 'dark' : 'light'
       engineRef.current?.setTheme(nextTheme)
       document.documentElement.dataset.theme = nextTheme
-      void window.api.setSetting('theme', nextTheme)
+      // 同上:主题也是乐观更新,写盘失败要在页脚提示。
+      setError(null)
+      window.api.setSetting('theme', nextTheme).catch(() => {
+        setError('主题没有保存,下次打开可能会恢复默认')
+      })
       return nextTheme
     })
   }, [])
@@ -148,7 +159,9 @@ export default function ReaderView({ book, onBack }: Props) {
     void engineRef.current?.display(href)
   }, [])
 
-  if (error) {
+  // error 同时承载两类情况:书打不开(致命,此时 visible 还没被设置过,整页替换成
+  // 错误提示)和设置写盘失败(非致命,阅读已经在正常进行,只在页脚提一句,不打断阅读)。
+  if (error && !visible) {
     return (
       <div className="reader__error">
         <p>{error}</p>
@@ -203,6 +216,11 @@ export default function ReaderView({ book, onBack }: Props) {
             ? `第 ${visible.page} / ${visible.totalPages} 页`
             : '正在计算页码…'}
         </span>
+        {error && visible && (
+          <span className="reader__foot-error" data-testid="settings-error">
+            {error}
+          </span>
+        )}
       </footer>
     </div>
   )

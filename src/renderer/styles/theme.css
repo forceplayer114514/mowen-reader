@@ -178,6 +178,10 @@ button:hover {
   color: var(--danger);
 }
 
+.reader__foot-error {
+  color: var(--danger);
+}
+
 .toc {
   width: 260px;
   border-right: 1px solid var(--border);
