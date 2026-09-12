@@ -15,11 +15,14 @@ async function walk(dir: string, out: string[]): Promise<void> {
 
 /** 递归找出文件夹下所有 EPUB,排除掉已经导入过的源路径。 */
 export async function scanFolder(dir: string, alreadyImported: string[]): Promise<string[]> {
+  let info: any
   try {
-    const info = await stat(dir)
-    if (!info.isDirectory()) throw new Error('not a directory')
+    info = await stat(dir)
   } catch {
     throw new Error(`找不到文件夹:${dir}`)
+  }
+  if (!info.isDirectory()) {
+    throw new Error(`不是文件夹:${dir}`)
   }
   const found: string[] = []
   await walk(dir, found)

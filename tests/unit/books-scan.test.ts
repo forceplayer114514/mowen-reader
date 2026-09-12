@@ -44,4 +44,32 @@ describe('扫描文件夹', () => {
   it('空目录返回空数组', async () => {
     expect(await scanFolder(dir, [])).toEqual([])
   })
+
+  it('找出深层嵌套三层以上的 epub', async () => {
+    mkdirSync(join(dir, '一'))
+    mkdirSync(join(dir, '一', '二'))
+    mkdirSync(join(dir, '一', '二', '三'))
+    writeFileSync(join(dir, '一', '二', '三', 'deep.epub'), '')
+    const found = await scanFolder(dir, [])
+    expect(found).toEqual([join(dir, '一', '二', '三', 'deep.epub')])
+  })
+
+  it('忽略扩展名为 epub.txt 的文件', async () => {
+    writeFileSync(join(dir, 'book.epub.txt'), '')
+    writeFileSync(join(dir, 'actual.epub'), '')
+    const found = await scanFolder(dir, [])
+    expect(found).toEqual([join(dir, 'actual.epub')])
+  })
+
+  it('遍历名为 epub 的目录并找出其中的 epub 文件', async () => {
+    mkdirSync(join(dir, '合集.epub'))
+    writeFileSync(join(dir, '合集.epub', 'inner.epub'), '')
+    const found = await scanFolder(dir, [])
+    expect(found).toEqual([join(dir, '合集.epub', 'inner.epub')])
+  })
+
+  it('路径存在但不是文件夹时抛出错误', async () => {
+    writeFileSync(join(dir, 'file.txt'), '')
+    await expect(scanFolder(join(dir, 'file.txt'), [])).rejects.toThrow('不是文件夹:' + join(dir, 'file.txt'))
+  })
 })
