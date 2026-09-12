@@ -48,6 +48,11 @@ export default function ReaderView({ book, onBack }: Props) {
           theme: savedTheme,
           savedLocations
         })
+        // open() 期间 cancelled 可能已经变 true(视图在大书加载完之前就被卸载了):
+        // 不检查的话下面 setToc()/display() 会在已销毁的 engine 上继续跑,
+        // display() 还会因为 cleanup 已经 destroy() 过 engine 而抛错。
+        if (cancelled) return
+
         setToc(engine.toc())
         await engine.display(book.lastReadCfi ?? undefined)
         if (cancelled) return
@@ -72,7 +77,9 @@ export default function ReaderView({ book, onBack }: Props) {
           }
         })
 
-        setVisible(await engine.getVisible())
+        const v = await engine.getVisible()
+        if (cancelled) return
+        setVisible(v)
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : '这本书打不开')
       }
