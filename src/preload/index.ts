@@ -19,6 +19,8 @@ const api = {
   readBookFile: (id: string): Promise<ArrayBuffer> => ipcRenderer.invoke('books:readFile', id),
   readStagedFile: (id: string): Promise<ArrayBuffer> =>
     ipcRenderer.invoke('books:readStaged', id),
+  discardStagedFile: (id: string): Promise<void> =>
+    ipcRenderer.invoke('books:discardStaged', id),
   deleteBook: (id: string): Promise<void> => ipcRenderer.invoke('books:delete', id),
   saveProgress: (id: string, cfi: string): Promise<void> =>
     ipcRenderer.invoke('books:saveProgress', id, cfi),

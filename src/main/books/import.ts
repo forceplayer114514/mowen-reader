@@ -35,10 +35,22 @@ export async function writeCover(bookId: string, bytes: Uint8Array): Promise<str
   return path
 }
 
+async function removeFile(path: string): Promise<void> {
+  await rm(path, { force: true })
+}
+
 export async function removeBookFiles(book: {
   filePath: string
   coverPath: string | null
 }): Promise<void> {
-  await rm(book.filePath, { force: true })
-  if (book.coverPath) await rm(book.coverPath, { force: true })
+  await removeFile(book.filePath)
+  if (book.coverPath) await removeFile(book.coverPath)
+}
+
+/**
+ * 导入某一步失败时,把已经复制进库、但还没写数据库记录的那份文件删掉。
+ * id 推导路径的方式与 libraryFilePath 一致——不是重新拼一份逻辑。
+ */
+export async function discardStagedFile(id: string): Promise<void> {
+  await removeFile(libraryFilePath(id))
 }

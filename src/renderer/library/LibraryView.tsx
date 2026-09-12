@@ -6,6 +6,8 @@ interface Props {
   onOpenBook: (book: BookRecord) => void
 }
 
+type Stager = (sourcePaths: string[]) => Promise<ImportedFile[]>
+
 export default function LibraryView({ onOpenBook }: Props) {
   const [books, setBooks] = useState<BookRecord[]>([])
   const [busy, setBusy] = useState<string | null>(null)
@@ -20,54 +22,67 @@ export default function LibraryView({ onOpenBook }: Props) {
     void refresh()
   }, [refresh])
 
-  // 把"已经复制进库、但还没写数据库记录"的文件挨个读元数据、落库。
-  // 两条导入入口(stageImport 走对话框选出的路径,stageDroppedFiles 走拖拽)
-  // 各自把路径喂给主进程换出 staged 列表后,都走这同一段收尾逻辑。
-  const importStaged = useCallback(
-    async (staged: ImportedFile[], sourcePaths: string[]) => {
-      if (staged.length === 0) return
+  // 每本书独立完成"复制进库 -> 读元数据 -> 落库"这一整套动作,失败了
+  // 只清理这一本自己复制出来的文件,不影响其它书——这样一批里有几本
+  // 坏文件,不会连累前面已经导入成功的书变成孤儿文件,也不会让它们
+  // 因为后面抛错而白导入一遍却不落库。
+  const importOne = useCallback(
+    async (sourcePath: string, stage: Stager): Promise<string | null> => {
+      let staged: ImportedFile | null = null
       try {
-        for (let i = 0; i < staged.length; i++) {
-          setBusy(`正在导入 ${i + 1}/${staged.length}`)
-          const file = staged[i]
-          // 此刻还没入库,只能按 id 读刚复制进库的文件
-          const bytes = await window.api.readStagedFile(file.id)
-          const meta = await extractMetadata(bytes)
-          await window.api.finishImport({
-            id: file.id,
-            sourcePath: sourcePaths[i],
-            title: meta.title,
-            author: meta.author,
-            coverBytes: meta.coverBytes
-          })
-        }
-        await refresh()
+        const [file] = await stage([sourcePath])
+        staged = file
+        const bytes = await window.api.readStagedFile(file.id)
+        const meta = await extractMetadata(bytes)
+        await window.api.finishImport({
+          id: file.id,
+          sourcePath,
+          title: meta.title,
+          author: meta.author,
+          coverBytes: meta.coverBytes
+        })
+        return null
       } catch (err) {
-        setError(err instanceof Error ? err.message : '导入失败')
-      } finally {
-        setBusy(null)
+        if (staged) {
+          // 清理本身失败也不该盖掉真正的导入错误,静默即可。
+          await window.api.discardStagedFile(staged.id).catch(() => {})
+        }
+        return err instanceof Error ? err.message : '导入失败'
       }
     },
-    [refresh]
+    []
   )
 
   const importPaths = useCallback(
-    async (paths: string[]) => {
+    async (paths: string[], stage: Stager) => {
       if (paths.length === 0) return
       setError(null)
+      let succeeded = 0
+      const failures: string[] = []
       try {
-        const staged = await window.api.stageImport(paths)
-        await importStaged(staged, paths)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : '导入失败')
+        for (let i = 0; i < paths.length; i++) {
+          setBusy(`正在导入 ${i + 1}/${paths.length}`)
+          const failure = await importOne(paths[i], stage)
+          if (failure) failures.push(failure)
+          else succeeded++
+        }
+      } finally {
         setBusy(null)
+        // 不管是全部成功、部分失败还是全部失败,已经落库的书都要露出来。
+        await refresh()
+      }
+      if (failures.length > 0) {
+        setError(
+          succeeded > 0 ? `已导入 ${succeeded} 本,${failures.length} 本失败` : failures[0]
+        )
       }
     },
-    [importStaged]
+    [importOne, refresh]
   )
 
   const onPickFiles = useCallback(async () => {
-    await importPaths(await window.api.pickEpubFiles())
+    const paths = await window.api.pickEpubFiles()
+    await importPaths(paths, window.api.stageImport)
   }, [importPaths])
 
   const onPickFolder = useCallback(async () => {
@@ -80,7 +95,7 @@ export default function LibraryView({ onOpenBook }: Props) {
         setError('这个文件夹里没有发现未导入的 EPUB')
         return
       }
-      await importPaths(found)
+      await importPaths(found, window.api.stageImport)
     } catch (err) {
       setError(err instanceof Error ? err.message : '扫描失败')
     } finally {
@@ -101,18 +116,11 @@ export default function LibraryView({ onOpenBook }: Props) {
         setError('拖进来的文件里没有 EPUB')
         return
       }
-      setError(null)
-      try {
-        // 拖拽来的路径合法地来自渲染层本身,过不了 stageImport 背后那道
-        // 只认主进程自己发出路径的闸门,要走专门给拖拽开的 stageDroppedFiles。
-        const staged = await window.api.stageDroppedFiles(paths)
-        await importStaged(staged, paths)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : '导入失败')
-        setBusy(null)
-      }
+      // 拖拽来的路径合法地来自渲染层本身,过不了 stageImport 背后那道
+      // 只认主进程自己发出路径的闸门,要走专门给拖拽开的 stageDroppedFiles。
+      await importPaths(paths, window.api.stageDroppedFiles)
     },
-    [importStaged]
+    [importPaths]
   )
 
   return (

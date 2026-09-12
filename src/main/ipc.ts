@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { dialog, ipcMain } from 'electron'
 import type { BookRecord, FinishImportInput, ImportedFile } from '../shared/types'
-import { libraryFilePath, removeBookFiles, writeCover } from './books/import'
+import { discardStagedFile, libraryFilePath, removeBookFiles, writeCover } from './books/import'
 import { scanFolder } from './books/scan'
 import { allowSource, allowSources, assertAllowed, assertEpub } from './books/source-gate'
 import { stageMany } from './books/stage'
@@ -114,6 +114,12 @@ export function registerIpc(): void {
   ipcMain.handle('books:readStaged', async (_e, id: string): Promise<ArrayBuffer> => {
     const buf = await readFile(libraryFilePath(id))
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer
+  })
+
+  // 某一步导入失败时,渲染层拿这个把刚复制进库、还没入库的文件删掉,
+  // 避免留下孤儿文件。复用 removeBookFiles 背后同一个 removeFile 辅助函数。
+  ipcMain.handle('books:discardStaged', async (_e, id: string): Promise<void> => {
+    await discardStagedFile(id)
   })
 
   ipcMain.handle('books:delete', async (_e, id: string): Promise<void> => {
