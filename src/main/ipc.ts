@@ -174,4 +174,16 @@ export function registerIpc(): void {
   ipcMain.handle('settings:set', (_e, key: string, value: string): void => {
     setSetting(database(), key, value)
   })
+
+  // 仅端到端测试使用:绕开系统文件选择框直接传入路径。
+  // 这里必须先 allowSources() 再放行——stageImport 最终经 stageOne() 调用
+  // assertAllowed(),只认主进程自己记过名的路径。真实的 pickFiles 通道在
+  // 拿到系统对话框结果后就是这么做的,这里是它在测试环境下的等价物,
+  // 不能只是原样把路径传回去,否则渲染层随后调用 stageImport 会被这道闸门拒绝。
+  if (process.env.READER_E2E === '1') {
+    ipcMain.handle('test:importPaths', async (_e, paths: string[]): Promise<string[]> => {
+      allowSources(paths)
+      return paths
+    })
+  }
 }

@@ -32,7 +32,10 @@ const api = {
     ipcRenderer.invoke('books:saveLocations', id, json),
   getSetting: (key: string): Promise<string | null> => ipcRenderer.invoke('settings:get', key),
   setSetting: (key: string, value: string): Promise<void> =>
-    ipcRenderer.invoke('settings:set', key, value)
+    ipcRenderer.invoke('settings:set', key, value),
+  // 仅端到端测试使用:主进程只在 READER_E2E=1 时注册这个通道,其余环境下调用会被拒绝。
+  testImportPaths: (paths: string[]): Promise<string[]> =>
+    ipcRenderer.invoke('test:importPaths', paths)
 }
 
 contextBridge.exposeInMainWorld('api', api)

@@ -120,8 +120,16 @@ export default function LibraryView({ onOpenBook }: Props) {
     [importOne, refresh]
   )
 
+  // window.__E2E_FILES__ 只在端到端测试里存在(见 tests/e2e/helpers.ts):系统文件选择框
+  // 是原生窗口,Playwright 点不到,测试改成直接把路径写进这个全局变量。这里仍然要经
+  // testImportPaths() 走一趟主进程——它会把路径记入 source-gate 的白名单,效果等价于
+  // 真实的 pickEpubFiles() 在拿到系统对话框结果后做的事;直接用注入的路径调用
+  // importPaths 会在 stageImport 里被 assertAllowed() 拒绝。
   const onPickFiles = useCallback(async () => {
-    const paths = await window.api.pickEpubFiles()
+    const injected = (window as unknown as { __E2E_FILES__?: string[] }).__E2E_FILES__
+    const paths = injected
+      ? await window.api.testImportPaths(injected)
+      : await window.api.pickEpubFiles()
     await importPaths(paths, window.api.stageImport)
   }, [importPaths])
 
