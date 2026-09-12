@@ -56,6 +56,9 @@ export default function ReaderView({ book, onBack }: Props) {
         unsubscribeRelocated = engine.onRelocated(() => {
           void engine!.getVisible().then((v) => {
             if (!cancelled) setVisible(v)
+          }).catch(() => {
+            // 书还没有打开时 getVisible() 会抛错。display() 运行前回调就可能被触发，
+            // 此时没有任何内容可见，静默处理这个失败即可。
           })
           const cfi = engine!.currentCfi()
           if (cfi) {
@@ -161,6 +164,9 @@ export default function ReaderView({ book, onBack }: Props) {
 
   // error 同时承载两类情况:书打不开(致命,此时 visible 还没被设置过,整页替换成
   // 错误提示)和设置写盘失败(非致命,阅读已经在正常进行,只在页脚提一句,不打断阅读)。
+  // error && !visible 的判断依赖:当用户返回书架时,此组件会完全卸载，下一次打开书
+  // 时是一个全新的实例,visible 总是从未设置状态开始。如果组件被复用于不同的书，这个
+  // 假设就会被破坏，导致设置错误误显示为整页错误。
   if (error && !visible) {
     return (
       <div className="reader__error">
