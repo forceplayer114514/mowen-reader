@@ -75,4 +75,16 @@ describe('books 表', () => {
     expect(getLocations(db, 'a')).toBe('["cfi1","cfi2"]')
     db.close()
   })
+
+  it('读过的书按上次打开时间倒序,未读书在后', () => {
+    const db = openDatabase(':memory:')
+    // Insert unread books
+    insertBook(db, make('unread1', { addedAt: 100 }))
+    insertBook(db, make('unread2', { addedAt: 200 }))
+    // Insert read books with different last_read_at times
+    insertBook(db, make('read1', { addedAt: 50, lastReadAt: 1000 }))
+    insertBook(db, make('read2', { addedAt: 60, lastReadAt: 2000 }))
+    expect(listBooks(db).map((b) => b.id)).toEqual(['read2', 'read1', 'unread2', 'unread1'])
+    db.close()
+  })
 })
