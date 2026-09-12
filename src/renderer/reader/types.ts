@@ -42,5 +42,7 @@ export interface ReaderEngine {
   currentCfi(): string | null
   exportLocations(): string | null
   onRelocated(cb: () => void): () => void
+  /** 订阅按键:同时接收外层 window 和书内容 iframe 文档里发生的 keydown。返回取消订阅函数。 */
+  onKey(cb: (key: string) => void): () => void
   destroy(): void
 }

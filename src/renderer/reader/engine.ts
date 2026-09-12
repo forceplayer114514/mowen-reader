@@ -32,6 +32,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   let rendition: Rendition | null = null
   let toc: TocItem[] = []
   let listeners: (() => void)[] = []
+  let keyListeners: ((key: string) => void)[] = []
   let locationsReady = false
   // 每次 open()/destroy() 自增一次,给这次调用发出的所有异步延续盖一个“批次号”。
   // 延续恢复执行时先比对批次号,号不一样说明这次 open 已经被下一次 open 或 destroy 取代,
@@ -50,6 +51,38 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   function notify(): void {
     for (const cb of listeners) cb()
   }
+
+  function notifyKey(key: string): void {
+    for (const cb of keyListeners) cb(key)
+  }
+
+  /**
+   * 处理外层窗口(阅读界面的按钮、工具栏等,不在 epub.js 的 iframe 里)上的 keydown。
+   * 从 createEngine() 调用起就订阅,直到 destroy() 才取消——与某一次 open() 的
+   * book/rendition 无关,所以不放在 open() 里注册。
+   */
+  function handleWindowKeydown(e: KeyboardEvent): void {
+    notifyKey(e.key)
+  }
+
+  /**
+   * 处理书本内容(epub.js 渲染进 iframe 里的文档)上的 keydown。
+   *
+   * epub.js 的 Rendition 构造函数里默认把 passEvents 注册到 hooks.content(见
+   * node_modules/epubjs/src/rendition.js 的 constructor 和 passEvents 方法):每次一个
+   * 章节的 iframe 文档渲染完成,Contents 实例会在自己的 document 上挂 DOM_EVENTS 列表
+   * (包含 keydown,见 utils/constants.js 和 contents.js 的 addEventListeners),再把
+   * 收到的原生事件通过 rendition.emit(e.type, e, contents) 转发到 rendition 自己身上。
+   * 也就是说 rendition.on('keydown', cb) 不需要我们自己再往每个渲染文档上挂监听器——
+   * 库本身已经把书内容 iframe 里的按键转发出来了,cb 收到的就是原生 KeyboardEvent。
+   * Contents.addEventListeners()/removeEventListeners() 由 epub.js 在每次渲染/卸载
+   * 文档时自动管理,所以翻页、换章节都不会导致这里的监听重复挂载。
+   */
+  function handleContentKeydown(e: KeyboardEvent): void {
+    notifyKey(e.key)
+  }
+
+  window.addEventListener('keydown', handleWindowKeydown)
 
   /**
    * 释放某次 open() 调用在本地创建、但还没发布到闭包变量就被取代的 book/rendition。
@@ -75,6 +108,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
    */
   function destroyStale(staleBook: Book, staleRendition: Rendition): void {
     staleRendition.q.stop()
+    staleRendition.off('keydown', handleContentKeydown)
     try {
       staleRendition.destroy()
     } catch {
@@ -94,6 +128,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
    * onRelocated 订阅者应当继续收到新书的通知。
    */
   function teardown(): void {
+    rendition?.off('keydown', handleContentKeydown)
     rendition?.destroy()
     book?.destroy()
     // epub.js 的 Stage.attachTo 只会往容器里追加自己的 stage 元素,不会清理旧的,
@@ -170,6 +205,9 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       }
 
       nextRendition.on('relocated', notify)
+      // 见上面 handleContentKeydown 的注释:这一行订阅之后,书内容 iframe 里发生的
+      // keydown 会被 epub.js 自己转发到这里,不需要我们逐个文档去挂监听器。
+      nextRendition.on('keydown', handleContentKeydown)
     },
 
     async display(target?: string): Promise<void> {
@@ -263,6 +301,13 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       }
     },
 
+    onKey(cb: (key: string) => void): () => void {
+      keyListeners.push(cb)
+      return () => {
+        keyListeners = keyListeners.filter((x) => x !== cb)
+      }
+    },
+
     destroy(): void {
       // 先递增批次号,让任何还没跑完的 open() 延续(book.ready / navigation /
       // locations.generate 的 then)在恢复执行时立刻发现自己已经过期并退出,
@@ -270,6 +315,8 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       generation++
       teardown()
       listeners = []
+      keyListeners = []
+      window.removeEventListener('keydown', handleWindowKeydown)
     }
   }
 }

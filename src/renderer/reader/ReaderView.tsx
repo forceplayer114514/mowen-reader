@@ -27,6 +27,7 @@ export default function ReaderView({ book, onBack }: Props) {
     let cancelled = false
     let engine: ReaderEngine | null = null
     let unsubscribeRelocated: (() => void) | null = null
+    let unsubscribeKey: (() => void) | null = null
 
     async function boot(): Promise<void> {
       if (!hostRef.current) return
@@ -68,6 +69,11 @@ export default function ReaderView({ book, onBack }: Props) {
           }
         })
 
+        unsubscribeKey = engine.onKey((key) => {
+          if (key === 'ArrowRight' || key === 'PageDown') void engineRef.current?.next()
+          else if (key === 'ArrowLeft' || key === 'PageUp') void engineRef.current?.prev()
+        })
+
         await engine.open(data, {
           fontSize: Number.isFinite(savedFont) ? savedFont : 18,
           theme: savedTheme,
@@ -106,6 +112,7 @@ export default function ReaderView({ book, onBack }: Props) {
     return () => {
       cancelled = true
       unsubscribeRelocated?.()
+      unsubscribeKey?.()
       engine?.destroy()
       engineRef.current = null
     }
@@ -114,14 +121,8 @@ export default function ReaderView({ book, onBack }: Props) {
   const next = useCallback(() => void engineRef.current?.next(), [])
   const prev = useCallback(() => void engineRef.current?.prev(), [])
 
-  useEffect(() => {
-    function onKey(e: KeyboardEvent): void {
-      if (e.key === 'ArrowRight' || e.key === 'PageDown') next()
-      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') prev()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [next, prev])
+  // 按键翻页现在完全由 engine.onKey 驱动(见上面 boot effect 里的订阅):它同时接住
+  // 外层 window 和书内容 iframe 文档里的 keydown,这里不再需要自己挂 window 监听器。
 
   const changeFont = useCallback((delta: number) => {
     setFontSize((old) => {
