@@ -6,6 +6,7 @@ import {
   getLocations,
   insertBook,
   listBooks,
+  listSourcePaths,
   setLocations,
   updateProgress
 } from '../../src/main/db/books'
@@ -18,6 +19,7 @@ function make(id: string, over: Partial<BookRecord> = {}): BookRecord {
     author: '某人',
     coverPath: null,
     filePath: `/data/books/${id}.epub`,
+    sourcePath: `/Users/me/Downloads/${id}.epub`,
     addedAt: 1000,
     lastReadCfi: null,
     lastReadAt: null,
@@ -85,6 +87,17 @@ describe('books 表', () => {
     insertBook(db, make('read1', { addedAt: 50, lastReadAt: 1000 }))
     insertBook(db, make('read2', { addedAt: 60, lastReadAt: 2000 }))
     expect(listBooks(db).map((b) => b.id)).toEqual(['read2', 'read1', 'unread2', 'unread1'])
+    db.close()
+  })
+
+  it('能按源路径列出已导入的书,用于扫描判重', () => {
+    const db = openDatabase(':memory:')
+    insertBook(db, make('a'))
+    insertBook(db, make('b'))
+    expect(listSourcePaths(db).sort()).toEqual([
+      '/Users/me/Downloads/a.epub',
+      '/Users/me/Downloads/b.epub'
+    ])
     db.close()
   })
 })

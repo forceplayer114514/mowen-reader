@@ -1,5 +1,6 @@
 import { join } from 'node:path'
 import { app, BrowserWindow } from 'electron'
+import { registerIpc } from './ipc'
 import { initDataDir } from './paths'
 
 function createWindow(): void {
@@ -31,6 +32,7 @@ void app.whenReady().then(() => {
   if (!process.env.READER_USER_DATA) {
     initDataDir(app.getPath('userData'))
   }
+  registerIpc()
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

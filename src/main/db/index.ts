@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS books (
   author        TEXT,
   cover_path    TEXT,
   file_path     TEXT NOT NULL,
+  source_path   TEXT NOT NULL DEFAULT '',
   locations     TEXT,
   added_at      INTEGER NOT NULL,
   last_read_cfi TEXT,
