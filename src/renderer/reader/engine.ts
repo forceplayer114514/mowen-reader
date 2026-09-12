@@ -52,6 +52,42 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   }
 
   /**
+   * 释放某次 open() 调用在本地创建、但还没发布到闭包变量就被取代的 book/rendition。
+   * 用在 open() 里每一处 `epoch !== generation` 判断为真之后、return 之前。
+   *
+   * 光调用 rendition.destroy() 并不够:epub.js 的 Rendition.destroy()(见
+   * node_modules/epubjs/src/rendition.js)里清空自身任务队列的那行 `this.q.clear()`
+   * 是注释掉的——它自己排队等 book.opened 之后要跑的 start()/attachTo() 渲染步骤
+   * 不会被这次 destroy() 打断。也就是说,如果这次 open() 在 manager.render() 真正
+   * 执行之前就已经过期,那个 render() 调用仍会按原计划在之后的某一帧触发,往容器里
+   * 插入一个没人认领的 stage 元素(iframe 的父容器)、注册永久性的 window
+   * resize/orientationchange 监听(见 managers/helpers/stage.js 的 onResize /
+   * onOrientationChange)。所以这里先调用 q.stop() 清空并冻结这个内部队列,不让它
+   * 继续往下跑;render() 如果已经先一步执行完,再靠 destroy() 去清已经建出来的
+   * manager/stage。
+   *
+   * 如果 render() 还没执行到,manager 可能已经被 start() 建出来但
+   * manager.container/manager.stage 还没有——这种半成品状态下 epub.js 自带的
+   * DefaultViewManager.destroy() 会直接访问 this.container(在
+   * removeEventListeners() 里)和 this.stage(destroy() 最后一行),两者都还是
+   * undefined,会抛 TypeError。这里用 try/catch 兜底,不能让清理旧对象的动作把
+   * open() 的调用方炸掉。
+   */
+  function destroyStale(staleBook: Book, staleRendition: Rendition): void {
+    staleRendition.q.stop()
+    try {
+      staleRendition.destroy()
+    } catch {
+      // 忽略:render() 还没跑到,没有 manager/stage 可清
+    }
+    try {
+      staleBook.destroy()
+    } catch {
+      // 忽略:与上面同理
+    }
+  }
+
+  /**
    * 销毁当前的 rendition/book,清空容器,把状态复位到初始值。
    * 供 open()(重新打开前先清场)和 destroy()(退出阅读界面)共用。
    * 注意:这不是对外的 destroy() ——它不清空 listeners,重新 open 之后旧的
@@ -90,10 +126,19 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       await nextBook.ready
       // destroy() 或另一次 open() 可能在 await 期间抢先执行,批次号已经变了就不再往下走,
       // 避免对已经被 teardown 过的 book/rendition 继续操作。
-      if (epoch !== generation) return
+      // 这次 open() 已经被取代,但 nextBook/nextRendition 是它自己 new 出来的本地对象,
+      // 从没发布到闭包变量,teardown() 根本碰不到它们——必须在这里主动释放,否则
+      // epub.js 内部队列会在 book.opened resolve 之后继续插入 iframe、注册永久监听。
+      if (epoch !== generation) {
+        destroyStale(nextBook, nextRendition)
+        return
+      }
 
       const nav = await nextBook.loaded.navigation
-      if (epoch !== generation) return
+      if (epoch !== generation) {
+        destroyStale(nextBook, nextRendition)
+        return
+      }
 
       const items: TocItem[] = []
       flatToc(nav.toc, 0, items)
@@ -111,7 +156,14 @@ export function createEngine(container: HTMLElement): ReaderEngine {
           // 同一本书可能因为 open() 被再次调用而在 generate() 完成前就已经过期,
           // 这里必须再查一次批次号,否则旧书生成完成的那一刻会把 locationsReady
           // 错误地置为 true,污染的是新书(或已销毁状态)的读数。
-          if (epoch !== generation) return
+          // 此时 nextBook/nextRendition 通常已经被后来的 teardown() 当作
+          // book/rendition 销毁过一次,但那两个闭包变量已经指向别的对象或 null,
+          // 这里手上的本地引用还在——统一走 destroyStale() 再销毁一次,
+          // epub.js 内部对重复 destroy() 有 `this.xxx &&` 式的判空保护,不会出错。
+          if (epoch !== generation) {
+            destroyStale(nextBook, nextRendition)
+            return
+          }
           locationsReady = true
           notify()
         })
