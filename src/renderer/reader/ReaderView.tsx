@@ -52,7 +52,15 @@ export default function ReaderView({ book, onBack }: Props) {
     function handleVisible(v: VisibleRange): void {
       hasVisible = true
       clearStuckTimer()
-      if (!cancelled) setVisible(v)
+      if (!cancelled) {
+        // 清掉卡住超时的错误,但保留设置保存失败的错误,避免用户改字号/主题后
+        // 翻页时丢掉还没处理完的设置错误提示。只清掉"书本内容长时间无法显示"
+        // 这个特定的超时错误。
+        setError((prev) =>
+          prev === '书本内容长时间无法显示,可能是文件已损坏' ? null : prev
+        )
+        setVisible(v)
+      }
     }
 
     async function boot(): Promise<void> {
