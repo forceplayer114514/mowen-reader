@@ -6,9 +6,14 @@ import { booksDir, coversDir } from '../paths'
 
 const BOOK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+/** 验证书籍 id 是否为合法的 UUID。 */
+function validateBookId(bookId: string): void {
+  if (!BOOK_ID.test(bookId)) throw new Error(`无效的书籍标识:${bookId}`)
+}
+
 /** 由书籍 id 推导库内文件路径。id 不合法就抛错,渲染层因此无法指定任意路径。 */
 export function libraryFilePath(bookId: string): string {
-  if (!BOOK_ID.test(bookId)) throw new Error(`无效的书籍标识:${bookId}`)
+  validateBookId(bookId)
   return join(booksDir(), `${bookId}.epub`)
 }
 
@@ -30,6 +35,7 @@ export async function copyEpubIntoLibrary(sourcePath: string): Promise<ImportedF
 }
 
 export function coverPath(bookId: string): string {
+  validateBookId(bookId)
   return join(coversDir(), `${bookId}.png`)
 }
 

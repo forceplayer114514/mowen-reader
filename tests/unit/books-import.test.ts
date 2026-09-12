@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
   copyEpubIntoLibrary,
+  coverPath,
   discardStagedFile,
   libraryFilePath,
   removeBookFiles,
@@ -55,8 +56,9 @@ describe('导入文件', () => {
   })
 
   it('封面写入后能读回原始字节', async () => {
+    const id = '3fa85f64-5717-4562-b3fc-2c963f66afa6'
     const bytes = new Uint8Array([137, 80, 78, 71])
-    const path = await writeCover('book-1', bytes)
+    const path = await writeCover(id, bytes)
     expect(Array.from(readFileSync(path))).toEqual([137, 80, 78, 71])
   })
 
@@ -106,6 +108,30 @@ describe('libraryFilePath', () => {
     writeFileSync(src, 'Z')
     const result = await copyEpubIntoLibrary(src)
     expect(result.filePath).toBe(libraryFilePath(result.id))
+  })
+})
+
+describe('coverPath', () => {
+  it('合法 uuid 得到封面目录内的路径', () => {
+    const id = '3fa85f64-5717-4562-b3fc-2c963f66afa6'
+    const path = coverPath(id)
+    expect(path).toBe(join(dataDir, 'covers', `${id}.png`))
+  })
+
+  it.each([
+    ['路径穿越', '../../../etc/passwd'],
+    ['绝对路径', '/etc/passwd'],
+    ['空字符串', ''],
+    ['单个双点', '..'],
+    ['形似但不是 uuid', 'abc']
+  ])('%s 会被拒绝:%s', (_label, bad) => {
+    expect(() => coverPath(bad)).toThrow()
+  })
+
+  it('writeCover 使用 coverPath,非法 id 被拒绝', async () => {
+    await expect(writeCover('../../../etc/passwd', new Uint8Array([1]))).rejects.toThrow(
+      /无效的书籍标识/
+    )
   })
 })
 

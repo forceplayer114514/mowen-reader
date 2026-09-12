@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises'
+import { readFile, rm } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { dialog, ipcMain } from 'electron'
 import type { BookRecord, FinishImportInput, ImportedFile } from '../shared/types'
@@ -105,7 +105,6 @@ export function registerIpc(): void {
         // 如果 insertBook 失败,删掉已写入的封面,避免孤儿文件
         // 保留原错误,不掩盖它,也不让删除失败遮挡原错误
         if (coverPathResult) {
-          const { rm } = await import('node:fs/promises')
           try {
             await rm(coverPath(input.id), { force: true })
           } catch {
