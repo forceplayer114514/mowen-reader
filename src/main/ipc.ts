@@ -111,6 +111,17 @@ export function registerIpc(): void {
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer
   })
 
+  // 封面走 IPC 读字节,不走 file:// URL——开发模式下渲染层跑在
+  // http://localhost:5173,Chromium 不允许 http 源加载 file:// 子资源,
+  // 直接用 file:// 会导致封面图一直空白。封面路径永远从数据库行里取,
+  // 渲染层给的 id 换不出任意路径。
+  ipcMain.handle('books:readCover', async (_e, id: string): Promise<ArrayBuffer | null> => {
+    const book = getBook(database(), id)
+    if (!book || !book.coverPath) return null
+    const buf = await readFile(book.coverPath)
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer
+  })
+
   // 刚复制进库、还没入库的文件靠这个读。路径由 id 在主进程内推导,
   // 渲染层给不出任意路径——libraryFilePath 本身就是边界。
   ipcMain.handle('books:readStaged', async (_e, id: string): Promise<ArrayBuffer> => {

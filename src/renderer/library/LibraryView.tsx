@@ -13,6 +13,7 @@ export default function LibraryView({ onOpenBook }: Props) {
   const [busy, setBusy] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [coverUrls, setCoverUrls] = useState<Record<string, string>>({})
 
   const refresh = useCallback(async () => {
     setBooks(await window.api.listBooks())
@@ -21,6 +22,45 @@ export default function LibraryView({ onOpenBook }: Props) {
   useEffect(() => {
     void refresh()
   }, [refresh])
+
+  // 封面字节经 IPC 读回来,包成 Blob 再转成 object URL 渲染——直接用
+  // file:// URL 在开发模式下(渲染层跑在 http://localhost:5173)会被
+  // Chromium 拒绝加载,导致封面区一直空白。object URL 会把封面数据
+  // 钉在内存里,书架列表变化或组件卸载时必须撤销,否则窗口整个生命
+  // 周期里泄漏的图片越攒越多。
+  useEffect(() => {
+    let cancelled = false
+    const createdUrls: string[] = []
+
+    void (async () => {
+      const withCovers = await Promise.all(
+        books.map(async (book): Promise<[string, string] | null> => {
+          if (!book.coverPath) return null
+          const bytes = await window.api.readCover(book.id)
+          if (!bytes) return null
+          return [book.id, URL.createObjectURL(new Blob([bytes]))]
+        })
+      )
+      if (cancelled) {
+        for (const entry of withCovers) {
+          if (entry) URL.revokeObjectURL(entry[1])
+        }
+        return
+      }
+      const next: Record<string, string> = {}
+      for (const entry of withCovers) {
+        if (!entry) continue
+        next[entry[0]] = entry[1]
+        createdUrls.push(entry[1])
+      }
+      setCoverUrls(next)
+    })()
+
+    return () => {
+      cancelled = true
+      for (const url of createdUrls) URL.revokeObjectURL(url)
+    }
+  }, [books])
 
   // 每本书独立完成"复制进库 -> 读元数据 -> 落库"这一整套动作,失败了
   // 只清理这一本自己复制出来的文件,不影响其它书——这样一批里有几本
@@ -157,9 +197,9 @@ export default function LibraryView({ onOpenBook }: Props) {
               onClick={() => onOpenBook(book)}
             >
               <div className="book-card__cover">
-                {book.coverPath ? (
+                {coverUrls[book.id] ? (
                   <img
-                    src={`file://${book.coverPath}`}
+                    src={coverUrls[book.id]}
                     alt={book.title}
                     style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                   />
