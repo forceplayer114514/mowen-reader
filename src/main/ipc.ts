@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { dialog, ipcMain } from 'electron'
 import type { BookRecord, FinishImportInput, ImportedFile } from '../shared/types'
-import { discardStagedFile, libraryFilePath, removeBookFiles, writeCover } from './books/import'
+import { coverPath, discardStagedFile, libraryFilePath, removeBookFiles, writeCover } from './books/import'
 import { scanFolder } from './books/scan'
 import { allowSource, allowSources, assertAllowed, assertEpub } from './books/source-gate'
 import { stageMany } from './books/stage'
@@ -85,21 +85,35 @@ export function registerIpc(): void {
   ipcMain.handle(
     'books:finishImport',
     async (_e, input: FinishImportInput): Promise<BookRecord> => {
-      const coverPath = input.coverBytes
+      const coverPathResult = input.coverBytes
         ? await writeCover(input.id, Uint8Array.from(input.coverBytes))
         : null
       const record: BookRecord = {
         id: input.id,
         title: input.title || basename(input.sourcePath, '.epub'),
         author: input.author,
-        coverPath,
+        coverPath: coverPathResult,
         filePath: libraryFilePath(input.id),
         sourcePath: input.sourcePath,
         addedAt: Date.now(),
         lastReadCfi: null,
         lastReadAt: null
       }
-      insertBook(database(), record)
+      try {
+        insertBook(database(), record)
+      } catch (error) {
+        // 如果 insertBook 失败,删掉已写入的封面,避免孤儿文件
+        // 保留原错误,不掩盖它,也不让删除失败遮挡原错误
+        if (coverPathResult) {
+          const { rm } = await import('node:fs/promises')
+          try {
+            await rm(coverPath(input.id), { force: true })
+          } catch {
+            // 删除封面失败不重新抛错,已有的 insertBook 错误更重要
+          }
+        }
+        throw error
+      }
       return record
     }
   )

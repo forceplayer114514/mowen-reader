@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
   copyEpubIntoLibrary,
+  discardStagedFile,
   libraryFilePath,
   removeBookFiles,
   writeCover
@@ -105,5 +106,34 @@ describe('libraryFilePath', () => {
     writeFileSync(src, 'Z')
     const result = await copyEpubIntoLibrary(src)
     expect(result.filePath).toBe(libraryFilePath(result.id))
+  })
+})
+
+describe('discardStagedFile', () => {
+  it('封面已写入时,丢弃同时删掉 EPUB 和封面', async () => {
+    const src = join(workDir, 'd.epub')
+    writeFileSync(src, 'BOOK-CONTENT')
+    const imported = await copyEpubIntoLibrary(src)
+    const writtenCoverPath = await writeCover(imported.id, new Uint8Array([255, 254]))
+
+    expect(existsSync(imported.filePath)).toBe(true)
+    expect(existsSync(writtenCoverPath)).toBe(true)
+
+    await discardStagedFile(imported.id)
+
+    expect(existsSync(imported.filePath)).toBe(false)
+    expect(existsSync(writtenCoverPath)).toBe(false)
+  })
+
+  it('没有封面时,丢弃仍然删掉 EPUB,不报错', async () => {
+    const src = join(workDir, 'e.epub')
+    writeFileSync(src, 'ANOTHER-BOOK')
+    const imported = await copyEpubIntoLibrary(src)
+
+    expect(existsSync(imported.filePath)).toBe(true)
+
+    await expect(discardStagedFile(imported.id)).resolves.toBeUndefined()
+
+    expect(existsSync(imported.filePath)).toBe(false)
   })
 })

@@ -29,8 +29,12 @@ export async function copyEpubIntoLibrary(sourcePath: string): Promise<ImportedF
   return { id, filePath }
 }
 
+export function coverPath(bookId: string): string {
+  return join(coversDir(), `${bookId}.png`)
+}
+
 export async function writeCover(bookId: string, bytes: Uint8Array): Promise<string> {
-  const path = join(coversDir(), `${bookId}.png`)
+  const path = coverPath(bookId)
   await writeFile(path, bytes)
   return path
 }
@@ -50,7 +54,9 @@ export async function removeBookFiles(book: {
 /**
  * 导入某一步失败时,把已经复制进库、但还没写数据库记录的那份文件删掉。
  * id 推导路径的方式与 libraryFilePath 一致——不是重新拼一份逻辑。
+ * 同时删除可能已写入的封面,因为封面和 EPUB 都是临时的、还未入库的。
  */
 export async function discardStagedFile(id: string): Promise<void> {
   await removeFile(libraryFilePath(id))
+  await removeFile(coverPath(id))
 }
