@@ -47,3 +47,83 @@ export async function waitForLocationsReady(h: Harness): Promise<void> {
     { timeout: 60_000 }
   )
 }
+
+/**
+ * 等页码指示器的文字稳定下来(连续 `stableForMs` 毫秒都没再变过)再返回它最后的
+ * 文字。翻页是异步的:epub.js 的翻页要经过 iframe 里的重新排版,再靠一次
+ * requestAnimationFrame 驱动的内部队列才会把新位置写回 rendition.location(见
+ * src/renderer/reader/engine.ts 对这条队列时序的详细注释),两步都要花掉几十到
+ * 几百毫秒——立刻读 textContent() 读到的只是还没翻完时的旧文字。
+ */
+async function waitForStableText(
+  locator: import('@playwright/test').Locator,
+  { timeoutMs = 20_000, stableForMs = 800, pollMs = 150 } = {}
+): Promise<string> {
+  const page = locator.page()
+  const deadline = Date.now() + timeoutMs
+  let last = (await locator.textContent()) ?? ''
+  let lastChangedAt = Date.now()
+  while (Date.now() < deadline) {
+    await page.waitForTimeout(pollMs)
+    const current = (await locator.textContent()) ?? ''
+    if (current !== last) {
+      last = current
+      lastChangedAt = Date.now()
+    } else if (Date.now() - lastChangedAt >= stableForMs) {
+      return last
+    }
+  }
+  return last
+}
+
+/** 等页码指示器的文字稳定下来,返回它最后的文字。见 waitForStableText 的注释。 */
+export async function waitForStableIndicator(h: Harness): Promise<string> {
+  return waitForStableText(h.page.getByTestId('page-indicator'))
+}
+
+/**
+ * 一次一次按 `key`,直到页码指示器的文字真的变了(每按一次都等到稳定再看有没有
+ * 变),最多按 `maxPresses` 次。返回让文字真正变化所用的按键次数。
+ *
+ * 内容索引的分段粒度和物理翻页的屏幕粒度不是 1:1 对齐的(见下面 pressAndSettle
+ * 的注释),所以不能假设"按一下方向键,页码指示器就一定跟着变"——同一个索引分段
+ * 里可能要翻好几屏才会跨到下一段。这里用来验证"往前翻迟早会离开当前页码"这个
+ * 更宽松、但更符合实际实现的说法,而不是"按一下必须变"。
+ */
+export async function pressUntilPageChanges(
+  h: Harness,
+  key: string,
+  maxPresses = 5
+): Promise<number> {
+  const indicator = h.page.getByTestId('page-indicator')
+  const baseline = await indicator.textContent()
+  for (let i = 1; i <= maxPresses; i++) {
+    await h.page.keyboard.press(key)
+    const current = await waitForStableText(indicator)
+    if (current !== baseline) return i
+  }
+  throw new Error(`按了 ${maxPresses} 次「${key}」,页码指示器始终没有变化`)
+}
+
+/**
+ * 连续按 `times` 次方向键翻页,再等页码指示器稳定下来,返回最终稳定的文字。
+ *
+ * 页码来自内容索引(每 1000 字符一个分段,见 engine.ts 的 LOCATION_CHUNK),
+ * 但每次方向键翻的是排版意义上的一屏——两者的粒度并不对齐:一屏的字数不一定
+ * 刚好等于一个分段,所以连续按方向键时,并不能假设「每按一下,索引页码就一定
+ * 跟着变一次」——有时候两屏内容才跨过一个分段边界,页码要等第二次翻页才会变。
+ * 之前的实现每按一下就断言页码必须变,恰好在这本测试用的样例书里,第 3 段和第 4
+ * 段索引之间需要翻两屏才跨过去,断言撞上了这个正常的粒度不对齐,不是应用的缺陷。
+ * 这里改成按完所有次数、等指示器不再变化再读值,不对每一次按键单独做假设。
+ */
+export async function pressAndSettle(
+  h: Harness,
+  key: string,
+  times: number
+): Promise<string> {
+  const indicator = h.page.getByTestId('page-indicator')
+  for (let i = 0; i < times; i++) {
+    await h.page.keyboard.press(key)
+  }
+  return waitForStableText(indicator)
+}
