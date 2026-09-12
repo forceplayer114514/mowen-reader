@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { BookRecord, ImportedFile } from '@shared/types'
-import { extractMetadata } from './metadata'
+import { extractMetadata } from '../reader/metadata'
 
 interface Props {
   onOpenBook: (book: BookRecord) => void
