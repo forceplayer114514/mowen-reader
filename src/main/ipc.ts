@@ -2,9 +2,10 @@ import { readFile } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { dialog, ipcMain } from 'electron'
 import type { BookRecord, FinishImportInput, ImportedFile } from '../shared/types'
-import { copyEpubIntoLibrary, libraryFilePath, removeBookFiles, writeCover } from './books/import'
+import { libraryFilePath, removeBookFiles, writeCover } from './books/import'
 import { scanFolder } from './books/scan'
 import { allowSource, allowSources, assertAllowed, assertEpub } from './books/source-gate'
+import { stageMany } from './books/stage'
 import { openDatabase, type Db } from './db'
 import {
   deleteBook,
@@ -60,14 +61,22 @@ export function registerIpc(): void {
 
   ipcMain.handle(
     'books:stageImport',
+    async (_e, sourcePaths: string[]): Promise<ImportedFile[]> => stageMany(sourcePaths)
+  )
+
+  // 拖拽导入的路径合法地来自渲染层本身(File 对象经 webUtils.getPathForFile 得到),
+  // 天然过不了 assertAllowed 这道只认"主进程自己发出的路径"的闸门,所以单独开一条通道:
+  // 只要求路径以 .epub 结尾,就把它记进白名单,再和 stageImport 共用同一个 stageMany 去复制。
+  // 残余风险是清楚的:被攻破的渲染层仍可以让本机磁盘上任意一个已存在的 .epub 文件
+  // 被复制进书库、读出内容——这是支持拖拽导入必须付出的代价,不是遗漏。
+  ipcMain.handle(
+    'books:stageDropped',
     async (_e, sourcePaths: string[]): Promise<ImportedFile[]> => {
-      const out: ImportedFile[] = []
       for (const p of sourcePaths) {
-        const resolved = assertAllowed(p)
-        assertEpub(resolved)
-        out.push(await copyEpubIntoLibrary(resolved))
+        assertEpub(p)
+        allowSource(p)
       }
-      return out
+      return stageMany(sourcePaths)
     }
   )
 
