@@ -43,23 +43,14 @@ export default function ReaderView({ book, onBack }: Props) {
         setTheme(savedTheme)
         document.documentElement.dataset.theme = savedTheme
 
-        await engine.open(data, {
-          fontSize: Number.isFinite(savedFont) ? savedFont : 18,
-          theme: savedTheme,
-          savedLocations
-        })
-        // open() 期间 cancelled 可能已经变 true(视图在大书加载完之前就被卸载了):
-        // 不检查的话下面 setToc()/display() 会在已销毁的 engine 上继续跑,
-        // display() 还会因为 cleanup 已经 destroy() 过 engine 而抛错。
-        if (cancelled) return
-
-        setToc(engine.toc())
-        await engine.display(book.lastReadCfi ?? undefined)
-        if (cancelled) return
-
         // 位置索引首次生成完要落盘,下次开书省去重算。engine 在生成完成时和每次翻页时
         // 都会触发 onRelocated,这里复用同一个回调:exportLocations() 在索引还没
         // 就绪时返回 null,一旦第一次拿到非 null 值就存一次,之后不再重复写。
+        // 必须在 open() 之前完成订阅:locations.generate() 是 open() 内部发起的,
+        // 小书可能在 open()/display() 都还没返回的时候就生成完毕并触发一次 onRelocated,
+        // 注册晚了就会错过这次通知,索引要等到下一次真正翻页才会落盘。engine.destroy()/
+        // 重新 open() 都不会清空 onRelocated 的订阅列表(teardown() 特意保留它),
+        // 所以提前订阅是安全的。
         let locationsSaved = savedLocations !== null
         unsubscribeRelocated = engine.onRelocated(() => {
           void engine!.getVisible().then((v) => {
@@ -76,6 +67,32 @@ export default function ReaderView({ book, onBack }: Props) {
             }
           }
         })
+
+        await engine.open(data, {
+          fontSize: Number.isFinite(savedFont) ? savedFont : 18,
+          theme: savedTheme,
+          savedLocations
+        })
+        // open() 期间 cancelled 可能已经变 true(视图在大书加载完之前就被卸载了):
+        // 不检查的话下面 setToc()/display() 会在已销毁的 engine 上继续跑,
+        // display() 还会因为 cleanup 已经 destroy() 过 engine 而抛错。
+        if (cancelled) return
+
+        setToc(engine.toc())
+        await engine.display(book.lastReadCfi ?? undefined)
+        if (cancelled) return
+
+        // open()/display() 期间位置索引可能已经在 onRelocated 订阅注册之后、
+        // display() 返回之前的某次 relocated 通知里生成完成并存过了;但也可能那次
+        // 通知发生在其他时序下没被接住,这里主动查一次兜底。locationsSaved 已经为
+        // true 时 exportLocations() 的结果会被直接丢弃,不会重复写入。
+        if (!locationsSaved) {
+          const json = engine.exportLocations()
+          if (json) {
+            locationsSaved = true
+            void window.api.saveLocations(book.id, json)
+          }
+        }
 
         const v = await engine.getVisible()
         if (cancelled) return
