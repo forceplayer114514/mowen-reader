@@ -4,6 +4,7 @@ import { dialog, ipcMain } from 'electron'
 import type { BookRecord, FinishImportInput, ImportedFile } from '../shared/types'
 import { copyEpubIntoLibrary, libraryFilePath, removeBookFiles, writeCover } from './books/import'
 import { scanFolder } from './books/scan'
+import { allowSource, allowSources, assertAllowed, assertEpub } from './books/source-gate'
 import { openDatabase, type Db } from './db'
 import {
   deleteBook,
@@ -34,7 +35,9 @@ export function registerIpc(): void {
       filters: [{ name: 'EPUB 电子书', extensions: ['epub'] }],
       properties: ['openFile', 'multiSelections']
     })
-    return result.canceled ? [] : result.filePaths
+    if (result.canceled) return []
+    allowSources(result.filePaths)
+    return result.filePaths
   })
 
   ipcMain.handle('books:pickFolder', async (): Promise<string | null> => {
@@ -42,18 +45,28 @@ export function registerIpc(): void {
       title: '选择书库文件夹',
       properties: ['openDirectory']
     })
-    return result.canceled ? null : (result.filePaths[0] ?? null)
+    if (result.canceled) return null
+    const dir = result.filePaths[0] ?? null
+    if (dir) allowSource(dir)
+    return dir
   })
 
-  ipcMain.handle('books:scanFolder', (_e, dir: string): Promise<string[]> =>
-    scanFolder(dir, listSourcePaths(database()))
-  )
+  ipcMain.handle('books:scanFolder', async (_e, dir: string): Promise<string[]> => {
+    const resolved = assertAllowed(dir)
+    const found = await scanFolder(resolved, listSourcePaths(database()))
+    allowSources(found)
+    return found
+  })
 
   ipcMain.handle(
     'books:stageImport',
     async (_e, sourcePaths: string[]): Promise<ImportedFile[]> => {
       const out: ImportedFile[] = []
-      for (const p of sourcePaths) out.push(await copyEpubIntoLibrary(p))
+      for (const p of sourcePaths) {
+        const resolved = assertAllowed(p)
+        assertEpub(resolved)
+        out.push(await copyEpubIntoLibrary(resolved))
+      }
       return out
     }
   )
