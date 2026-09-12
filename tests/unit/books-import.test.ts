@@ -70,4 +70,14 @@ describe('导入文件', () => {
       removeBookFiles({ filePath: imported.filePath, coverPath: cover })
     ).resolves.toBeUndefined()
   })
+
+  it('没有封面时删除书文件不报错', async () => {
+    const src = join(workDir, 'b.epub')
+    writeFileSync(src, 'Y')
+    const imported = await copyEpubIntoLibrary(src)
+    await expect(
+      removeBookFiles({ filePath: imported.filePath, coverPath: null })
+    ).resolves.toBeUndefined()
+    expect(existsSync(imported.filePath)).toBe(false)
+  })
 })
