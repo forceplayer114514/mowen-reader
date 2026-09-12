@@ -11,8 +11,8 @@ const api = {
   finishImport: (input: FinishImportInput): Promise<BookRecord> =>
     ipcRenderer.invoke('books:finishImport', input),
   readBookFile: (id: string): Promise<ArrayBuffer> => ipcRenderer.invoke('books:readFile', id),
-  readStagedFile: (filePath: string): Promise<ArrayBuffer> =>
-    ipcRenderer.invoke('books:readStaged', filePath),
+  readStagedFile: (id: string): Promise<ArrayBuffer> =>
+    ipcRenderer.invoke('books:readStaged', id),
   deleteBook: (id: string): Promise<void> => ipcRenderer.invoke('books:delete', id),
   saveProgress: (id: string, cfi: string): Promise<void> =>
     ipcRenderer.invoke('books:saveProgress', id, cfi),

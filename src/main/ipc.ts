@@ -1,8 +1,8 @@
 import { readFile } from 'node:fs/promises'
-import { basename, resolve } from 'node:path'
+import { basename } from 'node:path'
 import { dialog, ipcMain } from 'electron'
 import type { BookRecord, FinishImportInput, ImportedFile } from '../shared/types'
-import { copyEpubIntoLibrary, removeBookFiles, writeCover } from './books/import'
+import { copyEpubIntoLibrary, libraryFilePath, removeBookFiles, writeCover } from './books/import'
 import { scanFolder } from './books/scan'
 import { openDatabase, type Db } from './db'
 import {
@@ -16,7 +16,7 @@ import {
   updateProgress
 } from './db/books'
 import { getSetting, setSetting } from './db/settings'
-import { booksDir, dbFile } from './paths'
+import { dbFile } from './paths'
 
 let db: Db | null = null
 
@@ -69,7 +69,7 @@ export function registerIpc(): void {
         title: input.title || basename(input.sourcePath, '.epub'),
         author: input.author,
         coverPath,
-        filePath: input.filePath,
+        filePath: libraryFilePath(input.id),
         sourcePath: input.sourcePath,
         addedAt: Date.now(),
         lastReadCfi: null,
@@ -87,13 +87,10 @@ export function registerIpc(): void {
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer
   })
 
-  // 刚复制进库、还没入库的文件靠这个读。路径必须落在书库目录内,
-  // 否则等于把任意文件读取权开放给了渲染层。
-  ipcMain.handle('books:readStaged', async (_e, filePath: string): Promise<ArrayBuffer> => {
-    const root = booksDir()
-    const full = resolve(filePath)
-    if (!full.startsWith(root)) throw new Error('路径不在书库目录内')
-    const buf = await readFile(full)
+  // 刚复制进库、还没入库的文件靠这个读。路径由 id 在主进程内推导,
+  // 渲染层给不出任意路径——libraryFilePath 本身就是边界。
+  ipcMain.handle('books:readStaged', async (_e, id: string): Promise<ArrayBuffer> => {
+    const buf = await readFile(libraryFilePath(id))
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer
   })
 

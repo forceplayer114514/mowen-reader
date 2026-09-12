@@ -17,7 +17,6 @@ export interface ImportedFile {
 
 export interface FinishImportInput {
   id: string
-  filePath: string
   sourcePath: string
   title: string
   author: string | null

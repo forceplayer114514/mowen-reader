@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
   copyEpubIntoLibrary,
+  libraryFilePath,
   removeBookFiles,
   writeCover
 } from '../../src/main/books/import'
@@ -79,5 +80,30 @@ describe('导入文件', () => {
       removeBookFiles({ filePath: imported.filePath, coverPath: null })
     ).resolves.toBeUndefined()
     expect(existsSync(imported.filePath)).toBe(false)
+  })
+})
+
+describe('libraryFilePath', () => {
+  it('合法 uuid 得到书库目录内的路径', () => {
+    const id = '3fa85f64-5717-4562-b3fc-2c963f66afa6'
+    const path = libraryFilePath(id)
+    expect(path).toBe(join(dataDir, 'books', `${id}.epub`))
+  })
+
+  it.each([
+    ['路径穿越', '../../../etc/passwd'],
+    ['绝对路径', '/etc/passwd'],
+    ['空字符串', ''],
+    ['单个双点', '..'],
+    ['形似但不是 uuid', 'abc']
+  ])('%s 会被拒绝:%s', (_label, bad) => {
+    expect(() => libraryFilePath(bad)).toThrow()
+  })
+
+  it('copyEpubIntoLibrary 返回的路径与 libraryFilePath(id) 一致', async () => {
+    const src = join(workDir, 'c.epub')
+    writeFileSync(src, 'Z')
+    const result = await copyEpubIntoLibrary(src)
+    expect(result.filePath).toBe(libraryFilePath(result.id))
   })
 })
