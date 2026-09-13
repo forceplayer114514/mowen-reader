@@ -1,3 +1,6 @@
+/** 服务端说明展示上限:超过这个长度大概率是灌水或者夹带了不该显示的内容,截断即可。 */
+const MAX_SERVER_REASON_LENGTH = 200
+
 /** 尽力从服务端响应体里挖出可读的原因,挖不到就返回空串。 */
 function serverReason(body: string): string {
   try {
@@ -9,9 +12,21 @@ function serverReason(body: string): string {
   }
 }
 
+/**
+ * 服务端的原始消息不可信:可能带换行、控制字符,甚至几 MB 长。
+ * 先把控制字符(含换行)压成空格防止破坏排版,再限制长度防止把界面撑爆。
+ */
+function sanitizeServerReason(reason: string): string {
+  // eslint-disable-next-line no-control-regex
+  const collapsed = reason.replace(/[\x00-\x1F\x7F]+/g, ' ').trim()
+  if (collapsed.length <= MAX_SERVER_REASON_LENGTH) return collapsed
+  return `${collapsed.slice(0, MAX_SERVER_REASON_LENGTH)}...`
+}
+
 function withReason(base: string, body: string): string {
   const reason = serverReason(body)
-  return reason ? `${base}(服务端说明:${reason})` : base
+  if (!reason) return base
+  return `${base}(服务端说明:${sanitizeServerReason(reason)})`
 }
 
 /**

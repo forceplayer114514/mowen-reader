@@ -37,6 +37,23 @@ describe('HTTP 错误分类', () => {
   it('没有单独归类的状态码也给出带状态码的中文说明', () => {
     expect(classifyHttpError(418, '')).toContain('418')
   })
+
+  it('服务端说明超长时会被截断,不会整段塞进提示里', () => {
+    const longMessage = 'a'.repeat(2 * 1024 * 1024) // 2MB
+    const body = JSON.stringify({ error: { message: longMessage } })
+    const msg = classifyHttpError(404, body)
+    expect(msg.length).toBeLessThan(1000)
+    expect(msg).toContain('...')
+    // 中文引导文案必须排在最前面,不会被服务端的灌水内容顶掉
+    expect(msg.indexOf('模型名或接口地址填错了')).toBe(0)
+  })
+
+  it('服务端说明里的换行和控制字符会被压成空格,不会破坏排版', () => {
+    const body = JSON.stringify({ error: { message: '第一行\n第二行\r\n第三行\t带制表符' } })
+    const msg = classifyHttpError(404, body)
+    expect(msg).not.toMatch(/[\r\n\t]/)
+    expect(msg).toContain('第一行 第二行 第三行 带制表符')
+  })
 })
 
 describe('网络错误分类', () => {
