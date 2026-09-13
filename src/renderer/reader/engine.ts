@@ -524,6 +524,12 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     },
 
     addHighlight(cfiRange: string, onClick: () => void): void {
+      // 先记账,再看画不画得出来。书还没渲染出来时(引擎刚建好、open() 还没跑完)
+      // 直接返回、连账都不记的话,上层的引用列表里已经躺着这一段,引擎这边却当它
+      // 从来没存在过:这条引用永远不会有对应的高亮,clearHighlights() 也数不到它,
+      // 换主题重画同样跳过它。记下来至少让两边对同一段范围的认知是一致的——
+      // 这份账本来就跟着当前这本书走,teardown() 会连它一起清掉,不会带到下一本书。
+      highlights.set(cfiRange, onClick)
       if (!rendition) return
       // 先删一次再加:epub.js 的 Annotations 用「范围+类型」当 key 存(annotations.js
       // 的 add()),同一段重复加会把记录覆盖掉,但页面上先画的那层 SVG 矩形还挂在
@@ -533,7 +539,6 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       // (iframe.js 的 highlight()),所以每次都给一个新的空对象,不要共用。
       // 第四个参数是 CSS 类名,给 undefined 就用库自己的默认值 epubjs-hl。
       rendition.annotations.highlight(cfiRange, {}, onClick, undefined, HIGHLIGHT_STYLES[theme])
-      highlights.set(cfiRange, onClick)
     },
 
     removeHighlight(cfiRange: string): void {
