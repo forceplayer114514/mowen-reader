@@ -189,6 +189,28 @@ describe('超限裁剪', () => {
     expect(joined).toContain('最近的问题')
   })
 
+  it('历史不是完美的一问一答交替时,按"轮"删而不是按位置删两条', () => {
+    // 历史形状是 [问A, 问B, 答B, 答旧](两个问题排在一起)。按位置删前两条
+    // 会把问A和问B一起删掉,还会让剩下的历史以 assistant 开头;
+    // 按"轮"删只删掉问A(它后面紧跟的问B不是 assistant,不用连带删),
+    // 问B和它的答都还在,且剩下的历史仍以 user 开头。
+    const history = [
+      { role: 'user' as const, content: '问题甲内容较长一些'.repeat(6) },
+      { role: 'user' as const, content: '问题乙内容较长一些'.repeat(6) },
+      { role: 'assistant' as const, content: '回答乙内容较长一些'.repeat(6) },
+      { role: 'assistant' as const, content: '回答旧内容较长一些'.repeat(6) }
+    ]
+    const r = buildContext(input({ history, limit: 300 }))
+    const roles = r.messages.map((m) => m.role)
+    expect(roles[1]).not.toBe('assistant')
+    expect(roles).toEqual(['system', 'user', 'assistant', 'assistant', 'user'])
+    const joined = r.messages.map((m) => m.content).join('')
+    expect(joined).not.toContain('问题甲')
+    expect(joined).toContain('问题乙')
+    expect(joined).toContain('回答乙')
+    expect(joined).toContain('回答旧')
+  })
+
   it('第三步把目录整个丢掉', () => {
     const r = buildContext(input({ toc: toc(200), limit: 100 }))
     expect(r.trimmed).toContain('toc-dropped')

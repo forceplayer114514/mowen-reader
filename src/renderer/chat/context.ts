@@ -40,6 +40,20 @@ function localToc(items: TocItem[], chapterHref: string): TocItem[] {
   return items.slice(Math.max(0, at - TOC_NEIGHBOURS), at + TOC_NEIGHBOURS + 1)
 }
 
+/**
+ * 丢掉最早的一轮问答:先丢最前面那条消息,再把紧跟着的 assistant 消息
+ * 一并丢掉(可能不止一条)。这样保证:①一问和它对应的答一起消失,不会
+ * 只删问题却把孤零零的答案留在最前面;②剩下的历史永远不会以 assistant
+ * 开头——有些接口会直接拒绝以 assistant 开头的历史。
+ */
+function dropOldestExchange(history: ChatMessage[]): ChatMessage[] {
+  let rest = history.slice(1)
+  while (rest.length > 0 && rest[0].role === 'assistant') {
+    rest = rest.slice(1)
+  }
+  return rest
+}
+
 function buildSystem(input: ContextInput, toc: TocItem[] | null, useEnhanced: boolean): string {
   const parts: string[] = [input.systemPrompt, '', `当前阅读的书:《${input.bookTitle}》`]
   if (input.author) parts.push(`作者:${input.author}`)
@@ -110,9 +124,9 @@ export function buildContext(input: ContextInput): ContextResult {
     }
   }
 
-  // ② 一问一答成对删除最早的一轮
+  // ② 删最早的一轮问答——一问和它对应的答一起删,不是简单删最前面两条
   while (history.length >= 2) {
-    history = history.slice(2)
+    history = dropOldestExchange(history)
     if (!trimmed.includes('drop-history')) trimmed.push('drop-history')
     messages = assemble()
     if (total(messages) <= input.limit) return { messages, trimmed }
