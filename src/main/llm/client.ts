@@ -17,6 +17,20 @@ function chatUrl(endpoint: string): string {
 }
 
 /**
+ * 服务端返回的错误文本可能把请求头(含密钥)原样回显,甚至回显别的凭证。
+ * 抛出之前一律过一遍这个函数:先把真实密钥的每一处出现都换掉,再把任何
+ * "Bearer 一串不含空白的字符"形状的片段也换掉,防止密钥以别的形式,或者
+ * 别的凭证,从服务端说明里露出去。
+ */
+function redactCredentials(message: string, apiKey: string): string {
+  let out = message
+  if (apiKey.length > 0) {
+    out = out.split(apiKey).join('***')
+  }
+  return out.replace(/Bearer\s+\S+/gi, 'Bearer ***')
+}
+
+/**
  * 向 OpenAI 兼容接口发起流式请求。
  *
  * 抛出的 Error 的 message 一律已经是可读中文——界面直接显示即可,不需要
@@ -50,7 +64,7 @@ export async function streamChat(options: StreamOptions): Promise<void> {
 
   if (!response.ok) {
     const body = await response.text().catch(() => '')
-    throw new Error(classifyHttpError(response.status, body))
+    throw new Error(redactCredentials(classifyHttpError(response.status, body), options.apiKey))
   }
 
   if (!response.body) {

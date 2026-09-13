@@ -71,6 +71,36 @@ describe('流式请求', () => {
     })
   })
 
+  it('代理把请求头回显进错误体时,密钥和 Bearer 前缀都不会露出去', async () => {
+    const echoed =
+      '{"error":{"message":"Blocked request with headers: Authorization=Bearer sk-supersecret-12345"}}'
+    const fetchImpl = async () => new Response(echoed, { status: 403 })
+    await streamChat(base({ apiKey: 'sk-supersecret-12345', fetchImpl: fetchImpl as unknown as typeof fetch })).catch(
+      (e: Error) => {
+        expect(e.message).not.toContain('sk-supersecret-12345')
+        expect(e.message).not.toContain('Bearer sk-')
+      }
+    )
+  })
+
+  it('代理回显的是另一个凭证(不是本次用的密钥)时也要被打码', async () => {
+    const echoed = '{"error":{"message":"upstream saw Bearer some-other-token-999"}}'
+    const fetchImpl = async () => new Response(echoed, { status: 403 })
+    await streamChat(base({ apiKey: 'sk-test', fetchImpl: fetchImpl as unknown as typeof fetch })).catch(
+      (e: Error) => {
+        expect(e.message).not.toContain('some-other-token-999')
+        expect(e.message).not.toContain('Bearer s')
+      }
+    )
+  })
+
+  it('正常的错误体不受打码逻辑影响,原样通过', async () => {
+    const fetchImpl = async () => new Response('{"error":{"message":"model not found"}}', { status: 404 })
+    await streamChat(base({ fetchImpl: fetchImpl as unknown as typeof fetch })).catch((e: Error) => {
+      expect(e.message).toContain('model not found')
+    })
+  })
+
   it('HTTP 错误被翻译成中文抛出', async () => {
     await expect(
       streamChat(
