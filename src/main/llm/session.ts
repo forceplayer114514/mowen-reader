@@ -16,10 +16,15 @@ export interface ChatSession {
  * 如果不分主子 frame 一律中止,正在进行的对话会在用户翻页的瞬间被误杀。
  * 只有主 frame 的导航(用户重新加载或跳转了整个应用页面)才代表"这个请求
  * 已经没有界面能再收到结果了"。
+ *
+ * 也正因为要挑主 frame,导航必须用 on 而不是 once:once 是"事件一触发就摘
+ * 监听器",摘不摘跟回调自己动不动手无关。用 once 的话,用户翻一次章节
+ * (子 frame 导航)就把监听器消耗掉了,之后再刷新页面就没人中止请求——
+ * 恰恰是这个绑定本来要解决的问题。多出来的监听器由 dispose 负责摘。
  */
 export interface LifecycleTarget {
   once(event: 'destroyed', listener: () => void): unknown
-  once(
+  on(
     event: 'did-start-navigation',
     listener: (event: unknown, url: string, isInPlace: boolean, isMainFrame: boolean) => void
   ): unknown
@@ -59,7 +64,8 @@ export function bindSessionLifecycle(target: LifecycleTarget, abort: () => void)
   }
 
   target.once('destroyed', onDestroyed)
-  target.once('did-start-navigation', onNavigate)
+  // 销毁只会发生一次,once 就够;导航会反复发生,必须 on(见上面的说明)
+  target.on('did-start-navigation', onNavigate)
 
   return (): void => {
     target.off('destroyed', onDestroyed)
