@@ -131,6 +131,56 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   }
 
   /**
+   * 解除当前挂着的"吞掉下一下 click"。见 swallowNextClick()。
+   * 同一时刻最多只挂一份,teardown()/destroy() 里也要能把它摘干净。
+   */
+  let disarmClickSwallow: (() => void) | null = null
+
+  /**
+   * 吞掉紧跟在一次"松手并消费了选区"之后补发的那一下 click。
+   *
+   * 为什么必须吞:真人拖完一段文字松开鼠标,浏览器紧接着会在松手那个点上再补一次
+   * click(真机上量到的序列就是 mousedown → mouseup → click,三者同一个位置)。
+   * 松手那一下已经把这段文字交了出去,上层随即在同一片文字上画好了高亮,于是补发
+   * 的这一下正落在这块**刚画出来的**高亮里面。marks-pane 在章节文档上挂着
+   * mouseup/mousedown/click/touchstart 的转发(node_modules/marks-pane/src/events.js
+   * 的 proxyMouse),按坐标把它转给对应的 SVG 矩形,而矩形上挂着的正是"点它就取消"
+   * 的回调(node_modules/epubjs/src/managers/views/iframe.js 的 highlight() 给
+   * h.element 挂的 click/touchstart)。结果是每一次普通的拖选都画出来又立刻被自己
+   * 抹掉:引用没了、高亮没了、选区也收走了,屏幕上什么都不剩。双击选词、三击选段
+   * 同理,它们的最后一步也是 mouseup + click。
+   *
+   * 为什么挂在章节文档的**捕获阶段**就够:marks-pane 那几个转发是
+   * `addEventListener(ev, ..., false)`,即挂在同一份章节文档的冒泡阶段。一个落在
+   * 正文元素上的 click,传播路径是 document 捕获 → 目标元素 → 冒泡回 document,
+   * 捕获阶段的 document 排在最前面,所以这里先跑到,stopImmediatePropagation()
+   * 之后整条路径都走不下去,marks-pane 的转发拿不到这一下,矩形上的回调也就不会
+   * 被调用。用 stopImmediatePropagation 而不是 stopPropagation,是为了连"万一某个
+   * 监听器和我们挂在同一个节点同一个阶段"的情况也一并挡掉,不去赌注册顺序。
+   *
+   * 为什么解除时机不用定时器:定时器上的毫秒数只是在赌浏览器多快补发这一下,机器
+   * 一卡就赌输,而赌输的后果是把用户真正想点的那一下吞掉。这里用事件本身定边界——
+   * 要么补发的这一下 click 真的来了(吞掉它,当场解除),要么用户已经开始下一次
+   * 交互(下一次按下一定排在下一次 click 前面,按下即解除)。两者谁先到都算数,
+   * 所以一次只会吞掉紧挨着的那一下,过一会儿真去点高亮照样点得掉。
+   */
+  function swallowNextClick(doc: Document): void {
+    disarmClickSwallow?.()
+    const disarm = (): void => {
+      doc.removeEventListener('click', onClick, true)
+      doc.removeEventListener('mousedown', disarm, true)
+      if (disarmClickSwallow === disarm) disarmClickSwallow = null
+    }
+    const onClick = (e: Event): void => {
+      disarm()
+      e.stopImmediatePropagation()
+    }
+    doc.addEventListener('click', onClick, true)
+    doc.addEventListener('mousedown', disarm, true)
+    disarmClickSwallow = disarm
+  }
+
+  /**
    * 把书内容里当前选中的那段文字交给订阅者,并把选区收走。
    *
    * 为什么不直接用 epub.js 的 selected 事件:那个事件是从**最后一次选区变化**起算
@@ -179,6 +229,10 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       }
 
       selection.removeAllRanges()
+      // 这段选区马上就会变成一块盖在同一片文字上的高亮,而松手之后浏览器还会在
+      // 松手那个点上补一次 click——正落在这块新高亮里。先把那一下挡下来,
+      // 否则这次划选画出来就被自己抹掉,见 swallowNextClick() 的注释。
+      swallowNextClick(contents.document)
       // 快照一份再逐个确认还在不在名单里,理由见 notify() 的注释。
       const round = [...selectionListeners]
       for (const cb of round) {
@@ -281,6 +335,11 @@ export function createEngine(container: HTMLElement): ReaderEngine {
    * onRelocated 订阅者应当继续收到新书的通知。
    */
   function teardown(): void {
+    // 挂在旧章节文档上的那个"吞掉下一下 click"要先摘掉:文档马上就跟着 rendition
+    // 一起没了,监听器本身会跟着消失,但 disarmClickSwallow 这个引用留在这里,
+    // 下一次划选时 swallowNextClick() 会先调它一次,对着一份已经销毁的文档做事。
+    disarmClickSwallow?.()
+    disarmClickSwallow = null
     rendition?.off('keydown', handleContentKeydown)
     rendition?.off('mouseup', handleMouseUp)
     // rendition.q 里可能还排着一个我们自己调用过、还没跑到的 display() 任务(见

@@ -391,6 +391,31 @@ test('一次拖选只留下一段引用和一块高亮——中途停住也不�
   await expect(chapterHighlights(h)).toHaveCount(1)
 })
 
+test('松手之后浏览器补发的那一下 click 不会把刚画出来的高亮连同引用一起抹掉', async () => {
+  const h = await launch()
+  await importFixture(h)
+  await enableSelectionStore(h)
+  await h.page.getByTestId('book-card').first().click()
+  await h.page.getByTestId('reader-page').waitFor()
+  await waitForLocationsReady(h)
+
+  // slowDragSelectInChapter 的最后一步就是在松手那个点上补发一次 click ——
+  // 真人拖选之后浏览器一定会补这一下。
+  await slowDragSelectInChapter(h)
+
+  expect(
+    await chapterQuotes(h),
+    '松手那一刻已经把这段文字变成引用、在同一片文字上画好了高亮,紧跟着补发的那一下 click 正落在这块新高亮里;marks-pane 按坐标把它转给高亮矩形,矩形上挂的正是「点它就取消」的回调,于是每一次普通的拖选都是画出来又立刻被自己抹掉'
+  ).toHaveLength(1)
+  await expect(chapterHighlights(h)).toHaveCount(1)
+
+  // 吞掉的必须只有紧跟着的那一下。过一会儿真去点这块高亮,它还得取消得掉——
+  // 否则"不被自己抹掉"就变成了"永远点不掉"。
+  await clickChapterHighlight(h)
+  await expect(chapterHighlights(h)).toHaveCount(0)
+  expect(await chapterQuotes(h)).toHaveLength(0)
+})
+
 test('拖选一句话会画出高亮,点一下这块高亮就取消掉', async () => {
   const h = await launch()
   await importFixture(h)
