@@ -72,20 +72,26 @@ type Listener = (...args: unknown[]) => void
  * 这个区别正是下面那条回归测试要抓的东西——如果这里把 once 实现成"加进去
  * 就不再摘",子 frame 导航吃掉监听器的那个 bug 在假对象上根本不会重现。
  *
- * 导航事件有两种形状,fire 的第三个参数决定用哪一种:
+ * 导航事件有两种形状,fire 的第四个参数决定用哪一种:
  * - 'details'(默认,也是 Electron 现在支持的形状):标志在第一个 details
  *   对象上,后面那几个位置参数已经被标记为废弃,这里直接传 undefined,
  *   模拟将来某个版本把它们彻底去掉的样子。
- * - 'positional'(旧形状):details 对象上没有这个标志,只有第四个位置参数
+ * - 'positional'(旧形状):details 对象上没有这些标志,只有位置参数
  *   带着它。
- * 两种形状都要能认出主 frame,否则哪天位置参数消失了,主 frame 的刷新就再也
- * 中止不了请求,而且不会有编译错误、也不会有测试失败。
+ * 两种形状都要能认出主 frame 和同文档导航,否则哪天位置参数消失了,主 frame
+ * 的刷新就再也中止不了请求,而且不会有编译错误、也不会有测试失败。
+ * isInPlace 是 isSameDocument 在位置参数上的旧名字,含义相同。
  */
 type NavigationShape = 'details' | 'positional'
 
 function fakeWebContents(): LifecycleTarget & {
   fire(event: 'destroyed'): void
-  fire(event: 'did-start-navigation', isMainFrame: boolean, shape?: NavigationShape): void
+  fire(
+    event: 'did-start-navigation',
+    isMainFrame: boolean,
+    isSameDocument?: boolean,
+    shape?: NavigationShape
+  ): void
   listenerCount(event: string): number
 } {
   const listeners = new Map<string, Set<Listener>>()
@@ -116,17 +122,30 @@ function fakeWebContents(): LifecycleTarget & {
       const wrapper = onceWrappers.get(listener)
       if (wrapper) set.delete(wrapper)
     },
-    fire: (event: string, isMainFrame?: boolean, shape: NavigationShape = 'details'): void => {
-      const details = shape === 'details' ? { isMainFrame } : {}
-      const positional = shape === 'details' ? undefined : isMainFrame
+    fire: (
+      event: string,
+      isMainFrame?: boolean,
+      isSameDocument = false,
+      shape: NavigationShape = 'details'
+    ): void => {
+      const details = shape === 'details' ? { isMainFrame, isSameDocument } : {}
+      // 'details' 形状下位置参数一律传 undefined,模拟将来某个版本把它们
+      // 彻底去掉的样子——读不到 details 上的标志就会露馅。
+      const positionalMainFrame = shape === 'details' ? undefined : isMainFrame
+      const positionalSameDocument = shape === 'details' ? undefined : isSameDocument
       for (const listener of [...get(event)]) {
-        listener(details, 'https://example.invalid', false, positional)
+        listener(details, 'https://example.invalid', positionalSameDocument, positionalMainFrame)
       }
     },
     listenerCount: (event: string): number => get(event).size
   } as LifecycleTarget & {
     fire(event: 'destroyed'): void
-    fire(event: 'did-start-navigation', isMainFrame: boolean, shape?: NavigationShape): void
+    fire(
+      event: 'did-start-navigation',
+      isMainFrame: boolean,
+      isSameDocument?: boolean,
+      shape?: NavigationShape
+    ): void
     listenerCount(event: string): number
   }
 }
@@ -215,11 +234,40 @@ describe('请求生命周期绑定到 WebContents', () => {
     expect(target.listenerCount('destroyed')).toBe(0)
   })
 
+  it('同文档导航(# 片段跳转、改写历史、同页前进后退)不中止正在进行的请求', () => {
+    // 这三种都会带着"主 frame"触发导航事件,但页面根本没换过:React 还在,
+    // 请求 id 还攥在渲染层手里。当成"页面已经走了"会两头落空——请求被中止,
+    // 而 ipc.ts 里的封口开关同时按死,那条回复既不继续也永远等不到结束信号。
+    const target = fakeWebContents()
+    const abort = vi.fn()
+    bindSessionLifecycle(target, abort)
+    target.fire('did-start-navigation', true, true)
+    expect(abort).not.toHaveBeenCalled()
+  })
+
+  it('同文档导航之后真的刷新了,照样中止', () => {
+    const target = fakeWebContents()
+    const abort = vi.fn()
+    bindSessionLifecycle(target, abort)
+    target.fire('did-start-navigation', true, true)
+    expect(abort).not.toHaveBeenCalled()
+    target.fire('did-start-navigation', true, false)
+    expect(abort).toHaveBeenCalledTimes(1)
+  })
+
+  it('旧形状:同文档标志只带在第三个位置参数(isInPlace)上时,同样不中止', () => {
+    const target = fakeWebContents()
+    const abort = vi.fn()
+    bindSessionLifecycle(target, abort)
+    target.fire('did-start-navigation', true, true, 'positional')
+    expect(abort).not.toHaveBeenCalled()
+  })
+
   it('旧形状:标志只带在第四个位置参数上时,主 frame 导航照样中止', () => {
     const target = fakeWebContents()
     const abort = vi.fn()
     bindSessionLifecycle(target, abort)
-    target.fire('did-start-navigation', true, 'positional')
+    target.fire('did-start-navigation', true, false, 'positional')
     expect(abort).toHaveBeenCalledTimes(1)
   })
 
@@ -227,7 +275,7 @@ describe('请求生命周期绑定到 WebContents', () => {
     const target = fakeWebContents()
     const abort = vi.fn()
     bindSessionLifecycle(target, abort)
-    target.fire('did-start-navigation', false, 'positional')
+    target.fire('did-start-navigation', false, false, 'positional')
     expect(abort).not.toHaveBeenCalled()
   })
 
@@ -235,7 +283,7 @@ describe('请求生命周期绑定到 WebContents', () => {
     const target = fakeWebContents()
     const abort = vi.fn()
     bindSessionLifecycle(target, abort)
-    target.fire('did-start-navigation', true, 'details')
+    target.fire('did-start-navigation', true, false, 'details')
     expect(abort).toHaveBeenCalledTimes(1)
   })
 
@@ -243,7 +291,7 @@ describe('请求生命周期绑定到 WebContents', () => {
     const target = fakeWebContents()
     const abort = vi.fn()
     bindSessionLifecycle(target, abort)
-    target.fire('did-start-navigation', false, 'details')
+    target.fire('did-start-navigation', false, false, 'details')
     expect(abort).not.toHaveBeenCalled()
   })
 })

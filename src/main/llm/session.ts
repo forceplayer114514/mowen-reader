@@ -26,6 +26,13 @@ export interface ChatSession {
  * 监听器",摘不摘跟回调自己动不动手无关。用 once 的话,用户翻一次章节
  * (子 frame 导航)就把监听器消耗掉了,之后再刷新页面就没人中止请求——
  * 恰恰是这个绑定本来要解决的问题。多出来的监听器由 dispose 负责摘。
+ *
+ * 光看"是不是主 frame"还不够,还要排掉同文档导航:地址栏里的 # 片段跳转、
+ * 脚本改写历史记录、同一个页面内的前进后退,这三种都会带着"主 frame"触发
+ * 导航事件,但页面从头到尾没换过,React 还在,请求 id 还攥在渲染层手里。
+ * 把它们当成"页面已经走了"会两头落空:请求被中止,而 send 那边的封口开关
+ * 又已经按死,那条正在流的回复既不会继续、也永远等不到结束信号,气泡会
+ * 停在"正在输入"上,连点停止都没用。
  */
 /**
  * 'did-start-navigation' 第一个参数(details)上真正被支持的那一项。
@@ -35,6 +42,7 @@ export interface ChatSession {
  */
 export interface NavigationDetails {
   isMainFrame?: boolean
+  isSameDocument?: boolean
 }
 
 type NavigationListener = (
@@ -73,10 +81,14 @@ export function bindSessionLifecycle(target: LifecycleTarget, abort: () => void)
   const onNavigate = (
     details: NavigationDetails,
     _url?: string,
-    _isInPlace?: boolean,
+    isInPlace?: boolean,
     isMainFrame?: boolean
   ): void => {
-    if (details?.isMainFrame ?? isMainFrame) abort()
+    // 两个标志都优先读 details 上受支持的那一项,读不到才退回废弃的位置参数。
+    // isInPlace 是 isSameDocument 的旧名字,含义相同。
+    const mainFrame = details?.isMainFrame ?? isMainFrame
+    const sameDocument = details?.isSameDocument ?? isInPlace ?? false
+    if (mainFrame && !sameDocument) abort()
   }
 
   target.once('destroyed', onDestroyed)
