@@ -2,7 +2,7 @@ import { readFile, rm } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { dialog, ipcMain } from 'electron'
 import type { BookRecord, FinishImportInput, ImportedFile } from '../shared/types'
-import { coverPath, discardStagedFile, libraryFilePath, removeBookFiles, writeCover } from './books/import'
+import { discardStagedFile, libraryFilePath, removeBookFiles, writeCover } from './books/import'
 import { scanFolder } from './books/scan'
 import { allowSource, allowSources, assertAllowed, assertEpub } from './books/source-gate'
 import { stageMany } from './books/stage'
@@ -85,8 +85,10 @@ export function registerIpc(): void {
   ipcMain.handle(
     'books:finishImport',
     async (_e, input: FinishImportInput): Promise<BookRecord> => {
+      // coverBytes 走 ArrayBuffer 而不是 number[](见 shared/types.ts 的注释),
+      // 这里用 Uint8Array 视图直接包一层,不需要逐元素转换。
       const coverPathResult = input.coverBytes
-        ? await writeCover(input.id, Uint8Array.from(input.coverBytes))
+        ? await writeCover(input.id, new Uint8Array(input.coverBytes))
         : null
       const record: BookRecord = {
         id: input.id,
@@ -102,11 +104,14 @@ export function registerIpc(): void {
       try {
         insertBook(database(), record)
       } catch (error) {
-        // 如果 insertBook 失败,删掉已写入的封面,避免孤儿文件
-        // 保留原错误,不掩盖它,也不让删除失败遮挡原错误
+        // 如果 insertBook 失败,删掉已写入的封面,避免孤儿文件。直接用
+        // writeCover() 已经返回的真实路径删除,不能重新用 coverPath(input.id)
+        // 拼一份默认扩展名的路径去猜——真实扩展名是按封面字节的魔数推导出来的,
+        // 猜错了会删不掉刚写入的那份,留下孤儿文件(两处必须用同一个路径来源)。
+        // 保留原错误,不掩盖它,也不让删除失败遮挡原错误。
         if (coverPathResult) {
           try {
-            await rm(coverPath(input.id), { force: true })
+            await rm(coverPathResult, { force: true })
           } catch {
             // 删除封面失败不重新抛错,已有的 insertBook 错误更重要
           }

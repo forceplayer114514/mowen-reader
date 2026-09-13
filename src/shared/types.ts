@@ -20,5 +20,7 @@ export interface FinishImportInput {
   sourcePath: string
   title: string
   author: string | null
-  coverBytes: number[] | null
+  // 走 ArrayBuffer 而不是 number[]:后者会把一张几百 KB 的封面拆成几十万个
+  // JavaScript 数组元素,序列化和跨进程传输的开销随之放大好几倍。
+  coverBytes: ArrayBuffer | null
 }

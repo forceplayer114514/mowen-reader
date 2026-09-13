@@ -102,6 +102,19 @@ test('真实排版样本:目录链接带 ../ 前缀,页脚仍能显示章节名�
   })
 })
 
+test('真实排版样本:书架上渲染的是封面图,不是标题文字兜底', async () => {
+  const h = await launch()
+  await importRealisticFixture(h)
+
+  // 简单样本没有封面,书架用书名文字兜底(见 LibraryView.tsx 的注释),两处文字
+  // 相同是有意的设计。这本样本内嵌了封面图,提取 -> 经 IPC 传输 -> 写文件 ->
+  // 读回来 -> 渲染,整条链路第一次真正跑起来——之前没有任何样本带封面,这条
+  // 链路只有中间“写文件”那一步有单元测试覆盖过。
+  const cover = h.page.locator('.book-card__cover').first()
+  await expect(cover.locator('img')).toBeVisible({ timeout: 15_000 })
+  await expect(cover).not.toHaveText('真实排版测试书')
+})
+
 test('关掉应用重开,回到上次读到的位置', async () => {
   const first = await launch()
   await importFixture(first)

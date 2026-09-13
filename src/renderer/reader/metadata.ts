@@ -1,10 +1,5 @@
 import ePub from 'epubjs'
 
-async function blobToBytes(blob: Blob): Promise<number[]> {
-  const buf = await blob.arrayBuffer()
-  return Array.from(new Uint8Array(buf))
-}
-
 /**
  * 在渲染进程里解析 EPUB 元数据。
  * 放这里而不是主进程,是因为 epub.js 依赖浏览器的 XML 解析,
@@ -21,18 +16,18 @@ async function blobToBytes(blob: Blob): Promise<number[]> {
 export async function extractMetadata(data: ArrayBuffer): Promise<{
   title: string
   author: string | null
-  coverBytes: number[] | null
+  coverBytes: ArrayBuffer | null
 }> {
   const book = ePub(data)
   try {
     await book.ready
     const meta = await book.loaded.metadata
-    let coverBytes: number[] | null = null
+    let coverBytes: ArrayBuffer | null = null
     try {
       const url = await book.coverUrl()
       if (url) {
         const blob = await fetch(url).then((r) => r.blob())
-        coverBytes = await blobToBytes(blob)
+        coverBytes = await blob.arrayBuffer()
       }
     } catch {
       coverBytes = null
