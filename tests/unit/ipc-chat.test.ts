@@ -4,7 +4,9 @@ import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 // ipc.ts 里的数据库句柄挂在模块作用域上、第一次用到时才打开,整个测试文件
-// 共用同一份;所以数据目录必须在 import 之前就定下来,而且之后不再更换。
+// 共用同一份。import 会被提升到这行赋值之前执行,这里不需要"先于 import"——
+// 数据目录是真正用到时才解析的,赶在第一次调用 handler 之前定下来就够了,
+// 定下来之后不再更换。
 process.env.READER_USER_DATA = mkdtempSync(join(tmpdir(), 'reader-ipc-'))
 
 /**
@@ -221,6 +223,63 @@ describe('页面刷新之后不再往它发对话事件', () => {
     await flush()
 
     expect(sender.sent).toEqual([])
+  })
+
+  it('用户自己点停止时,chat:done 照样送得出去', async () => {
+    // 封口开关只该在生命周期中止(页面真的走了)时按死。用户点停止走的是
+    // chat:abort,页面还在等这条收尾——把它一起封掉的话,气泡会永远停在
+    // "正在输入"上。
+    call('secrets:setApiKey', null, 'sk-真的密钥')
+    let release = (): void => {}
+    mocks.streamChat.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve
+        })
+    )
+
+    const sender = fakeSender()
+    const id = await call('chat:start', sender, { messages: [] })
+    await flush()
+
+    call('chat:abort', null, id)
+    release()
+    await flush()
+    await flush()
+
+    expect(sender.sent.map((s) => s.channel)).toEqual(['chat:done'])
+    expect(sender.sent[0].args[1]).toEqual({ status: 'stopped' })
+  })
+
+  it('同文档导航(# 片段跳转之类)不中止请求,也不封口', async () => {
+    // 页面根本没换过,React 还在,请求 id 还攥在渲染层手里。当成"页面已经
+    // 走了"会两头落空:请求被中止,而收尾又被封掉,界面永远等不到结果。
+    call('secrets:setApiKey', null, 'sk-真的密钥')
+    let release = (): void => {}
+    mocks.streamChat.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve
+        })
+    )
+
+    const sender = fakeSender()
+    await call('chat:start', sender, { messages: [] })
+    await flush()
+
+    sender.fire(
+      'did-start-navigation',
+      { isMainFrame: true, isSameDocument: true },
+      'app://index#settings',
+      true
+    )
+
+    release()
+    await flush()
+    await flush()
+
+    expect(sender.sent.map((s) => s.channel)).toEqual(['chat:done'])
+    expect(sender.sent[0].args[1]).toEqual({ status: 'finished' })
   })
 
   it('页面没刷新时 chat:done 照常送达', async () => {
