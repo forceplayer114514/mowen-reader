@@ -55,3 +55,22 @@ export interface MessageRecord {
 export interface ConversationWithCount extends ConversationRecord {
   messageCount: number
 }
+
+export interface CreateConversationInput {
+  bookId: string
+  startCfi: string
+  endCfi: string
+  chapterLabel: string | null
+  excerpt: string
+}
+
+export interface AppendMessageInput {
+  conversationId: string
+  role: 'user' | 'assistant'
+  content: string
+  quotes: QuoteRecord[]
+}
+
+export interface StartChatInput {
+  messages: { role: string; content: string }[]
+}

@@ -1,7 +1,17 @@
+import { randomUUID } from 'node:crypto'
 import { readFile, rm } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { dialog, ipcMain } from 'electron'
-import type { BookRecord, FinishImportInput, ImportedFile } from '../shared/types'
+import type {
+  AppendMessageInput,
+  BookRecord,
+  ConversationRecord,
+  CreateConversationInput,
+  FinishImportInput,
+  ImportedFile,
+  MessageRecord,
+  StartChatInput
+} from '../shared/types'
 import { discardStagedFile, libraryFilePath, removeBookFiles, writeCover } from './books/import'
 import { scanFolder } from './books/scan'
 import { allowSource, allowSources, assertAllowed, assertEpub } from './books/source-gate'
@@ -17,14 +27,34 @@ import {
   setLocations,
   updateProgress
 } from './db/books'
+import {
+  deleteConversations,
+  insertConversation,
+  insertMessage,
+  listConversations,
+  listMessages,
+  updateConversationMerge
+} from './db/conversations'
 import { getSetting, setSetting } from './db/settings'
+import { streamChat } from './llm/client'
+import { createSessionRegistry } from './llm/session'
 import { dbFile } from './paths'
+import { clearApiKey, getApiKey, hasApiKey, setApiKey } from './secrets'
 
 let db: Db | null = null
 
 function database(): Db {
   if (!db) db = openDatabase(dbFile())
   return db
+}
+
+// 挂在模块作用域而不是 registerIpc() 内部,好让 index.ts 能在应用真正退出前
+// 拿到同一份登记表去中止所有还在跑的请求——见下面的 abortAllChats()。
+const sessions = createSessionRegistry()
+
+/** 应用即将退出时调用:中止所有还在跑的模型请求。见 src/main/index.ts 的 before-quit。 */
+export function abortAllChats(): void {
+  sessions.abortAll()
 }
 
 export function registerIpc(): void {
@@ -178,6 +208,95 @@ export function registerIpc(): void {
 
   ipcMain.handle('settings:set', (_e, key: string, value: string): void => {
     setSetting(database(), key, value)
+  })
+
+  ipcMain.handle('chat:listConversations', (_e, bookId: string) =>
+    listConversations(database(), bookId)
+  )
+
+  ipcMain.handle(
+    'chat:createConversation',
+    (_e, input: CreateConversationInput): ConversationRecord => {
+      // id 由主进程生成,不采信渲染层
+      const record: ConversationRecord = {
+        id: randomUUID(),
+        bookId: input.bookId,
+        startCfi: input.startCfi,
+        endCfi: input.endCfi,
+        mergedEndCfi: null,
+        chapterLabel: input.chapterLabel,
+        excerpt: input.excerpt.slice(0, 20),
+        createdAt: Date.now()
+      }
+      insertConversation(database(), record)
+      return record
+    }
+  )
+
+  ipcMain.handle('chat:setConversationMerge', (_e, id: string, mergedEndCfi: string | null) => {
+    updateConversationMerge(database(), id, mergedEndCfi)
+  })
+
+  ipcMain.handle('chat:deleteConversations', (_e, ids: string[]) => {
+    deleteConversations(database(), ids)
+  })
+
+  ipcMain.handle('chat:listMessages', (_e, conversationId: string) =>
+    listMessages(database(), conversationId)
+  )
+
+  ipcMain.handle('chat:appendMessage', (_e, input: AppendMessageInput): MessageRecord => {
+    const record: MessageRecord = {
+      id: randomUUID(),
+      conversationId: input.conversationId,
+      role: input.role,
+      content: input.content,
+      quotes: input.quotes,
+      createdAt: Date.now()
+    }
+    insertMessage(database(), record)
+    return record
+  })
+
+  // 只回答有没有设过。任何返回密钥内容的通道都是违规的。
+  ipcMain.handle('secrets:hasApiKey', () => hasApiKey())
+  ipcMain.handle('secrets:setApiKey', (_e, key: string) => setApiKey(key))
+  ipcMain.handle('secrets:clearApiKey', () => clearApiKey())
+
+  ipcMain.handle('chat:start', async (event, input: StartChatInput): Promise<string> => {
+    const db = database()
+    const endpoint = getSetting(db, 'llmEndpoint') ?? ''
+    const model = getSetting(db, 'llmModel') ?? ''
+    const apiKey = getApiKey()
+
+    if (!endpoint || !model) throw new Error('还没有配置接口地址和模型名,请先到设置里填写')
+    if (!apiKey) throw new Error('还没有填写 API 密钥,请先到设置里填写')
+
+    const session = sessions.start()
+    const send = (channel: string, ...args: unknown[]): void => {
+      if (!event.sender.isDestroyed()) event.sender.send(channel, ...args)
+    }
+
+    // 立刻把 id 还给渲染层,流式内容随后通过事件推过去
+    void streamChat({
+      endpoint,
+      model,
+      apiKey,
+      messages: input.messages,
+      signal: session.signal,
+      onChunk: (text) => send('chat:chunk', session.id, text)
+    })
+      .then(() => send('chat:done', session.id, null))
+      .catch((err: unknown) => {
+        send('chat:done', session.id, err instanceof Error ? err.message : '请求失败')
+      })
+      .finally(() => sessions.finish(session.id))
+
+    return session.id
+  })
+
+  ipcMain.handle('chat:abort', (_e, requestId: string) => {
+    sessions.abort(requestId)
   })
 
   // 仅端到端测试使用:绕开系统文件选择框直接传入路径。

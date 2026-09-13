@@ -1,5 +1,15 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import type { BookRecord, FinishImportInput, ImportedFile } from '../shared/types'
+import type {
+  AppendMessageInput,
+  BookRecord,
+  ConversationRecord,
+  ConversationWithCount,
+  CreateConversationInput,
+  FinishImportInput,
+  ImportedFile,
+  MessageRecord,
+  StartChatInput
+} from '../shared/types'
 
 const api = {
   listBooks: (): Promise<BookRecord[]> => ipcRenderer.invoke('books:list'),
@@ -35,7 +45,41 @@ const api = {
     ipcRenderer.invoke('settings:set', key, value),
   // 仅端到端测试使用:主进程只在 READER_E2E=1 时注册这个通道,其余环境下调用会被拒绝。
   testImportPaths: (paths: string[]): Promise<string[]> =>
-    ipcRenderer.invoke('test:importPaths', paths)
+    ipcRenderer.invoke('test:importPaths', paths),
+
+  listConversations: (bookId: string): Promise<ConversationWithCount[]> =>
+    ipcRenderer.invoke('chat:listConversations', bookId),
+  createConversation: (input: CreateConversationInput): Promise<ConversationRecord> =>
+    ipcRenderer.invoke('chat:createConversation', input),
+  setConversationMerge: (id: string, mergedEndCfi: string | null): Promise<void> =>
+    ipcRenderer.invoke('chat:setConversationMerge', id, mergedEndCfi),
+  deleteConversations: (ids: string[]): Promise<void> =>
+    ipcRenderer.invoke('chat:deleteConversations', ids),
+  listMessages: (conversationId: string): Promise<MessageRecord[]> =>
+    ipcRenderer.invoke('chat:listMessages', conversationId),
+  appendMessage: (input: AppendMessageInput): Promise<MessageRecord> =>
+    ipcRenderer.invoke('chat:appendMessage', input),
+
+  // hasApiKey 只回答有没有设过,不会、也不能返回密钥内容——密钥只在主进程
+  // 的 secrets 模块里存在,没有任何通道把它送出主进程。
+  hasApiKey: (): Promise<boolean> => ipcRenderer.invoke('secrets:hasApiKey'),
+  setApiKey: (key: string): Promise<void> => ipcRenderer.invoke('secrets:setApiKey', key),
+  clearApiKey: (): Promise<void> => ipcRenderer.invoke('secrets:clearApiKey'),
+
+  startChat: (input: StartChatInput): Promise<string> => ipcRenderer.invoke('chat:start', input),
+  abortChat: (requestId: string): Promise<void> => ipcRenderer.invoke('chat:abort', requestId),
+  // 事件订阅返回取消函数,不把 ipcRenderer 的原始 event 对象透给渲染层。
+  onChatChunk: (cb: (requestId: string, text: string) => void): (() => void) => {
+    const handler = (_e: unknown, requestId: string, text: string): void => cb(requestId, text)
+    ipcRenderer.on('chat:chunk', handler)
+    return () => ipcRenderer.off('chat:chunk', handler)
+  },
+  onChatDone: (cb: (requestId: string, error: string | null) => void): (() => void) => {
+    const handler = (_e: unknown, requestId: string, error: string | null): void =>
+      cb(requestId, error)
+    ipcRenderer.on('chat:done', handler)
+    return () => ipcRenderer.off('chat:done', handler)
+  }
 }
 
 contextBridge.exposeInMainWorld('api', api)
