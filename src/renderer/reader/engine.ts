@@ -14,6 +14,18 @@ const THEMES: Record<ThemeName, Record<string, Record<string, string>>> = {
   }
 }
 
+/**
+ * 划选高亮的配色。epub.js 的高亮不是给文字加背景色,而是用 marks-pane 在正文上面
+ * 盖一层 SVG 矩形(见 node_modules/epubjs/src/managers/views/iframe.js 的 highlight(),
+ * 它把这里给的键值原样合并进矩形的属性),所以写的是 fill 而不是 background。
+ * 两套主题必须分开配:浅色主题用正片叠底,让底下的黑字照样透出来;深色主题不能沿用,
+ * 正片叠底只会越叠越黑,一块暗色盖在暗背景上等于没画,所以换成滤色往亮里叠。
+ */
+const HIGHLIGHT_STYLES: Record<ThemeName, Record<string, string>> = {
+  light: { fill: '#f2c14e', 'fill-opacity': '0.45', 'mix-blend-mode': 'multiply' },
+  dark: { fill: '#7aa2f7', 'fill-opacity': '0.38', 'mix-blend-mode': 'screen' }
+}
+
 /** 位置索引的切分粒度。数字越小页数越多、生成越慢。1000 字符约等于一屏中文。 */
 const LOCATION_CHUNK = 1000
 
@@ -38,6 +50,16 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   let spineHrefs: string[] = []
   let listeners: (() => void)[] = []
   let keyListeners: ((key: string) => void)[] = []
+  let selectionListeners: ((cfiRange: string, text: string) => void)[] = []
+  // 当前这本书上加过的高亮:范围 -> 点击它时要回调的函数。自己记一份,是因为
+  // clearHighlights() 和换主题重画都要逐个范围操作,而 epub.js 的 Annotations
+  // 只把它们塞在 _annotations 这类私有字段里(见 node_modules/epubjs/src/annotations.js),
+  // 去翻它的内部结构等于把自己钉死在某个版本的实现细节上。
+  // 记的是回调而不只是范围字符串:换主题时要按新配色把同一段重新画一遍,
+  // 重画就得把原来的点击回调原样再传进去,否则重画完的高亮点了没反应。
+  const highlights = new Map<string, () => void>()
+  // 当前主题。加高亮时要按它取配色,所以不能只交给 rendition.themes 自己记。
+  let theme: ThemeName = 'light'
   let locationsReady = false
   // 每次 open()/destroy() 自增一次,给这次调用发出的所有异步延续盖一个“批次号”。
   // 延续恢复执行时先比对批次号,号不一样说明这次 open 已经被下一次 open 或 destroy 取代,
@@ -89,6 +111,30 @@ export function createEngine(container: HTMLElement): ReaderEngine {
 
   function notifyKey(key: string): void {
     for (const cb of keyListeners) cb(key)
+  }
+
+  /**
+   * 处理书内容里的一次拖选。
+   *
+   * epub.js 给 selected 事件带的第一个参数是这次选区的范围 CFI,第二个参数是选区所在
+   * 的那份文档对应的 Contents(见 node_modules/epubjs/src/rendition.js 的
+   * triggerSelectedEvent),选中的文字要自己从那份文档的窗口选区里取。
+   *
+   * 取完文字立刻把选区清掉,有两个原因:一是原生的蓝色选中块会盖在随后加上的自定义
+   * 高亮上面,两层颜色叠在一起看不出哪句是已经选进引用的;二是选区留着的话,用户下一
+   * 次点击页面别处又会触发一轮 selectionchange。清空本身也会触发 selectionchange,但
+   * epub.js 那边只在选区非折叠时才往外发事件(见 contents.js 的 triggerSelectedEvent),
+   * 空选区不会再绕回这里,不存在自己喂自己的循环。
+   *
+   * 只选中空白(比如拖过了段落之间的空隙)不往外通知——上层的引用列表也会再挡一道,
+   * 但没必要让一次什么都没选中的拖动走到那么远。
+   */
+  function handleSelected(cfiRange: string, contents: Contents): void {
+    const selection = contents.window.getSelection()
+    const text = selection?.toString() ?? ''
+    selection?.removeAllRanges()
+    if (text.trim().length === 0) return
+    for (const cb of selectionListeners) cb(cfiRange, text)
   }
 
   /**
@@ -144,6 +190,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   function destroyStale(staleBook: Book, staleRendition: Rendition): void {
     staleRendition.q.stop()
     staleRendition.off('keydown', handleContentKeydown)
+    staleRendition.off('selected', handleSelected)
     try {
       staleRendition.destroy()
     } catch {
@@ -164,6 +211,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
    */
   function teardown(): void {
     rendition?.off('keydown', handleContentKeydown)
+    rendition?.off('selected', handleSelected)
     // rendition.q 里可能还排着一个我们自己调用过、还没跑到的 display() 任务(见
     // ReaderView.boot() 里 `await engine.display(...)`):它是 epub.js 内部靠
     // requestAnimationFrame 驱动的队列,当前这一帧不一定跑得到它。如果不在这里
@@ -202,6 +250,10 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     book = null
     toc = []
     spineHrefs = []
+    // 高亮跟着 rendition 一起没了,这里只需要把自己记的那份账清掉。留着的话,
+    // 下一本书刚打开就会以为页面上已经有高亮,clearHighlights() 会对着新书里
+    // 根本不存在的范围做删除。
+    highlights.clear()
     locationsReady = false
   }
 
@@ -221,6 +273,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       nextRendition.themes.register('light', THEMES.light)
       nextRendition.themes.register('dark', THEMES.dark)
       nextRendition.themes.select(opts.theme)
+      theme = opts.theme
       nextRendition.themes.fontSize(`${opts.fontSize}px`)
 
       await nextBook.ready
@@ -286,6 +339,10 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       // 见上面 handleContentKeydown 的注释:这一行订阅之后,书内容 iframe 里发生的
       // keydown 会被 epub.js 自己转发到这里,不需要我们逐个文档去挂监听器。
       nextRendition.on('keydown', handleContentKeydown)
+      // 同样是 epub.js 自己从每份章节文档上收上来再转发的(见 handleSelected 的注释),
+      // 所以和 keydown 一样只在这里订阅一次。注意这一行在两次批次号检查之后,
+      // 被取代的那次 open() 走不到这里,不会给一个马上要销毁的 rendition 挂监听。
+      nextRendition.on('selected', handleSelected)
     },
 
     async display(target?: string): Promise<void> {
@@ -314,7 +371,17 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     },
 
     setTheme(name: ThemeName): void {
+      theme = name
       rendition?.themes.select(name)
+      // 高亮的配色是创建那一刻写死在 SVG 矩形属性上的,换主题不会自己跟着变:
+      // 浅色主题那块正片叠底的黄色落到夜间的深色背景上会被压得几乎看不见。
+      // 所以把还在的高亮按新配色原样重画一遍——重画要带上原来的点击回调,
+      // 否则新画出来的高亮点了不取消。
+      if (!rendition) return
+      for (const [cfiRange, onClick] of highlights) {
+        rendition.annotations.remove(cfiRange, 'highlight')
+        rendition.annotations.highlight(cfiRange, {}, onClick, undefined, HIGHLIGHT_STYLES[name])
+      }
     },
 
     async getVisible(): Promise<VisibleRange> {
@@ -394,6 +461,40 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       }
     },
 
+    onSelected(cb: (cfiRange: string, text: string) => void): () => void {
+      selectionListeners.push(cb)
+      return () => {
+        selectionListeners = selectionListeners.filter((x) => x !== cb)
+      }
+    },
+
+    addHighlight(cfiRange: string, onClick: () => void): void {
+      if (!rendition) return
+      // 先删一次再加:epub.js 的 Annotations 用「范围+类型」当 key 存(annotations.js
+      // 的 add()),同一段重复加会把记录覆盖掉,但页面上先画的那层 SVG 矩形还挂在
+      // marks-pane 上没人再摸得到,颜色越叠越深且永远删不掉。
+      rendition.annotations.remove(cfiRange, 'highlight')
+      // 第二个参数是挂在这条标注上的自定义数据,epub.js 会往里写 epubcfi 字段
+      // (iframe.js 的 highlight()),所以每次都给一个新的空对象,不要共用。
+      // 第四个参数是 CSS 类名,给 undefined 就用库自己的默认值 epubjs-hl。
+      rendition.annotations.highlight(cfiRange, {}, onClick, undefined, HIGHLIGHT_STYLES[theme])
+      highlights.set(cfiRange, onClick)
+    },
+
+    removeHighlight(cfiRange: string): void {
+      highlights.delete(cfiRange)
+      // 第二个参数不能省:Annotations.remove() 拿「范围+类型」拼出 key 去查,
+      // 少了类型就查不到任何东西,这一行会变成静默的空操作。
+      rendition?.annotations.remove(cfiRange, 'highlight')
+    },
+
+    clearHighlights(): void {
+      for (const cfiRange of highlights.keys()) {
+        rendition?.annotations.remove(cfiRange, 'highlight')
+      }
+      highlights.clear()
+    },
+
     destroy(): void {
       // 先递增批次号,让任何还没跑完的 open() 延续(book.ready / navigation /
       // locations.generate 的 then)在恢复执行时立刻发现自己已经过期并退出,
@@ -402,6 +503,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       teardown()
       listeners = []
       keyListeners = []
+      selectionListeners = []
       window.removeEventListener('keydown', handleWindowKeydown)
     }
   }

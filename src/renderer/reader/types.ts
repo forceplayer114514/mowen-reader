@@ -56,5 +56,17 @@ export interface ReaderEngine {
   onRelocated(cb: () => void): () => void
   /** 订阅按键:同时接收外层 window 和书内容 iframe 文档里发生的 keydown。返回取消订阅函数。 */
   onKey(cb: (key: string) => void): () => void
+  /**
+   * 用户在书内容里完成一次拖选。返回取消订阅函数。
+   * 只有选中了非空白文字才会通知;通知之前浏览器自身的选区已经被清掉,
+   * 免得原生的蓝色选中块盖在随后加上的自定义高亮上面。
+   */
+  onSelected(cb: (cfiRange: string, text: string) => void): () => void
+  /** 给一段范围加高亮;点击该高亮时调用 onClick。同一段范围重复加会先抹掉旧的那层。 */
+  addHighlight(cfiRange: string, onClick: () => void): void
+  /** 抹掉一段范围的高亮;这段范围本来就没高亮时什么也不做。 */
+  removeHighlight(cfiRange: string): void
+  /** 抹掉当前这本书上所有由本引擎加过的高亮。 */
+  clearHighlights(): void
   destroy(): void
 }

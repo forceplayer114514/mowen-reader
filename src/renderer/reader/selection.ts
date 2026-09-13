@@ -1,0 +1,61 @@
+import type { QuoteRecord } from '@shared/types'
+import type { ReaderEngine } from './types'
+
+/**
+ * 管理"这几句要发给 AI"的临时标记。
+ *
+ * 规则:拖选松开即高亮进列表,点击已高亮的句子取消,重复选中同一段等于取消。
+ * 这些高亮不存盘、关书即消失——它不是笔记功能,只是一次提问的附件。
+ */
+export function createSelectionStore(engine: ReaderEngine): {
+  subscribe(cb: (quotes: QuoteRecord[]) => void): () => void
+  list(): QuoteRecord[]
+  toggle(cfiRange: string, text: string): void
+  clear(): void
+  dispose(): void
+} {
+  let quotes: QuoteRecord[] = []
+  let listeners: ((q: QuoteRecord[]) => void)[] = []
+
+  function notify(): void {
+    const snapshot = [...quotes]
+    for (const cb of listeners) cb(snapshot)
+  }
+
+  function toggle(cfiRange: string, text: string): void {
+    const trimmed = text.trim()
+    if (trimmed.length === 0) return
+    const at = quotes.findIndex((q) => q.cfiRange === cfiRange)
+    if (at >= 0) {
+      quotes = quotes.filter((q) => q.cfiRange !== cfiRange)
+      engine.removeHighlight(cfiRange)
+    } else {
+      quotes = [...quotes, { cfiRange, text: trimmed }]
+      engine.addHighlight(cfiRange, () => toggle(cfiRange, trimmed))
+    }
+    notify()
+  }
+
+  const offSelected = engine.onSelected(toggle)
+
+  return {
+    subscribe(cb): () => void {
+      listeners.push(cb)
+      return () => {
+        listeners = listeners.filter((x) => x !== cb)
+      }
+    },
+    list: () => [...quotes],
+    toggle,
+    clear(): void {
+      quotes = []
+      engine.clearHighlights()
+      notify()
+    },
+    dispose(): void {
+      offSelected()
+      listeners = []
+      quotes = []
+    }
+  }
+}
