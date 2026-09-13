@@ -69,7 +69,62 @@ button:hover {
 }
 
 .book-card {
+  position: relative;
   cursor: pointer;
+}
+
+.book-card__delete {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
+  padding: 2px 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--danger);
+  background: var(--bg-raised);
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+
+.book-card:hover .book-card__delete,
+.book-card__delete:focus-visible {
+  opacity: 1;
+}
+
+.book-card__delete:hover {
+  border-color: var(--danger);
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 10;
+}
+
+.modal {
+  width: min(360px, 90vw);
+  padding: 20px;
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  line-height: 1.6;
+}
+
+.modal__actions {
+  margin-top: 16px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.modal__danger {
+  color: var(--danger);
+  border-color: var(--danger);
 }
 
 .book-card__cover {

@@ -14,6 +14,10 @@ export default function LibraryView({ onOpenBook }: Props) {
   const [dragging, setDragging] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [coverUrls, setCoverUrls] = useState<Record<string, string>>({})
+  // 等待用户确认删除的那本书;非 null 时弹出确认框。删除会连带清掉用户复制
+  // 进库的文件副本,不可撤销,所以必须先经过这一步确认,不能点了就删。
+  const [pendingDelete, setPendingDelete] = useState<BookRecord | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   const refresh = useCallback(async () => {
     setBooks(await window.api.listBooks())
@@ -151,6 +155,30 @@ export default function LibraryView({ onOpenBook }: Props) {
     }
   }, [importPaths])
 
+  // 点书卡片本身的删除按钮只是打开确认框,真正的删除动作在 confirmDelete 里。
+  // stopPropagation 避免点删除按钮时顺带触发外层 book-card 的 onClick 把书打开。
+  const requestDelete = useCallback((e: React.MouseEvent, book: BookRecord) => {
+    e.stopPropagation()
+    setError(null)
+    setPendingDelete(book)
+  }, [])
+
+  const cancelDelete = useCallback(() => setPendingDelete(null), [])
+
+  const confirmDelete = useCallback(async () => {
+    if (!pendingDelete) return
+    setDeleting(true)
+    try {
+      await window.api.deleteBook(pendingDelete.id)
+      setPendingDelete(null)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '删除失败')
+    } finally {
+      setDeleting(false)
+    }
+  }, [pendingDelete, refresh])
+
   const onDrop = useCallback(
     async (e: React.DragEvent) => {
       e.preventDefault()
@@ -204,6 +232,15 @@ export default function LibraryView({ onOpenBook }: Props) {
               data-testid="book-card"
               onClick={() => onOpenBook(book)}
             >
+              <button
+                type="button"
+                className="book-card__delete"
+                data-testid="delete-book"
+                aria-label={`删除《${book.title}》`}
+                onClick={(e) => requestDelete(e, book)}
+              >
+                删除
+              </button>
               <div className="book-card__cover">
                 {coverUrls[book.id] ? (
                   <img
@@ -219,6 +256,30 @@ export default function LibraryView({ onOpenBook }: Props) {
               <div className="book-card__author">{book.author ?? '佚名'}</div>
             </div>
           ))}
+        </div>
+      )}
+
+      {pendingDelete && (
+        <div className="modal-overlay" data-testid="confirm-delete">
+          <div className="modal">
+            <p>
+              确定要删除《{pendingDelete.title}》吗?这会一并删除应用为它保存的本地文件副本,删除后无法恢复。
+            </p>
+            <div className="modal__actions">
+              <button type="button" onClick={cancelDelete} disabled={deleting}>
+                取消
+              </button>
+              <button
+                type="button"
+                className="modal__danger"
+                data-testid="confirm-delete-yes"
+                onClick={() => void confirmDelete()}
+                disabled={deleting}
+              >
+                {deleting ? '删除中…' : '确认删除'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

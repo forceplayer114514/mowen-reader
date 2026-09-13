@@ -229,3 +229,39 @@ test('切换主题后重启应用,设置仍然是切换后的主题', async () =
   )
   expect(shelfDataThemeAfterBack).toBe('dark')
 })
+
+test('删除书之后书架恢复空状态,重启也不会把它带回来', async () => {
+  const h = await launch()
+  await importFixture(h)
+  await expect(h.page.getByTestId('book-card')).toHaveCount(1)
+
+  // 删除按钮平时靠 hover 才会显示(见 theme.css 里 .book-card__delete 的
+  // opacity 规则),但它本来就一直在 DOM 里,Playwright 点隐藏但存在的元素
+  // 不需要真的先触发 hover。点删除按钮应该只弹出确认框,不应该直接把书删掉,
+  // 也不应该顺带触发卡片本身的 onClick 把书打开。
+  await h.page.getByTestId('delete-book').click()
+  await expect(h.page.getByTestId('reader-page')).toHaveCount(0)
+
+  const confirmDialog = h.page.getByTestId('confirm-delete')
+  await expect(confirmDialog).toBeVisible()
+  await expect(confirmDialog).toContainText('测试之书')
+
+  // 先点取消:书应该还在,确认框应该消失。
+  await h.page.getByRole('button', { name: '取消' }).click()
+  await expect(confirmDialog).toHaveCount(0)
+  await expect(h.page.getByTestId('book-card')).toHaveCount(1)
+
+  // 再走一次真正的删除。
+  await h.page.getByTestId('delete-book').click()
+  await h.page.getByTestId('confirm-delete-yes').click()
+  await expect(h.page.getByTestId('confirm-delete')).toHaveCount(0)
+  await expect(h.page.getByText('书架是空的')).toBeVisible()
+  await expect(h.page.getByTestId('book-card')).toHaveCount(0)
+
+  await h.app.close()
+
+  // 重启之后,删掉的书不应该因为某种缓存或者没落库而又冒出来。
+  const second = await launch(h.userData)
+  await expect(second.page.getByText('书架是空的')).toBeVisible()
+  await expect(second.page.getByTestId('book-card')).toHaveCount(0)
+})
