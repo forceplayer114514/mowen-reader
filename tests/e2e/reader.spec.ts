@@ -206,10 +206,26 @@ test('切换主题后重启应用,设置仍然是切换后的主题', async () =
   const themeAfterRestart = await second.page.evaluate(() => window.api.getSetting('theme'))
   expect(themeAfterRestart).toBe('dark')
 
+  // 冷启动直接停在书架、还没点开任何一本书:书架本身也要按存储的主题渲染,
+  // 不能停在浅色等用户先打开一本书才纠正过来——这是应用入口在渲染之前
+  // 读一次设置的效果,覆盖的是书架这个场景,不依赖 ReaderView 是否挂载过。
+  await expect(second.page.getByTestId('library')).toBeVisible()
+  const shelfDataTheme = await second.page.evaluate(() => document.documentElement.dataset.theme)
+  expect(shelfDataTheme).toBe('dark')
+
   // 重新打开书,阅读界面应该直接以深色主题呈现,而不是又回退到默认的浅色。
   await second.page.getByTestId('book-card').first().click()
   await second.page.getByTestId('reader-page').waitFor()
   await expect(second.page.getByRole('button', { name: '日间' })).toBeVisible()
   const dataTheme = await second.page.evaluate(() => document.documentElement.dataset.theme)
   expect(dataTheme).toBe('dark')
+
+  // 从阅读界面退回书架,主题不应该被悄悄改回默认值——书架和阅读界面共用同一个
+  // 全局 data-theme 属性,退回书架这个卸载动作本身不该触碰它。
+  await second.page.getByRole('button', { name: '← 书架' }).click()
+  await expect(second.page.getByTestId('library')).toBeVisible()
+  const shelfDataThemeAfterBack = await second.page.evaluate(
+    () => document.documentElement.dataset.theme
+  )
+  expect(shelfDataThemeAfterBack).toBe('dark')
 })
