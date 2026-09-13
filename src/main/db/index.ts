@@ -25,6 +25,30 @@ CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS conversations (
+  id             TEXT PRIMARY KEY,
+  book_id        TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  start_cfi      TEXT NOT NULL,
+  end_cfi        TEXT NOT NULL,
+  merged_end_cfi TEXT,
+  chapter_label  TEXT,
+  excerpt        TEXT NOT NULL DEFAULT '',
+  created_at     INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversations_book ON conversations(book_id, created_at);
+
+CREATE TABLE IF NOT EXISTS messages (
+  id              TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  role            TEXT NOT NULL,
+  content         TEXT NOT NULL,
+  quotes          TEXT NOT NULL DEFAULT '[]',
+  created_at      INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, created_at);
 `
 
 export type Db = DatabaseSync
@@ -36,7 +60,7 @@ export type Db = DatabaseSync
  * 迁移的库",而不是靠猜表结构。schema 目前从未迁移过,这里先只留一个整数
  * 版本和下面 openDatabase() 里写好的插槽,不为此建一整套迁移框架。
  */
-export const SCHEMA_VERSION = 1
+export const SCHEMA_VERSION = 2
 
 /** 打开数据库并确保表结构存在。传 ':memory:' 得到一个测试用的临时库。 */
 export function openDatabase(file: string): Db {
@@ -53,13 +77,11 @@ export function openDatabase(file: string): Db {
     // 这个分支只会在真正第一次创建这个文件时进入一次:盖上当前 schema 版本号。
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
   } else if (version < SCHEMA_VERSION) {
-    // --- 未来 schema 迁移在这里加 ---
-    // 依据读到的 version 决定要跑哪些迁移步骤,每跑完一步就把 user_version
-    // 提升到对应的版本号,例如:
-    //   if (version < 2) {
-    //     db.exec('ALTER TABLE books ADD COLUMN ...')
-    //     db.exec('PRAGMA user_version = 2')
-    //   }
+    if (version < 2) {
+      // v1 的库没有 conversations / messages 两张表。上面的 SCHEMA 用的是
+      // CREATE TABLE IF NOT EXISTS,已经把它们建好了,这里只需把版本号推上去。
+      db.exec('PRAGMA user_version = 2')
+    }
   }
 
   return db
