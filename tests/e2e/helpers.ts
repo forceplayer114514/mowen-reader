@@ -2,13 +2,15 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
-import { buildFixtureEpub } from '../../scripts/make-fixture-epub'
+import { buildFixtureEpub, buildRealisticFixtureEpub } from '../../scripts/make-fixture-epub'
 
 export interface Harness {
   app: ElectronApplication
   page: Page
   userData: string
   fixturePath: string
+  /** 更接近真实排版的样本(嵌套目录、../ 目录链接、封面、插图等,见 fix 1)。 */
+  realisticFixturePath: string
 }
 
 // 记录本进程里所有 launch() 启动过、还没关掉的 Electron app,供 closeAllApps()
@@ -22,6 +24,8 @@ export async function launch(userData?: string): Promise<Harness> {
   const workDir = mkdtempSync(join(tmpdir(), 'reader-e2e-src-'))
   const fixturePath = join(workDir, '测试之书.epub')
   writeFileSync(fixturePath, await buildFixtureEpub())
+  const realisticFixturePath = join(workDir, '真实排版测试书.epub')
+  writeFileSync(realisticFixturePath, await buildRealisticFixtureEpub())
 
   const app = await electron.launch({
     args: [resolve('out/main/index.js')],
@@ -30,7 +34,7 @@ export async function launch(userData?: string): Promise<Harness> {
   launchedApps.push(app)
   const page = await app.firstWindow()
   await page.waitForLoadState('domcontentloaded')
-  return { app, page, userData: dir, fixturePath }
+  return { app, page, userData: dir, fixturePath, realisticFixturePath }
 }
 
 /**
@@ -52,6 +56,15 @@ export async function importFixture(h: Harness): Promise<void> {
   await h.page.evaluate((p) => {
     ;(window as unknown as { __E2E_FILES__: string[] }).__E2E_FILES__ = [p]
   }, h.fixturePath)
+  await h.page.getByTestId('pick-files').click()
+  await h.page.getByTestId('book-card').first().waitFor({ timeout: 30_000 })
+}
+
+/** 和 importFixture 一样,但导入的是更接近真实排版的样本(见 helpers.ts 顶部注释)。 */
+export async function importRealisticFixture(h: Harness): Promise<void> {
+  await h.page.evaluate((p) => {
+    ;(window as unknown as { __E2E_FILES__: string[] }).__E2E_FILES__ = [p]
+  }, h.realisticFixturePath)
   await h.page.getByTestId('pick-files').click()
   await h.page.getByTestId('book-card').first().waitFor({ timeout: 30_000 })
 }

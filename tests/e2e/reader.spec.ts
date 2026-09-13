@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test'
 import {
   closeAllApps,
   importFixture,
+  importRealisticFixture,
   launch,
   pressAndSettle,
   pressUntilPageChanges,
@@ -61,6 +62,42 @@ test('目录列出三章,点第二章后底部章节名跟着变', async () => {
 
   await toc.getByText('第二章 那个夏天').click()
   await expect(h.page.getByTestId('reader-foot')).toContainText('第二章 那个夏天', {
+    timeout: 20_000
+  })
+})
+
+// --- 以下用更接近真实排版的样本(fix 1)覆盖简单样本测不到的场景 ---
+
+test('真实排版样本:目录链接带 ../ 前缀,页脚仍能显示章节名、目录跳转仍然生效', async () => {
+  const h = await launch()
+  await importRealisticFixture(h)
+  await h.page.getByTestId('book-card').first().click()
+  await h.page.getByTestId('reader-page').waitFor()
+
+  // 这本样本的目录(EPUB 3 nav)把链接写成 "../Text/ch1.xhtml",而 spine 报告的
+  // 章节路径是 "Text/ch1.xhtml"——按原始字符串比较的话,章节名永远匹配不上、
+  // 页脚会一直空着。见 engine.ts 里 normalizeChapterHref 的用法。
+  await expect(h.page.getByTestId('reader-foot')).toContainText('第一章 楔子', {
+    timeout: 20_000
+  })
+
+  await h.page.getByTestId('toggle-toc').click()
+  const toc = h.page.getByTestId('toc')
+  await expect(toc.getByText('第一章 楔子')).toBeVisible()
+  // 第二级目录条目(章节内的小节),验证多级目录能正常展开而不是被拍平。
+  await expect(toc.getByText('第一节 起')).toBeVisible()
+  await expect(toc.getByText('第三章 尾声')).toBeVisible()
+
+  await toc.getByText('第二章 正文').click()
+  await expect(h.page.getByTestId('reader-foot')).toContainText('第二章 正文', {
+    timeout: 20_000
+  })
+
+  // 再跳到第一章里带 #锚点 的小节链接:应该落回第一章,而不是因为锚点导致匹配不上
+  // 目录条目、章节名又变回空白。
+  await h.page.getByTestId('toggle-toc').click()
+  await h.page.getByTestId('toc').getByText('第一节 起').click()
+  await expect(h.page.getByTestId('reader-foot')).toContainText('第一章 楔子', {
     timeout: 20_000
   })
 })

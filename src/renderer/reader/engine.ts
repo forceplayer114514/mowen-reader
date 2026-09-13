@@ -1,5 +1,6 @@
 import ePub, { type Book, type Contents, type NavItem, type Rendition } from 'epubjs'
 import { makeRangeCfi } from './cfi'
+import { normalizeChapterHref } from './href'
 import type { OpenOptions, ReaderEngine, ThemeName, TocItem, VisibleRange } from './types'
 
 const THEMES: Record<ThemeName, Record<string, Record<string, string>>> = {
@@ -31,6 +32,10 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   let book: Book | null = null
   let rendition: Rendition | null = null
   let toc: TocItem[] = []
+  // spine 里各章节被 epub.js 解析后的、真正用来查找章节的路径(相对 OPF 目录),
+  // 供 display() 把目录/外部传入的原始 href 归一化匹配回这个列表,见下面
+  // resolveDisplayTarget() 的注释。
+  let spineHrefs: string[] = []
   let listeners: (() => void)[] = []
   let keyListeners: ((key: string) => void)[] = []
   let locationsReady = false
@@ -46,6 +51,29 @@ export function createEngine(container: HTMLElement): ReaderEngine {
         flatToc(item.subitems, depth + 1, out)
       }
     }
+  }
+
+  /**
+   * 把 display() 收到的目标 href 归一化匹配回 spine 实际使用的路径。
+   *
+   * epub.js 的 Spine.get()(node_modules/epubjs/src/spine.js)找章节靠的是一个用
+   * 原始字符串(只去掉了 #锚点)当 key 的字典,并不会处理 "../"、"./" 这类相对路径
+   * 写法——字典的 key 是相对 OPF 目录解析出来的路径,比如 "Text/ch1.xhtml"。
+   * 但目录(TOC)里的链接是照抄导航文档自己写的原始 href,可能是
+   * "../Text/ch1.xhtml" 这种从导航文档自己所在目录出发、写法不同但指向同一个
+   * 文件的相对路径(见 href.ts 的注释)。直接把这种 href 传给 rendition.display()
+   * 会导致 Spine.get() 查不到对应章节、_display() 用 "No Section Found" 拒绝那个
+   * promise——界面上什么反应都没有,点目录跳章节悄无声息地失效。
+   * 这里在真正调用 rendition.display() 之前,把目标路径归一化后到 spineHrefs
+   * 里找一个归一化后相同的真实路径替换掉,找不到就原样传下去(比如本来就合法的
+   * CFI、或者 undefined 表示"回到上次位置")。
+   */
+  function resolveDisplayTarget(target: string | undefined): string | undefined {
+    if (!target || target.startsWith('epubcfi(')) return target
+    const fragment = target.includes('#') ? target.slice(target.indexOf('#')) : ''
+    const normalized = normalizeChapterHref(target)
+    const matched = spineHrefs.find((href) => normalizeChapterHref(href) === normalized)
+    return matched !== undefined ? `${matched}${fragment}` : target
   }
 
   function notify(): void {
@@ -166,6 +194,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     rendition = null
     book = null
     toc = []
+    spineHrefs = []
     locationsReady = false
   }
 
@@ -207,10 +236,18 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       const items: TocItem[] = []
       flatToc(nav.toc, 0, items)
 
+      // epub.js 的类型声明里 Spine.each() 只标成 (...args: any[]) => any,没有把
+      // 回调参数标成 Section——这里只声明用得到的 href 字段,断言过去。
+      const hrefs: string[] = []
+      nextBook.spine.each((section: { href: string }) => {
+        hrefs.push(section.href)
+      })
+
       // 到这里两次 epoch 检查都通过,这次 open() 没有被取代,才正式发布到闭包变量。
       book = nextBook
       rendition = nextRendition
       toc = items
+      spineHrefs = hrefs
 
       if (opts.savedLocations) {
         nextBook.locations.load(opts.savedLocations)
@@ -241,7 +278,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
 
     async display(target?: string): Promise<void> {
       if (!rendition) throw new Error('书还没打开')
-      await rendition.display(target)
+      await rendition.display(resolveDisplayTarget(target))
     },
 
     async next(): Promise<void> {
@@ -293,7 +330,9 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       }
 
       const href = String(start.href ?? '')
-      const entry = toc.find((t) => t.href === href || t.href.split('#')[0] === href)
+      // 不能直接比较原始字符串:目录里的链接和 spine 报告的路径即使指向同一份文档,
+      // 写法也可能不同(比如目录带 ../ 前缀、或者带 #锚点),按归一化后的路径比较。
+      const entry = toc.find((t) => normalizeChapterHref(t.href) === normalizeChapterHref(href))
       const locations = book.locations as unknown as LocationsWithTotal
       const page = locationsReady ? locations.locationFromCfi(start.cfi) + 1 : 0
       const totalPages = locationsReady ? locations.total : 0

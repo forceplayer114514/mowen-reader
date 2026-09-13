@@ -1,3 +1,4 @@
+import { normalizeChapterHref } from './href'
 import type { TocItem } from './types'
 
 interface Props {
@@ -16,7 +17,9 @@ export default function TocPanel({ items, currentHref, onJump, onClose }: Props)
       </div>
       <ul className="toc__list">
         {items.map((item, i) => {
-          const active = item.href.split('#')[0] === currentHref.split('#')[0]
+          // 和 engine.ts 里匹配当前章节用的是同一套归一化逻辑,原因见 href.ts 的注释:
+          // 原始字符串比较在目录链接带 ../ 前缀时会误判成"不是当前章节"。
+          const active = normalizeChapterHref(item.href) === normalizeChapterHref(currentHref)
           return (
             <li key={`${item.href}-${i}`}>
               <button
