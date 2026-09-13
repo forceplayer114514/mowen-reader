@@ -1,7 +1,8 @@
 import { join } from 'node:path'
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, safeStorage } from 'electron'
 import { registerIpc } from './ipc'
 import { initDataDir } from './paths'
+import { initSecrets } from './secrets'
 
 function createWindow(): void {
   const win = new BrowserWindow({
@@ -32,6 +33,7 @@ void app.whenReady().then(() => {
   if (!process.env.READER_USER_DATA) {
     initDataDir(app.getPath('userData'))
   }
+  initSecrets(safeStorage)
   registerIpc()
   createWindow()
   app.on('activate', () => {
