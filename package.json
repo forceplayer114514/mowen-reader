@@ -1,7 +1,7 @@
 {
   "name": "ai-reader",
   "version": "0.1.0",
-  "description": "带 AI 对话侧边栏的 EPUB 阅读器",
+  "description": "EPUB 桌面阅读器",
   "main": "./out/main/index.js",
   "type": "module",
   "license": "MIT",
