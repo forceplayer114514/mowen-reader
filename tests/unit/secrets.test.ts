@@ -8,6 +8,7 @@ import {
   getApiKey,
   hasApiKey,
   keyFilePath,
+  readApiKey,
   setApiKey
 } from '../../src/main/secrets'
 
@@ -88,5 +89,34 @@ describe('safeStorage 未初始化', () => {
     expect(getApiKey()).toBeNull()
     expect(hasApiKey()).toBe(false)
     expect(() => setApiKey('x')).toThrow('安全存储尚未初始化')
+  })
+})
+
+describe('密钥与填写它时的接口地址一起存', () => {
+  it('存的时候记下地址,读回来能拿到', () => {
+    setApiKey('sk-x', 'api.openai.com')
+    expect(readApiKey()).toEqual({ key: 'sk-x', host: 'api.openai.com' })
+  })
+
+  it('落盘的内容里地址也不是明文', () => {
+    setApiKey('sk-x', 'api.openai.com')
+    expect(readFileSync(keyFilePath()).toString('utf8')).not.toContain('api.openai.com')
+  })
+
+  it('重写密钥会一并换掉记下的地址', () => {
+    setApiKey('sk-x', 'api.openai.com')
+    setApiKey('sk-y', '127.0.0.1:1234')
+    expect(readApiKey()).toEqual({ key: 'sk-y', host: '127.0.0.1:1234' })
+  })
+
+  it('没设过时读出来是 null', () => {
+    expect(readApiKey()).toBeNull()
+  })
+
+  it('旧版本直接加密裸密钥存下的文件,读出来密钥照旧、地址是 null', () => {
+    // 旧格式就是"把密钥字符串本身加密后落盘",这里原样重建那个文件
+    writeFileSync(keyFilePath(), fakeSafeStorage.encryptString('sk-老版本存的'))
+    expect(readApiKey()).toEqual({ key: 'sk-老版本存的', host: null })
+    expect(getApiKey()).toBe('sk-老版本存的')
   })
 })

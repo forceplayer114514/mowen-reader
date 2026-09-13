@@ -1,0 +1,186 @@
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+// ipc.ts 里的数据库句柄挂在模块作用域上、第一次用到时才打开,整个测试文件
+// 共用同一份;所以数据目录必须在 import 之前就定下来,而且之后不再更换。
+process.env.READER_USER_DATA = mkdtempSync(join(tmpdir(), 'reader-ipc-'))
+
+/**
+ * 假的 electron:只截下 ipcMain.handle 注册的 handler,让测试能直接调用它们。
+ * 必须用 vi.hoisted —— vi.mock 的工厂会被提升到所有 import 之前执行,
+ * 普通的 const 那时还没初始化。
+ */
+const mocks = vi.hoisted(() => ({
+  handlers: new Map<string, (event: unknown, ...args: never[]) => unknown>(),
+  streamChat: vi.fn()
+}))
+
+vi.mock('electron', () => ({
+  ipcMain: {
+    handle: (channel: string, fn: (event: unknown, ...args: never[]) => unknown): void => {
+      mocks.handlers.set(channel, fn)
+    }
+  },
+  dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) }
+}))
+
+vi.mock('../../src/main/llm/client', () => ({
+  streamChat: (options: unknown) => mocks.streamChat(options)
+}))
+
+import { registerIpc } from '../../src/main/ipc'
+import { __setSafeStorageForTests, clearApiKey, setApiKey } from '../../src/main/secrets'
+
+/** 可逆的字节反转冒充加密,和 secrets 的单元测试用的是同一个假实现。 */
+const fakeSafeStorage = {
+  isEncryptionAvailable: (): boolean => true,
+  encryptString: (s: string): Buffer => Buffer.from(Buffer.from(s, 'utf8').reverse()),
+  decryptString: (b: Buffer): string => Buffer.from(Buffer.from(b).reverse()).toString('utf8')
+}
+
+registerIpc()
+
+type Listener = (...args: unknown[]) => void
+
+/** 假的 WebContents:记下发出去的事件,并能手动触发生命周期事件。 */
+function fakeSender(): {
+  sent: { channel: string; args: unknown[] }[]
+  fire(event: string, ...args: unknown[]): void
+} & Record<string, unknown> {
+  const sent: { channel: string; args: unknown[] }[] = []
+  const listeners = new Map<string, Set<Listener>>()
+  const wrappers = new Map<Listener, Listener>()
+  const bucket = (event: string): Set<Listener> => {
+    let set = listeners.get(event)
+    if (!set) {
+      set = new Set()
+      listeners.set(event, set)
+    }
+    return set
+  }
+  return {
+    sent,
+    isDestroyed: (): boolean => false,
+    send: (channel: string, ...args: unknown[]): void => {
+      sent.push({ channel, args })
+    },
+    on: (event: string, listener: Listener): void => {
+      bucket(event).add(listener)
+    },
+    once: (event: string, listener: Listener): void => {
+      const wrapper = (...args: unknown[]): void => {
+        bucket(event).delete(wrapper)
+        listener(...args)
+      }
+      wrappers.set(listener, wrapper)
+      bucket(event).add(wrapper)
+    },
+    off: (event: string, listener: Listener): void => {
+      const set = bucket(event)
+      set.delete(listener)
+      const wrapper = wrappers.get(listener)
+      if (wrapper) set.delete(wrapper)
+    },
+    fire: (event: string, ...args: unknown[]): void => {
+      for (const listener of [...bucket(event)]) listener(...args)
+    }
+  }
+}
+
+function call(channel: string, sender: unknown, ...args: unknown[]): unknown {
+  const handler = mocks.handlers.get(channel)
+  if (!handler) throw new Error(`没有注册这个通道:${channel}`)
+  return handler({ sender } as unknown, ...(args as never[]))
+}
+
+/** 把宏任务队列推进一轮,让 chat:start 里 setImmediate 排的请求真正发出去。 */
+function flush(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve))
+}
+
+beforeEach(() => {
+  __setSafeStorageForTests(fakeSafeStorage)
+  clearApiKey()
+  mocks.streamChat.mockReset()
+  mocks.streamChat.mockResolvedValue(undefined)
+  call('settings:set', null, 'llmEndpoint', 'https://api.openai.com/v1')
+  call('settings:set', null, 'llmModel', 'gpt-4o-mini')
+})
+
+describe('settings:set 只接受白名单里的键', () => {
+  it('白名单里的键正常写入', () => {
+    call('settings:set', null, 'llmModel', 'gpt-4o')
+    expect(call('settings:get', null, 'llmModel')).toBe('gpt-4o')
+  })
+
+  it('名单外的键被拒绝,值也没写进去', () => {
+    expect(() => call('settings:set', null, '随便什么键', '值')).toThrow(/随便什么键/)
+    expect(call('settings:get', null, '随便什么键')).toBeNull()
+  })
+})
+
+describe('secrets:setApiKey 把密钥绑到当时的接口地址上', () => {
+  it('没填接口地址时不让存密钥', () => {
+    call('settings:set', null, 'llmEndpoint', '')
+    expect(() => call('secrets:setApiKey', null, 'sk-x')).toThrow(/接口地址/)
+  })
+
+  it('接口地址不安全时不让存密钥', () => {
+    call('settings:set', null, 'llmEndpoint', 'http://api.example.com/v1')
+    expect(() => call('secrets:setApiKey', null, 'sk-x')).toThrow(/http/)
+  })
+
+  it('清除密钥不需要接口地址', () => {
+    call('settings:set', null, 'llmEndpoint', '')
+    expect(() => call('secrets:setApiKey', null, '')).not.toThrow()
+  })
+})
+
+describe('chat:start 在取密钥之前先核对接口地址', () => {
+  it('地址没变时正常发起请求,密钥进的是请求参数而不是返回值', async () => {
+    call('secrets:setApiKey', null, 'sk-真的密钥')
+    const sender = fakeSender()
+    const id = await call('chat:start', sender, { messages: [{ role: 'user', content: '你好' }] })
+    expect(typeof id).toBe('string')
+    await flush()
+    expect(mocks.streamChat).toHaveBeenCalledTimes(1)
+    const options = mocks.streamChat.mock.calls[0][0] as { apiKey: string; endpoint: string }
+    expect(options.apiKey).toBe('sk-真的密钥')
+    expect(options.endpoint).toBe('https://api.openai.com/v1')
+    expect(JSON.stringify(id)).not.toContain('sk-真的密钥')
+  })
+
+  it('渲染层偷偷把地址改成别人家的,密钥不会被发出去', async () => {
+    call('secrets:setApiKey', null, 'sk-真的密钥')
+    // 被攻破的渲染层能做的就是这一步:地址仍然是 https,协议校验拦不住它
+    call('settings:set', null, 'llmEndpoint', 'https://evil.example/v1')
+    const sender = fakeSender()
+    await expect(
+      call('chat:start', sender, { messages: [] }) as Promise<string>
+    ).rejects.toThrow(/evil\.example/)
+    await flush()
+    expect(mocks.streamChat).not.toHaveBeenCalled()
+  })
+
+  it('只改了端口也拦下来', async () => {
+    call('settings:set', null, 'llmEndpoint', 'http://127.0.0.1:1234/v1')
+    call('secrets:setApiKey', null, 'sk-本地')
+    call('settings:set', null, 'llmEndpoint', 'http://127.0.0.1:11434/v1')
+    await expect(
+      call('chat:start', fakeSender(), { messages: [] }) as Promise<string>
+    ).rejects.toThrow(/重新填写/)
+    await flush()
+    expect(mocks.streamChat).not.toHaveBeenCalled()
+  })
+
+  it('旧版本存下的、没有记录地址的密钥,要求重新填写而不是直接发出去', async () => {
+    setApiKey('sk-老版本存的')
+    await expect(
+      call('chat:start', fakeSender(), { messages: [] }) as Promise<string>
+    ).rejects.toThrow(/重新填写/)
+    await flush()
+    expect(mocks.streamChat).not.toHaveBeenCalled()
+  })
+})

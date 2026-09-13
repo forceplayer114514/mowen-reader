@@ -36,12 +36,12 @@ import {
   listMessages,
   updateConversationMerge
 } from './db/conversations'
-import { getSetting, setSetting } from './db/settings'
-import { assertSafeLlmEndpoint } from './llm/endpoint'
+import { assertAllowedSettingKey, getSetting, setSetting } from './db/settings'
+import { assertKeyBoundToEndpoint, assertSafeLlmEndpoint, llmEndpointHost } from './llm/endpoint'
 import { streamChat } from './llm/client'
 import { bindSessionLifecycle, createSessionRegistry } from './llm/session'
 import { dbFile } from './paths'
-import { clearApiKey, getApiKey, hasApiKey, setApiKey } from './secrets'
+import { clearApiKey, hasApiKey, readApiKey, setApiKey } from './secrets'
 
 let db: Db | null = null
 
@@ -208,7 +208,12 @@ export function registerIpc(): void {
     getSetting(database(), key)
   )
 
+  // 键必须在白名单里。渲染层不该能往主进程的设置表里塞任意条目——
+  // 这道闸门单独并不能挡住把 llmEndpoint 改掉(它是合法键),真正挡住那条
+  // 路的是 chat:start 里的地址绑定校验,两者是两层不同的防线。
   ipcMain.handle('settings:set', (_e, key: string, value: string): void => {
+    assertAllowedSettingKey(key)
+    if (typeof value !== 'string') throw new Error(`设置项 ${key} 的值必须是字符串`)
     setSetting(database(), key, value)
   })
 
@@ -262,7 +267,25 @@ export function registerIpc(): void {
 
   // 只回答有没有设过。任何返回密钥内容的通道都是违规的。
   ipcMain.handle('secrets:hasApiKey', () => hasApiKey())
-  ipcMain.handle('secrets:setApiKey', (_e, key: string) => setApiKey(key))
+
+  // 存密钥时把"此刻设置里的接口地址"一起锁进同一份密文。用户实际的填写顺序
+  // 就是先地址后密钥,所以这里要求地址必须已经填好——没有地址就没有可以
+  // 绑定的收件人,存下来的密钥将来只能靠"信当时的设置"来决定发给谁,那正是
+  // 要堵的洞。地址本身也先过一遍安全校验,免得用户填完密钥、发起对话时才
+  // 被告知地址不能用。
+  ipcMain.handle('secrets:setApiKey', (_e, key: string) => {
+    // 空串是"清除密钥",清除不需要任何地址
+    if (key.length === 0) {
+      clearApiKey()
+      return
+    }
+    const endpoint = getSetting(database(), 'llmEndpoint') ?? ''
+    if (!endpoint) {
+      throw new Error('请先在设置里填好接口地址,再填写 API 密钥——密钥会和填写时的接口地址绑定')
+    }
+    assertSafeLlmEndpoint(endpoint)
+    setApiKey(key, llmEndpointHost(endpoint))
+  })
   ipcMain.handle('secrets:clearApiKey', () => clearApiKey())
 
   ipcMain.handle('chat:start', async (event, input: StartChatInput): Promise<string> => {
@@ -276,14 +299,18 @@ export function registerIpc(): void {
     if (!endpoint) throw new Error('还没有配置接口地址,请先到设置里填写')
     if (!model) throw new Error('还没有配置模型名,请先到设置里填写')
 
-    // 必须在取密钥之前校验地址:一个被攻破的渲染层能通过毫无白名单的
-    // settings:set 把 llmEndpoint 改成任意地址,这里就是唯一还能拦住
-    // "密钥被真实发到攻击者服务器"这件事的地方。校验不过直接抛出,
-    // 下面 getApiKey() 永远不会被执行到。
+    // 必须在密钥被交出去之前校验地址。被攻破的渲染层能把 llmEndpoint 改成
+    // 任意地址,而 https 拦不住它——证书是免费的,攻击者的地址一样可以是
+    // https。所以这里是两道:协议必须安全,且这个地址必须就是当初填写密钥时
+    // 的那个地址。两道任一不过都直接抛出,密钥不会被放进任何请求。
     assertSafeLlmEndpoint(endpoint)
 
-    const apiKey = getApiKey()
-    if (!apiKey) throw new Error('还没有填写 API 密钥,请先到设置里填写')
+    const stored = readApiKey()
+    if (!stored) throw new Error('还没有填写 API 密钥,请先到设置里填写')
+    // 地址核对放在取出 stored.key 之前:解密只是主进程内部读一下,真正
+    // 危险的是把这个值交给 streamChat 去发出去,而这一步在核对之后。
+    assertKeyBoundToEndpoint(stored.host, endpoint)
+    const apiKey = stored.key
 
     const session = sessions.start()
     const send = (channel: string, ...args: unknown[]): void => {

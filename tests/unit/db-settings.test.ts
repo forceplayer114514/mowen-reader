@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { openDatabase } from '../../src/main/db'
-import { getSetting, getSettingNumber, setSetting } from '../../src/main/db/settings'
+import {
+  ALLOWED_SETTING_KEYS,
+  assertAllowedSettingKey,
+  getSetting,
+  getSettingNumber,
+  setSetting
+} from '../../src/main/db/settings'
 
 describe('设置表', () => {
   it('没写过的键读出来是 null', () => {
@@ -37,5 +43,29 @@ describe('设置表', () => {
     setSetting(db, 'fontSize', '大号')
     expect(getSettingNumber(db, 'fontSize', 18)).toBe(18)
     db.close()
+  })
+})
+
+describe('设置键白名单', () => {
+  it('计划一和计划二用到的键都在名单里', () => {
+    for (const key of [
+      'fontSize',
+      'theme',
+      'llmEndpoint',
+      'llmModel',
+      'llmSystemPrompt',
+      'llmContextLimit',
+      'sidebarWidth'
+    ]) {
+      expect(() => assertAllowedSettingKey(key)).not.toThrow()
+    }
+  })
+
+  it('名单外的键被拒绝,错误信息里带上这个键名', () => {
+    expect(() => assertAllowedSettingKey('随便什么键')).toThrow(/随便什么键/)
+  })
+
+  it('名单内两两不重复', () => {
+    expect(new Set(ALLOWED_SETTING_KEYS).size).toBe(ALLOWED_SETTING_KEYS.length)
   })
 })
