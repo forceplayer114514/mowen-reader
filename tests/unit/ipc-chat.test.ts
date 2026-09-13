@@ -132,6 +132,14 @@ describe('secrets:setApiKey 把密钥绑到当时的接口地址上', () => {
     expect(() => call('secrets:setApiKey', null, 'sk-x')).toThrow(/http/)
   })
 
+  it('不是字符串的密钥被当场拒绝,不会被写进文件', () => {
+    // 写进去的话,下次读出来整段信封会被当成密钥、地址为空,报的却是
+    // "这是旧版本存下的",把排查引向完全错误的方向。
+    call('settings:set', null, 'llmEndpoint', 'https://api.openai.com/v1')
+    expect(() => call('secrets:setApiKey', null, 42)).toThrow(/必须是一段文字/)
+    expect(call('secrets:hasApiKey', null)).toBe(false)
+  })
+
   it('清除密钥不需要接口地址', () => {
     call('settings:set', null, 'llmEndpoint', '')
     expect(() => call('secrets:setApiKey', null, '')).not.toThrow()

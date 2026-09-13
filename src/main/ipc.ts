@@ -278,6 +278,10 @@ export function registerIpc(): void {
   // 要堵的洞。地址本身也先过一遍安全校验,免得用户填完密钥、发起对话时才
   // 被告知地址不能用。
   ipcMain.handle('secrets:setApiKey', (_e, key: string) => {
+    // 隔壁 settings:set 已经在做同样的检查,这里不能漏:传进来一个数字会
+    // 一路写进文件,下次读出来整段信封被当成密钥、地址为空,报的却是
+    // "这是旧版本存下的",把排查引向完全错误的方向。
+    if (typeof key !== 'string') throw new Error('API 密钥必须是一段文字')
     // 空串是"清除密钥",清除不需要任何地址
     if (key.length === 0) {
       clearApiKey()
