@@ -102,6 +102,19 @@ describe('划选引用', () => {
     expect(f.hasSubscriber()).toBe(false)
   })
 
+  it('dispose 还要把页面上剩下的高亮抹掉', () => {
+    const f = fakeEngine()
+    const store = createSelectionStore(f.engine)
+    f.select('cfi-1', '第一句')
+    f.select('cfi-2', '第二句')
+    store.dispose()
+    // 引擎可能活得比 store 久(侧边栏关掉了、书还开着)。只退订、只清列表的话,
+    // 那几块高亮会留在页面上,而且每块身上还挂着这个已经作废的 store 的 toggle:
+    // 点一下,它在空列表里找不到这段范围,于是走"加入"分支把高亮又画回来,
+    // 再也没人跟踪它,也就再也点不掉了。
+    expect(f.highlights.size).toBe(0)
+  })
+
   it('选中空白文本被忽略', () => {
     const f = fakeEngine()
     const store = createSelectionStore(f.engine)

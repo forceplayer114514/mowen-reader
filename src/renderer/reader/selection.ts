@@ -56,6 +56,11 @@ export function createSelectionStore(engine: ReaderEngine): {
       offSelected()
       listeners = []
       quotes = []
+      // 引擎可能活得比这个 store 久(侧边栏关掉了、书还开着)。不抹掉高亮的话,
+      // 页面上那几块会一直留着,而且每块身上还挂着这个已经作废的 store 的 toggle:
+      // 点一下,它在空列表里找不到这段范围,于是走"加入"分支把高亮又画回来,
+      // 再也没人跟踪它,也就再也点不掉了。
+      engine.clearHighlights()
     }
   }
 }
