@@ -17,7 +17,6 @@ function serverReason(body: string): string {
  * 先把控制字符(含换行)压成空格防止破坏排版,再限制长度防止把界面撑爆。
  */
 function sanitizeServerReason(reason: string): string {
-  // eslint-disable-next-line no-control-regex
   const collapsed = reason.replace(/[\x00-\x1F\x7F]+/g, ' ').trim()
   if (collapsed.length <= MAX_SERVER_REASON_LENGTH) return collapsed
   return `${collapsed.slice(0, MAX_SERVER_REASON_LENGTH)}...`
