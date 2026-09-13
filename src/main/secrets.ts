@@ -107,11 +107,6 @@ export function readApiKey(): StoredApiKey | null {
   return { key: plain, origin: null }
 }
 
-/** 只要密钥本身。调用方如果要把它发出去,必须先核对过 readApiKey() 里的 origin。 */
-export function getApiKey(): string | null {
-  return readApiKey()?.key ?? null
-}
-
 /**
  * 只回答有没有一份可用的密钥,不返回内容——这是渲染层唯一被允许知道的事。
  *

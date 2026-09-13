@@ -5,7 +5,6 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import {
   __setSafeStorageForTests,
   clearApiKey,
-  getApiKey,
   hasApiKey,
   keyFilePath,
   readApiKey,
@@ -26,13 +25,13 @@ beforeEach(() => {
 
 describe('API 密钥存取', () => {
   it('没设过时读出来是 null,hasApiKey 为 false', () => {
-    expect(getApiKey()).toBeNull()
+    expect(readApiKey()).toBeNull()
     expect(hasApiKey()).toBe(false)
   })
 
   it('写入后能原样读回', () => {
     setApiKey('sk-测试-1234', 'https://api.openai.com')
-    expect(getApiKey()).toBe('sk-测试-1234')
+    expect(readApiKey()?.key).toBe('sk-测试-1234')
     expect(hasApiKey()).toBe(true)
   })
 
@@ -45,21 +44,21 @@ describe('API 密钥存取', () => {
   it('重复写入是覆盖', () => {
     setApiKey('旧的')
     setApiKey('新的')
-    expect(getApiKey()).toBe('新的')
+    expect(readApiKey()?.key).toBe('新的')
   })
 
   it('清除后文件消失,读出来是 null', () => {
     setApiKey('sk-x')
     clearApiKey()
     expect(existsSync(keyFilePath())).toBe(false)
-    expect(getApiKey()).toBeNull()
+    expect(readApiKey()).toBeNull()
     expect(hasApiKey()).toBe(false)
   })
 
   it('写入空串等于清除', () => {
     setApiKey('sk-x')
     setApiKey('')
-    expect(getApiKey()).toBeNull()
+    expect(readApiKey()).toBeNull()
   })
 
   it('文件损坏时返回 null 而不是抛错', () => {
@@ -71,7 +70,7 @@ describe('API 密钥存取', () => {
         throw new Error('解密失败')
       }
     })
-    expect(getApiKey()).toBeNull()
+    expect(readApiKey()).toBeNull()
   })
 
   it('系统不支持加密时写入抛出可读的中文错误', () => {
@@ -85,8 +84,8 @@ describe('safeStorage 未初始化', () => {
     __setSafeStorageForTests(null)
   })
 
-  it('getApiKey 返回 null,hasApiKey 返回 false,setApiKey 抛出中文错误', () => {
-    expect(getApiKey()).toBeNull()
+  it('readApiKey 返回 null,hasApiKey 返回 false,setApiKey 抛出中文错误', () => {
+    expect(readApiKey()).toBeNull()
     expect(hasApiKey()).toBe(false)
     expect(() => setApiKey('x')).toThrow('安全存储尚未初始化')
   })
@@ -137,6 +136,6 @@ describe('密钥与填写它时的接口地址一起存', () => {
     // 旧格式就是"把密钥字符串本身加密后落盘",这里原样重建那个文件
     writeFileSync(keyFilePath(), fakeSafeStorage.encryptString('sk-老版本存的'))
     expect(readApiKey()).toEqual({ key: 'sk-老版本存的', origin: null })
-    expect(getApiKey()).toBe('sk-老版本存的')
+    expect(readApiKey()?.key).toBe('sk-老版本存的')
   })
 })
