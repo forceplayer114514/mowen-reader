@@ -38,7 +38,7 @@ import {
 import { getSetting, setSetting } from './db/settings'
 import { assertSafeLlmEndpoint } from './llm/endpoint'
 import { streamChat } from './llm/client'
-import { createSessionRegistry } from './llm/session'
+import { bindSessionLifecycle, createSessionRegistry } from './llm/session'
 import { dbFile } from './paths'
 import { clearApiKey, getApiKey, hasApiKey, setApiKey } from './secrets'
 
@@ -285,6 +285,12 @@ export function registerIpc(): void {
       if (!event.sender.isDestroyed()) event.sender.send(channel, ...args)
     }
 
+    // 请求的生命周期不能长过发起它的窗口:WebContents 被销毁,或者开始一次
+    // 新的导航(含刷新)时立即中止,否则请求会在没有任何界面持有它的 id 的
+    // 情况下继续跑、继续计费。下面 streamChat 链路的 .finally() 里会在请求
+    // 正常结束时解绑这两个监听器,长期开着的窗口不会累积用不到的监听器。
+    const dispose = bindSessionLifecycle(event.sender, () => sessions.abort(session.id))
+
     // 立刻把 id 还给渲染层,流式内容随后通过事件推过去
     void streamChat({
       endpoint,
@@ -298,7 +304,10 @@ export function registerIpc(): void {
       .catch((err: unknown) => {
         send('chat:done', session.id, err instanceof Error ? err.message : '请求失败')
       })
-      .finally(() => sessions.finish(session.id))
+      .finally(() => {
+        dispose()
+        sessions.finish(session.id)
+      })
 
     return session.id
   })
