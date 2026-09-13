@@ -259,4 +259,31 @@ describe('超限裁剪', () => {
       expect((e as Error).message).toMatch(/当前页文字量超出/)
     }
   })
+
+  it('历史再多也能删到一条不剩,不会因为剩最后一条奇数消息就永远删不掉', () => {
+    // 历史只有一条孤零零的 user 消息,旧代码的循环条件是"长度 >= 2",
+    // 这一条永远删不掉,导致后面误判成正文太大。删空之后系统消息 + 本轮
+    // 提问明显小于 limit,应该正常拼出结果,而不是抛错。
+    const history = [{ role: 'user' as const, content: '巨'.repeat(2000) }]
+    const r = buildContext(input({ toc: [], history, limit: 60 }))
+    expect(r.trimmed).toContain('drop-history')
+    expect(r.messages.map((m) => m.role)).toEqual(['system', 'user'])
+  })
+
+  it('删光历史、丢光目录后仍超限,但正文本身没问题时,报错要指向本轮提问/引用', () => {
+    // 目录为空、正文只有一个字("短"),系统消息单独远小于 limit——
+    // 真正超限的是本轮划选的引用(2000 个字)。旧代码不管三七二十一都说
+    // "正文太大,调小字号",这里字号从来不是问题,得指向提问/引用。
+    expect(() =>
+      buildContext(
+        input({
+          toc: [],
+          visible: visible({ text: '短' }),
+          quotes: [{ cfiRange: 'a', text: '巨'.repeat(2000) }],
+          userText: '这是什么',
+          limit: 50
+        })
+      )
+    ).toThrow(/本轮提问或划选的引用文字过多/)
+  })
 })

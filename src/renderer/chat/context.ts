@@ -124,8 +124,9 @@ export function buildContext(input: ContextInput): ContextResult {
     }
   }
 
-  // ② 删最早的一轮问答——一问和它对应的答一起删,不是简单删最前面两条
-  while (history.length >= 2) {
+  // ② 删最早的一轮问答——一问和它对应的答一起删,可以一直删到历史清空,
+  // 不会因为剩最后一条删不成对就永远留着
+  while (history.length > 0) {
     history = dropOldestExchange(history)
     if (!trimmed.includes('drop-history')) trimmed.push('drop-history')
     messages = assemble()
@@ -140,6 +141,15 @@ export function buildContext(input: ContextInput): ContextResult {
     if (total(messages) <= input.limit) return { messages, trimmed }
   }
 
-  // ④ 不截断正文,直接告诉用户
-  throw new Error('当前页文字量超出模型上下文上限,请调小字号后重试,或在设置里换一个上下文更大的模型')
+  // ④ 不截断正文,但要分清楚到底是正文太大,还是本轮的提问/引用太大——
+  // 走到这里历史已清空、目录已丢光,messages[0] 就是不含历史与目录的系统消息。
+  // 它单独超限,才是正文(连同书名作者章节名)本身的问题;否则超限的部分
+  // 一定出在本轮的提问或引用上,两种情况要给用户不同的、能照着做的建议。
+  const systemOnly = total([messages[0]])
+  if (systemOnly > input.limit) {
+    throw new Error('当前页文字量超出模型上下文上限,请调小字号后重试,或在设置里换一个上下文更大的模型')
+  }
+  throw new Error(
+    '本轮提问或划选的引用文字过多,超出了当前设置的上下文上限,请精简问题或引用内容,或在设置里调大上下文上限后重试'
+  )
 }
