@@ -291,23 +291,40 @@ export function registerIpc(): void {
     // 正常结束时解绑这两个监听器,长期开着的窗口不会累积用不到的监听器。
     const dispose = bindSessionLifecycle(event.sender, () => sessions.abort(session.id))
 
-    // 立刻把 id 还给渲染层,流式内容随后通过事件推过去
-    void streamChat({
-      endpoint,
-      model,
-      apiKey,
-      messages: input.messages,
-      signal: session.signal,
-      onChunk: (text) => send('chat:chunk', session.id, text)
+    // 这里不能直接调用 streamChat——必须等 chat:start 这次 invoke 的回复先
+    // 送回渲染层,渲染层才知道该拿哪个 id 去匹配后面的 chat:chunk /
+    // chat:done,否则一次很快失败的请求(比如 401)有可能在渲染层还没等到
+    // 这次 invoke 的返回值时就先送达了 chat:done,导致界面永远对不上号、
+    // 一直空等。
+    //
+    // setImmediate 排的是宏任务:这个 handler 从这往下到 return 之间不再有
+    // 任何 await,所以这个 async 函数会同步跑到 return 语句——但即便如此,
+    // 它自己返回值的 resolve、以及 Electron 内部把这个 resolve 结果转成
+    // invoke 回复消息发出去的那一步,都是通过微任务完成的。宏任务一定要等
+    // 当前这一轮微任务队列彻底清空之后才会被处理,所以 setImmediate 里的
+    // 代码,包括它发起的 streamChat 请求,一定发生在 invoke 回复消息已经
+    // 排队发出之后。而 invoke 的回复消息和 chat:chunk / chat:done 这些
+    // send() 事件,走的是同一条通往这个 WebContents 的通道——同一条通道上
+    // 主进程这边先发出去的消息,渲染层那边也一定按顺序先收到,不会乱序。
+    // 这就保证了 id 一定先于任何 chat:chunk / chat:done 到达。
+    setImmediate(() => {
+      void streamChat({
+        endpoint,
+        model,
+        apiKey,
+        messages: input.messages,
+        signal: session.signal,
+        onChunk: (text) => send('chat:chunk', session.id, text)
+      })
+        .then(() => send('chat:done', session.id, null))
+        .catch((err: unknown) => {
+          send('chat:done', session.id, err instanceof Error ? err.message : '请求失败')
+        })
+        .finally(() => {
+          dispose()
+          sessions.finish(session.id)
+        })
     })
-      .then(() => send('chat:done', session.id, null))
-      .catch((err: unknown) => {
-        send('chat:done', session.id, err instanceof Error ? err.message : '请求失败')
-      })
-      .finally(() => {
-        dispose()
-        sessions.finish(session.id)
-      })
 
     return session.id
   })
