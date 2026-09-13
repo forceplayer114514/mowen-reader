@@ -143,17 +143,18 @@ describe('流式请求', () => {
   it('中止后不再继续交付文字块', async () => {
     const ac = new AbortController()
     const got: string[] = []
+    // 两个事件挤在同一个网络分片里一次性送达,在 onChunk 里拿到第一个之后才
+    // 中止——这样才是真正测到"送到一半中止,剩下的不再送"这件事本身;
+    // 如果在 start() 里提前 abort,读循环第一次检查就会直接跳出,一个块都
+    // 没送过,断言就成立得毫无意义。
     const fetchImpl = async (): Promise<Response> => {
       const body = new ReadableStream<Uint8Array>({
         start(controller) {
           const enc = new TextEncoder()
-          controller.enqueue(
-            enc.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: '第一块' } }] })}\n\n`)
-          )
-          ac.abort()
-          controller.enqueue(
-            enc.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: '第二块' } }] })}\n\n`)
-          )
+          const chunk =
+            `data: ${JSON.stringify({ choices: [{ delta: { content: '第一块' } }] })}\n\n` +
+            `data: ${JSON.stringify({ choices: [{ delta: { content: '第二块' } }] })}\n\n`
+          controller.enqueue(enc.encode(chunk))
           controller.close()
         }
       })
@@ -162,10 +163,14 @@ describe('流式请求', () => {
     await streamChat(
       base({
         signal: ac.signal,
-        onChunk: (t) => got.push(t),
+        onChunk: (t) => {
+          got.push(t)
+          if (t === '第一块') ac.abort()
+        },
         fetchImpl: fetchImpl as unknown as typeof fetch
       })
     )
+    expect(got).toContain('第一块')
     expect(got).not.toContain('第二块')
   })
 
