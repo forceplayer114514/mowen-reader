@@ -133,7 +133,13 @@ describe('上下文拼装', () => {
 })
 
 describe('超限裁剪', () => {
+  // 下面几个 limit 都是用当前估算器(tokens.ts,含标点计数与 1.15 余量)实测出来的:
+  // 先量出"这一步裁之前"和"裁之后"两个真实 token 总数,再把 limit 定在这个区间里,
+  // 这样能确认失败时是"该裁的那一步没生效",而不是凑巧卡在一个无关的数字上。
+
   it('第一步把目录裁成当前章节前后各 5 条', () => {
+    // toc(60) 在 ch30 处:裁前系统消息总长 495 token,裁成局部窗口(11 条)
+    // 后降到 161 token。limit 取 400:161 <= 400 < 495,只靠这一步就够。
     const big = toc(60)
     const r = buildContext(
       input({
@@ -150,8 +156,9 @@ describe('超限裁剪', () => {
 
   it('目录条数不超过窗口大小(11 条)时,也要先试着裁成局部,不能因为条数少就跳过', () => {
     // 目录只有 11 条,不比窗口大小(当前章节前后各 5 条 = 11 条)多,
-    // 但裁成局部窗口后仍然从 11 条变成 6 条(当前章节在最前面,窗口被开头截断),
-    // 能省下的量比直接去删对话历史划算,所以这一步不该因为"条数不超过窗口"被跳过。
+    // 但裁成局部窗口后仍然从 11 条变成 6 条(当前章节在最前面,窗口被开头截断)。
+    // 用当前估算器实测:裁前总长 316 token,裁成局部窗口后降到 226 token。
+    // limit 取 260:226 <= 260 < 316,只靠这一步就够,不需要也不会去删历史。
     const label = (i: number): string => `第${i}章 标题${i}长一点点内容撑起字数`
     const elevenToc: TocItem[] = Array.from({ length: 11 }, (_, i) => ({
       label: label(i + 1),
@@ -166,7 +173,7 @@ describe('超限裁剪', () => {
           { role: 'user', content: '之前问的问题内容' },
           { role: 'assistant', content: '之前的回答内容也不短' }
         ],
-        limit: 200
+        limit: 260
       })
     )
     expect(r.trimmed).toContain('toc-local')
@@ -176,6 +183,9 @@ describe('超限裁剪', () => {
   })
 
   it('第二步删最早的一轮问答,成对删除', () => {
+    // 目录只有 3 条,裁成局部窗口不会变小,所以第一步不生效——裁前总长 579 token。
+    // 删掉最早一轮问答(旧问+旧答)后降到 119 token。limit 取 220:
+    // 119 <= 220 < 579,证明恰好一轮 drop-history 就够。
     const history = [
       { role: 'user' as const, content: '很早的问题'.repeat(40) },
       { role: 'assistant' as const, content: '很早的回答'.repeat(40) },
@@ -212,12 +222,19 @@ describe('超限裁剪', () => {
   })
 
   it('第三步把目录整个丢掉', () => {
+    // toc(200) 先被第一步裁成局部窗口(8 条,默认章节 ch3 靠窗口开头,被截断),
+    // 裁完还有 138 token,仍然超限;把目录整个丢掉后降到 83 token。
+    // limit 取 100:83 <= 100 < 138,证明局部裁剪不够,必须走到"整个丢掉"这步。
     const r = buildContext(input({ toc: toc(200), limit: 100 }))
     expect(r.trimmed).toContain('toc-dropped')
     expect(systemOf(r)).not.toContain('标题1')
   })
 
   it('裁剪按顺序执行,先局部目录再删历史', () => {
+    // toc(60) 裁成局部窗口后还有 368 token,单靠这一步不够;
+    // 再删一轮问答(仅有的一轮)后降到 138 token。limit 取 300:
+    // 138 <= 300 < 368,证明局部目录裁剪必须先发生、且还不够,
+    // 必须接着删历史才能达标,顺序因此可验证。
     const history = [
       { role: 'user' as const, content: '早问'.repeat(50) },
       { role: 'assistant' as const, content: '早答'.repeat(50) }
@@ -263,9 +280,10 @@ describe('超限裁剪', () => {
   it('历史再多也能删到一条不剩,不会因为剩最后一条奇数消息就永远删不掉', () => {
     // 历史只有一条孤零零的 user 消息,旧代码的循环条件是"长度 >= 2",
     // 这一条永远删不掉,导致后面误判成正文太大。删空之后系统消息 + 本轮
-    // 提问明显小于 limit,应该正常拼出结果,而不是抛错。
+    // 提问合计约 69 token(用当前估算器实测)。limit 取 70(69 <= 70),
+    // 应该正常拼出结果,而不是抛错。
     const history = [{ role: 'user' as const, content: '巨'.repeat(2000) }]
-    const r = buildContext(input({ toc: [], history, limit: 60 }))
+    const r = buildContext(input({ toc: [], history, limit: 70 }))
     expect(r.trimmed).toContain('drop-history')
     expect(r.messages.map((m) => m.role)).toEqual(['system', 'user'])
   })
