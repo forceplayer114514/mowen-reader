@@ -325,4 +325,16 @@ describe('超限裁剪', () => {
       )
     ).toThrow(/本轮提问或划选的引用文字过多/)
   })
+
+  it('没有问题也没有引用时,拒绝拼装并给出中文提示', () => {
+    expect(() => buildContext(input({ userText: '', quotes: [] }))).toThrow(/没有问题/)
+    expect(() => buildContext(input({ userText: '   ', quotes: [] }))).toThrow(/没有问题/)
+  })
+
+  it('只有引用、没有提问文字时不算空,照常拼装', () => {
+    const r = buildContext(
+      input({ userText: '', quotes: [{ cfiRange: 'a', text: '只有这一句引用' }] })
+    )
+    expect(r.messages[r.messages.length - 1].content).toContain('只有这一句引用')
+  })
 })

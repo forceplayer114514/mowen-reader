@@ -94,6 +94,12 @@ function total(messages: ChatMessage[]): number {
  * 产生的错误答案从外面看不出任何异常。
  */
 export function buildContext(input: ContextInput): ContextResult {
+  // 提问文字和引用都是空的,拼出来的最后一条消息内容也是空的——多数接口
+  // 会直接拒绝空内容的消息,不如提前用中文告诉用户到底缺了什么。
+  if (input.userText.trim().length === 0 && input.quotes.length === 0) {
+    throw new Error('没有问题或引用内容可发送,请先输入问题,或先在正文中划选一段原文')
+  }
+
   const trimmed: TrimAction[] = []
   const userMessage: ChatMessage = { role: 'user', content: buildUser(input) }
 
