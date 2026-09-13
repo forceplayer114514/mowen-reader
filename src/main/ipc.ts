@@ -36,6 +36,7 @@ import {
   updateConversationMerge
 } from './db/conversations'
 import { getSetting, setSetting } from './db/settings'
+import { assertSafeLlmEndpoint } from './llm/endpoint'
 import { streamChat } from './llm/client'
 import { createSessionRegistry } from './llm/session'
 import { dbFile } from './paths'
@@ -267,9 +268,16 @@ export function registerIpc(): void {
     const db = database()
     const endpoint = getSetting(db, 'llmEndpoint') ?? ''
     const model = getSetting(db, 'llmModel') ?? ''
-    const apiKey = getApiKey()
 
     if (!endpoint || !model) throw new Error('还没有配置接口地址和模型名,请先到设置里填写')
+
+    // 必须在取密钥之前校验地址:一个被攻破的渲染层能通过毫无白名单的
+    // settings:set 把 llmEndpoint 改成任意地址,这里就是唯一还能拦住
+    // "密钥被真实发到攻击者服务器"这件事的地方。校验不过直接抛出,
+    // 下面 getApiKey() 永远不会被执行到。
+    assertSafeLlmEndpoint(endpoint)
+
+    const apiKey = getApiKey()
     if (!apiKey) throw new Error('还没有填写 API 密钥,请先到设置里填写')
 
     const session = sessions.start()
