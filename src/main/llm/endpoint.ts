@@ -64,13 +64,24 @@ export function assertSafeLlmEndpoint(endpoint: string): void {
  * - 大小写和国际化域名要先归一。URL 解析会把主机名统一成小写、把中文或
  *   西里尔字母域名转成 punycode,所以同一个域名的不同写法不会被当成两个,
  *   而长得像的异体域名也不会被当成同一个。
+ *
+ * 最后那道 `'null'` 的拒绝不是多余的:`origin` 对非特殊协议返回的是字符串
+ * `"null"`(`new URL('foo://a').origin`、`file:` 都是),两个互不相干的地址
+ * 会因此比对相等。今天调用它的两处都先跑过 assertSafeLlmEndpoint、协议已经
+ * 被卡死在 http/https,走不到这一步;写在这里是为了让这个函数自己成立,不必
+ * 依赖调用顺序——谁把校验挪走或者在别处单独用它,洞就回来了。
  */
 export function llmEndpointOrigin(endpoint: string): string {
+  let origin: string
   try {
-    return new URL(endpoint).origin
+    origin = new URL(endpoint).origin
   } catch {
     throw new Error(`接口地址填的不是一个合法的网址,请到设置里检查:${endpoint}`)
   }
+  if (origin === 'null') {
+    throw new Error(`接口地址的协议不受支持,无法判断它指向哪台服务器:${endpoint}`)
+  }
+  return origin
 }
 
 /**

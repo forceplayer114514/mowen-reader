@@ -36,19 +36,19 @@ describe('API 密钥存取', () => {
   })
 
   it('落盘的内容不是明文', () => {
-    setApiKey('sk-明文不该出现')
+    setApiKey('sk-明文不该出现', 'https://api.openai.com')
     const raw = readFileSync(keyFilePath())
     expect(raw.toString('utf8')).not.toContain('sk-明文不该出现')
   })
 
   it('重复写入是覆盖', () => {
-    setApiKey('旧的')
-    setApiKey('新的')
+    setApiKey('旧的', 'https://api.openai.com')
+    setApiKey('新的', 'https://api.openai.com')
     expect(readApiKey()?.key).toBe('新的')
   })
 
   it('清除后文件消失,读出来是 null', () => {
-    setApiKey('sk-x')
+    setApiKey('sk-x', 'https://api.openai.com')
     clearApiKey()
     expect(existsSync(keyFilePath())).toBe(false)
     expect(readApiKey()).toBeNull()
@@ -56,13 +56,13 @@ describe('API 密钥存取', () => {
   })
 
   it('写入空串等于清除', () => {
-    setApiKey('sk-x')
-    setApiKey('')
+    setApiKey('sk-x', 'https://api.openai.com')
+    setApiKey('', null)
     expect(readApiKey()).toBeNull()
   })
 
   it('文件损坏时返回 null 而不是抛错', () => {
-    setApiKey('sk-x')
+    setApiKey('sk-x', 'https://api.openai.com')
     writeFileSync(keyFilePath(), Buffer.from([0, 1, 2]))
     __setSafeStorageForTests({
       ...fakeSafeStorage,
@@ -75,7 +75,7 @@ describe('API 密钥存取', () => {
 
   it('系统不支持加密时写入抛出可读的中文错误', () => {
     __setSafeStorageForTests({ ...fakeSafeStorage, isEncryptionAvailable: () => false })
-    expect(() => setApiKey('sk-x')).toThrow(/加密/)
+    expect(() => setApiKey('sk-x', 'https://api.openai.com')).toThrow(/加密/)
   })
 })
 
@@ -87,7 +87,7 @@ describe('safeStorage 未初始化', () => {
   it('readApiKey 返回 null,hasApiKey 返回 false,setApiKey 抛出中文错误', () => {
     expect(readApiKey()).toBeNull()
     expect(hasApiKey()).toBe(false)
-    expect(() => setApiKey('x')).toThrow('安全存储尚未初始化')
+    expect(() => setApiKey('x', 'https://api.openai.com')).toThrow('安全存储尚未初始化')
   })
 })
 

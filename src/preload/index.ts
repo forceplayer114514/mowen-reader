@@ -61,8 +61,9 @@ const api = {
   appendMessage: (input: AppendMessageInput): Promise<MessageRecord> =>
     ipcRenderer.invoke('chat:appendMessage', input),
 
-  // hasApiKey 只回答有没有设过,不会、也不能返回密钥内容——密钥只在主进程
-  // 的 secrets 模块里存在,没有任何通道把它送出主进程。
+  // hasApiKey 只回答有没有一份存好了、并且记下了它属于哪个接口地址的密钥,
+  // 不会、也不能返回密钥内容——密钥只在主进程的 secrets 模块里存在,没有
+  // 任何通道把它送出主进程。
   hasApiKey: (): Promise<boolean> => ipcRenderer.invoke('secrets:hasApiKey'),
   setApiKey: (key: string): Promise<void> => ipcRenderer.invoke('secrets:setApiKey', key),
   clearApiKey: (): Promise<void> => ipcRenderer.invoke('secrets:clearApiKey'),

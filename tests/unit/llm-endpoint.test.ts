@@ -73,6 +73,13 @@ describe('接口地址的来源', () => {
   it('不是合法网址时抛中文错误', () => {
     expect(() => llmEndpointOrigin('不是一个网址')).toThrow(/合法的网址/)
   })
+
+  it('非特殊协议的地址被拒绝,不会都变成同一个字符串 "null"', () => {
+    // URL 对非特殊协议的 origin 就是字符串 "null",两个互不相干的地址会因此
+    // 比对相等。今天调用方都先跑过协议校验、走不到这里,但这个函数自己要成立。
+    expect(() => llmEndpointOrigin('foo://a')).toThrow(/协议不受支持/)
+    expect(() => llmEndpointOrigin('file:///etc/passwd')).toThrow(/协议不受支持/)
+  })
 })
 
 describe('密钥与填写它时的接口地址绑定', () => {

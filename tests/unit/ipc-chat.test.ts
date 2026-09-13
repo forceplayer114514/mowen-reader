@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs'
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -33,7 +33,7 @@ vi.mock('../../src/main/llm/client', () => ({
 }))
 
 import { registerIpc } from '../../src/main/ipc'
-import { __setSafeStorageForTests, clearApiKey, setApiKey } from '../../src/main/secrets'
+import { __setSafeStorageForTests, clearApiKey, keyFilePath } from '../../src/main/secrets'
 
 /** 可逆的字节反转冒充加密,和 secrets 的单元测试用的是同一个假实现。 */
 const fakeSafeStorage = {
@@ -139,7 +139,10 @@ describe('secrets:setApiKey 把密钥绑到当时的接口地址上', () => {
     // "这是旧版本存下的",把排查引向完全错误的方向。
     call('settings:set', null, 'llmEndpoint', 'https://api.openai.com/v1')
     expect(() => call('secrets:setApiKey', null, 42)).toThrow(/必须是一段文字/)
-    expect(call('secrets:hasApiKey', null)).toBe(false)
+    // 断言文件根本没被写出来。查 hasApiKey 是不够的:密钥真被写进去时,落盘的
+    // 是 key 不是字符串的信封,readApiKey 会掉进裸密钥兜底、origin 记成 null,
+    // hasApiKey 照样答 false——这条断言在两种情况下都成立,分不出对错。
+    expect(existsSync(keyFilePath())).toBe(false)
   })
 
   it('清除密钥不需要接口地址', () => {
@@ -185,8 +188,9 @@ describe('chat:start 在取密钥之前先核对接口地址', () => {
     expect(mocks.streamChat).not.toHaveBeenCalled()
   })
 
-  it('旧版本存下的、没有记录地址的密钥,要求重新填写而不是直接发出去', async () => {
-    setApiKey('sk-老版本存的')
+  it('旧版本直接加密裸密钥存下的文件,要求重新填写而不是直接发出去', async () => {
+    // 原样重建 v1 的落盘格式:密钥字符串本身加密后写进去,没有任何信封。
+    writeFileSync(keyFilePath(), fakeSafeStorage.encryptString('sk-老版本存的'))
     await expect(
       call('chat:start', fakeSender(), { messages: [] }) as Promise<string>
     ).rejects.toThrow(/重新填写/)

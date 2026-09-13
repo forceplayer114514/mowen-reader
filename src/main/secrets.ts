@@ -58,8 +58,12 @@ const ENVELOPE_VERSION = 3
  * 地址和密钥一起进同一份密文,而不是另存一个文件或者写进设置表:设置表是
  * 渲染层能写的,分开存就等于允许"只改地址、不动密钥",而那正是要防的事。
  * 锁在一起之后,想换这个地址就必须重新输入一次密钥。
+ *
+ * origin 是必填的,没有默认值:默认成 null 的话,当前版本自己就能写出一份
+ * "没绑地址"的密钥,而 assertKeyBoundToEndpoint 见到它会说"这是旧版本存下
+ * 的",指向一个完全错误的方向。清除密钥走的是空串那条分支,不需要地址。
  */
-export function setApiKey(key: string, origin: string | null = null): void {
+export function setApiKey(key: string, origin: string | null): void {
   if (key.length === 0) {
     clearApiKey()
     return
