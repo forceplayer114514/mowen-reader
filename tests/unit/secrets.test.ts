@@ -31,7 +31,7 @@ describe('API 密钥存取', () => {
   })
 
   it('写入后能原样读回', () => {
-    setApiKey('sk-测试-1234')
+    setApiKey('sk-测试-1234', 'https://api.openai.com')
     expect(getApiKey()).toBe('sk-测试-1234')
     expect(hasApiKey()).toBe(true)
   })
@@ -111,6 +111,14 @@ describe('密钥与填写它时的接口地址一起存', () => {
 
   it('没设过时读出来是 null', () => {
     expect(readApiKey()).toBeNull()
+  })
+
+  it('没记下地址的旧密钥,hasApiKey 答"没有",好让设置页当场提示补填', () => {
+    // 它在发起对话时一定会被拒,答"有"只会让用户以为不用动,直到真去对话
+    // 才撞上"请重新填写"。
+    writeFileSync(keyFilePath(), fakeSafeStorage.encryptString('sk-老版本存的'))
+    expect(readApiKey()?.key).toBe('sk-老版本存的')
+    expect(hasApiKey()).toBe(false)
   })
 
   it('v2 只记了主机名、没记协议,读出来地址是 null —— 本机 443 和 80 会塌缩成同一个', () => {

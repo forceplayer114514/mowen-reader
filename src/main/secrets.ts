@@ -112,9 +112,16 @@ export function getApiKey(): string | null {
   return readApiKey()?.key ?? null
 }
 
-/** 只回答有没有设过,不返回内容——这是渲染层唯一被允许知道的事。 */
+/**
+ * 只回答有没有一份可用的密钥,不返回内容——这是渲染层唯一被允许知道的事。
+ *
+ * 没记下地址的旧密钥一律答"没有":它在发起对话时一定会被
+ * assertKeyBoundToEndpoint 拒掉,答"有"只会让设置页显示"已设置",用户按
+ * "留空不动则保持原值"的规则什么都不填就退出,直到真去对话才撞上那句
+ * "请重新填写"。答"没有",设置页当场就提示补填,升级这条路才是闭合的。
+ */
 export function hasApiKey(): boolean {
-  return readApiKey() !== null
+  return readApiKey()?.origin != null
 }
 
 export function clearApiKey(): void {
