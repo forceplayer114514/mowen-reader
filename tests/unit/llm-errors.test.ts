@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { classifyHttpError, classifyNetworkError } from '../../src/main/llm/errors'
+import {
+  classifyHttpError,
+  classifyNetworkError,
+  redactCredentials
+} from '../../src/main/llm/errors'
 
 describe('HTTP 错误分类', () => {
   it('401 说密钥无效', () => {
@@ -67,6 +71,40 @@ describe('HTTP 错误分类', () => {
     const msg = classifyHttpError(404, body)
     expect(msg).not.toContain('(')
     expect(msg).not.toContain('服务端说明')
+  })
+
+  it('密钥被服务端回显到第 200 个字符截断边界之后,依旧不会有前缀漏出', () => {
+    // 190 个填充字符 + "api_key=" (8 个字符) = 198,真正的密钥从第 198 个
+    // 字符开始,跨过 200 字符截断线——先截断再打码的旧顺序会把密钥切成
+    // 两半,剩下的前缀就不再等于完整密钥,打码匹配不上,前缀就漏出去了。
+    const apiKey = 'sk-supersecret-verylongkey-0123456789'
+    const filler = 'x'.repeat(190)
+    const body = JSON.stringify({ error: { message: `${filler}api_key=${apiKey}` } })
+
+    const msg = classifyHttpError(404, body, apiKey)
+
+    expect(msg).not.toContain(apiKey)
+    // 不能只查完整密钥有没有漏出去,截断点前的任何一段有意义长度的前缀
+    // 漏出去也是失败——这正是"先截断再打码"这个旧顺序的错误模式。
+    expect(msg).not.toContain(apiKey.slice(0, 10))
+  })
+
+  it('不传 apiKey 时,旧的调用方式仍然可用,不受影响', () => {
+    expect(() => classifyHttpError(404, JSON.stringify({ error: { message: 'x' } }))).not.toThrow()
+  })
+})
+
+describe('redactCredentials', () => {
+  it('把完整密钥换成 ***', () => {
+    expect(redactCredentials('key=sk-abc123', 'sk-abc123')).toBe('key=***')
+  })
+
+  it('把 Bearer 后面的一整段也打码,不管是不是当前这次用的密钥', () => {
+    expect(redactCredentials('saw Bearer sk-other-999', 'sk-abc123')).toBe('saw Bearer ***')
+  })
+
+  it('apiKey 为空串时不报错,原样返回(Bearer 打码仍然生效)', () => {
+    expect(redactCredentials('no secrets here', '')).toBe('no secrets here')
   })
 })
 

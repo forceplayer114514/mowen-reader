@@ -1,4 +1,4 @@
-import { classifyHttpError, classifyNetworkError } from './errors'
+import { classifyHttpError, classifyNetworkError, redactCredentials } from './errors'
 import { createSseParser } from './sse'
 
 export interface StreamOptions {
@@ -35,20 +35,6 @@ function chatUrl(endpoint: string): string {
     if (stripped.endsWith(COMPLETIONS_PATH)) return stripped
     return `${stripped}${COMPLETIONS_PATH}`
   }
-}
-
-/**
- * 服务端返回的错误文本可能把请求头(含密钥)原样回显,甚至回显别的凭证。
- * 抛出之前一律过一遍这个函数:先把真实密钥的每一处出现都换掉,再把任何
- * "Bearer 一串不含空白的字符"形状的片段也换掉,防止密钥以别的形式,或者
- * 别的凭证,从服务端说明里露出去。
- */
-function redactCredentials(message: string, apiKey: string): string {
-  let out = message
-  if (apiKey.length > 0) {
-    out = out.split(apiKey).join('***')
-  }
-  return out.replace(/Bearer\s+\S+/gi, 'Bearer ***')
 }
 
 /** 用 onChunk 自己的异常把网络异常路径区分开,不让两者混在一起被误判成网络问题。 */
@@ -96,7 +82,13 @@ export async function streamChat(options: StreamOptions): Promise<void> {
 
   if (!response.ok) {
     const body = await response.text().catch(() => '')
-    throw new Error(redactCredentials(classifyHttpError(response.status, body), options.apiKey))
+    // classifyHttpError 传入 apiKey 后,内部已经在截断服务端说明之前打过码;
+    // 这里再对拼好的完整消息整体打码一遍,是不依赖 errors.ts 内部顺序的最后
+    // 一道保险——即便以后 errors.ts 的实现改了、打码和截断的顺序又被颠倒,
+    // 这里仍然兜底,密钥不会漏出去。
+    throw new Error(
+      redactCredentials(classifyHttpError(response.status, body, options.apiKey), options.apiKey)
+    )
   }
 
   if (!response.body) {
@@ -122,7 +114,11 @@ export async function streamChat(options: StreamOptions): Promise<void> {
     }
   } catch (err) {
     if (err instanceof CallbackError) {
-      throw new Error(`处理时出错(不是网络问题):${describeUnknown(err.cause)}`)
+      // 回调的内容是渲染层给的,今天不会带密钥,但也一律过一遍打码——
+      // 不花什么代价,却能拆掉一个以后容易被忘记补上的陷阱。
+      throw new Error(
+        redactCredentials(`处理时出错(不是网络问题):${describeUnknown(err.cause)}`, options.apiKey)
+      )
     }
     const message = classifyNetworkError(err)
     if (message !== '') throw new Error(message)
