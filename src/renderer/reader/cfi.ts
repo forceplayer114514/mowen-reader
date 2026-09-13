@@ -107,6 +107,48 @@ export function compareCfiPositions(cfiA: string, cfiB: string): number {
   return comparePart(a.part, b.part)
 }
 
+/** 把章节路径(`!` 之前那段)拆成数字步进,用于跨章节比较。 */
+function baseSteps(base: string): number[] {
+  return base
+    .split('/')
+    .filter((s) => s.length > 0)
+    .map((s) => Number(s.split('[')[0]))
+}
+
+function compareNumberLists(a: number[], b: number[]): number {
+  const len = Math.min(a.length, b.length)
+  for (let i = 0; i < len; i++) {
+    if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1
+  }
+  if (a.length === b.length) return 0
+  return a.length < b.length ? -1 : 1
+}
+
+/**
+ * 跨章节可比的 CFI 全序比较:先比章节路径,同章节再比章节内路径与字符偏移。
+ * 与 compareCfiPositions 的区别有两处:一是它不要求两个 CFI 在同一章节,
+ * 会先比较 base(章节路径);二是缺失的字符偏移在这里按 0 处理,视为与显式的
+ * ":0" 相同位置——这与 compareCfiPositions 的语义**不同**(compareCfiPositions
+ * 特意让缺失偏移恒小于任何显式偏移包括 0,是为了给 makeRangeCfi 的起止点纠错
+ * 提供可交换的依据),所以这里不能直接委托给 compareCfiPositions,而是复用同一套
+ * "逐项比较数字列表、再比长度"的逻辑(compareNumberLists)自己比较章节内路径,
+ * 最后再用"缺失按 0 处理"的语义比较字符偏移。
+ */
+export function compareCfi(a: string, b: string): number {
+  const left = split(a)
+  const right = split(b)
+  const byChapter = compareNumberLists(baseSteps(left.base), baseSteps(right.base))
+  if (byChapter !== 0) return byChapter
+  const byPath = compareNumberLists(
+    left.part.steps.map((s) => s.index),
+    right.part.steps.map((s) => s.index)
+  )
+  if (byPath !== 0) return byPath
+  const aOffset = left.part.terminal?.offset ?? 0
+  const bOffset = right.part.terminal?.offset ?? 0
+  return aOffset - bOffset
+}
+
 /**
  * 把起点 CFI 与终点 CFI 合成一个范围 CFI。
  * 形如 epubcfi(公共前缀,起点剩余部分,终点剩余部分)。

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { compareCfiPositions, makeRangeCfi } from '../../src/renderer/reader/cfi'
+import { compareCfi, compareCfiPositions, makeRangeCfi } from '../../src/renderer/reader/cfi'
 
 describe('范围 CFI 合成', () => {
   it('同一章内的两点合成带逗号的范围', () => {
@@ -100,5 +100,42 @@ describe('compareCfiPositions', () => {
 
   it('位置完全相同时返回 0', () => {
     expect(compareCfiPositions('epubcfi(/6/4!/4/2/1:3)', 'epubcfi(/6/4!/4/2/1:3)')).toBe(0)
+  })
+})
+
+describe('跨章节 CFI 全序比较', () => {
+  it('章节靠前的排在前面', () => {
+    expect(compareCfi('epubcfi(/6/4!/4/2/2/1:0)', 'epubcfi(/6/6!/4/2/2/1:0)')).toBeLessThan(0)
+    expect(compareCfi('epubcfi(/6/6!/4/2/2/1:0)', 'epubcfi(/6/4!/4/2/2/1:0)')).toBeGreaterThan(0)
+  })
+
+  it('同章节内按路径比', () => {
+    expect(compareCfi('epubcfi(/6/4!/4/2/2/1:0)', 'epubcfi(/6/4!/4/2/8/1:0)')).toBeLessThan(0)
+  })
+
+  it('路径相同时按字符偏移比', () => {
+    expect(compareCfi('epubcfi(/6/4!/4/2/2/1:3)', 'epubcfi(/6/4!/4/2/2/1:9)')).toBeLessThan(0)
+  })
+
+  it('完全相同返回 0', () => {
+    const x = 'epubcfi(/6/4!/4/2/2/1:3)'
+    expect(compareCfi(x, x)).toBe(0)
+  })
+
+  it('路径是另一条的前缀时,短的排前面', () => {
+    expect(compareCfi('epubcfi(/6/4!/4/2)', 'epubcfi(/6/4!/4/2/2/1:0)')).toBeLessThan(0)
+  })
+
+  it('缺失偏移与显式 :0 视为同一位置', () => {
+    expect(compareCfi('epubcfi(/6/4!/4/2/2/1)', 'epubcfi(/6/4!/4/2/2/1:0)')).toBe(0)
+  })
+
+  it('章节号是数值比较不是字符串比较', () => {
+    // 字符串比较会把 /6/10 排在 /6/4 前面,数值比较不会
+    expect(compareCfi('epubcfi(/6/4!/4/2/2/1:0)', 'epubcfi(/6/10!/4/2/2/1:0)')).toBeLessThan(0)
+  })
+
+  it('不是合法 CFI 时抛出可读的错误', () => {
+    expect(() => compareCfi('随便', 'epubcfi(/6/4!/4/2/2/1:0)')).toThrow(/CFI/)
   })
 })
