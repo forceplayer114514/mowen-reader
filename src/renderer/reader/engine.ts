@@ -206,11 +206,20 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     }
   }
 
+  /** 这一次按下/松开是手指还是鼠标。两者补发兼容事件的方式不同,见 swallowNextClick()。 */
+  type PressKind = 'mouse' | 'touch'
+
+  function pressKindOf(e: Event): PressKind {
+    return e.type.startsWith('touch') ? 'touch' : 'mouse'
+  }
+
   /**
-   * 解除当前挂着的"吞掉下一下 click"。见 swallowNextClick()。
-   * 同一时刻最多只挂一份,teardown()/destroy() 里也要能把它摘干净。
+   * 每份章节文档上当前挂着的那份"吞掉下一下 click",按文档记。见 swallowNextClick()。
+   * 同一份文档上同一时刻只能挂一份:两份都挂在捕获阶段,先跑到的那份一
+   * stopImmediatePropagation,后一份就再也没机会解除自己,会一直留着把用户之后
+   * 真想点的那一下也吞掉。
    */
-  let disarmClickSwallow: (() => void) | null = null
+  const clickSwallows = new Map<Document, () => void>()
 
   /**
    * 吞掉紧跟在一次"松手并消费了选区"之后补发的那一下 click。
@@ -240,20 +249,35 @@ export function createEngine(container: HTMLElement): ReaderEngine {
    * 交互(下一次按下一定排在下一次 click 前面,按下即解除)。两者谁先到都算数,
    * 所以一次只会吞掉紧挨着的那一下,过一会儿真去点高亮照样点得掉。
    */
-  function swallowNextClick(doc: Document): void {
-    disarmClickSwallow?.()
+  function swallowNextClick(doc: Document, press: PressKind): void {
+    clickSwallows.get(doc)?.()
+    // 解除的时机分手指和鼠标:触摸松开之后浏览器会补一整套兼容事件
+    // (mousedown → mouseup → click),要吞的正是最后那一下 click,所以中间这个
+    // mousedown 不能算"用户开始了下一次交互"。手指那一路只认下一次 touchstart。
+    const pressEvent = press === 'touch' ? 'touchstart' : 'mousedown'
+    // 捕获阶段写成 { capture: true } 而不是第三个参数给 true:两种写法在浏览器里
+    // 等价,但 node 那套 EventTarget 只认对象形式,布尔形式下 removeEventListener
+    // 配不上 addEventListener、退订不掉。单元测试跑在 node 上,不统一写法的话,
+    // 这里的退订在测试里永远不生效,测出来的是运行环境的差异而不是这段逻辑。
+    const capture = { capture: true } as const
     const disarm = (): void => {
-      doc.removeEventListener('click', onClick, true)
-      doc.removeEventListener('mousedown', disarm, true)
-      if (disarmClickSwallow === disarm) disarmClickSwallow = null
+      doc.removeEventListener('click', onClick, capture)
+      doc.removeEventListener(pressEvent, disarm, capture)
+      if (clickSwallows.get(doc) === disarm) clickSwallows.delete(doc)
     }
     const onClick = (e: Event): void => {
       disarm()
       e.stopImmediatePropagation()
     }
-    doc.addEventListener('click', onClick, true)
-    doc.addEventListener('mousedown', disarm, true)
-    disarmClickSwallow = disarm
+    doc.addEventListener('click', onClick, capture)
+    doc.addEventListener(pressEvent, disarm, capture)
+    clickSwallows.set(doc, disarm)
+  }
+
+  /** 解除所有还挂着的 click 吞噬。 */
+  function disarmAllClickSwallows(): void {
+    for (const disarm of [...clickSwallows.values()]) disarm()
+    clickSwallows.clear()
   }
 
   /**
@@ -280,8 +304,13 @@ export function createEngine(container: HTMLElement): ReaderEngine {
    * 什么文字都没选中(比如拖过了段落之间的空隙、或者只是点了一下),一定不能动
    * 选区——清掉它换不来任何东西,用户看到的只是自己刚拖出来的一段话无声无息地
    * 消失,连复制都做不到。
+   *
+   * 每份渲染出来的章节文档都要走一遍,不能碰到第一份有选区的就收工。双页排版下
+   * 同时渲染着两份文档,它们各有各的选区,互不影响:只处理第一份的话,另一份里
+   * 那段选区会一直留在那儿,等用户下一次在别处松手才被翻出来,变成一段莫名其妙
+   * 冒出来的引用。
    */
-  function consumeSelection(): void {
+  function consumeSelection(press: PressKind): void {
     if (selectionListeners.length === 0) return
     if (!rendition) return
     // getContents() 在这版 epub.js 的类型声明里被错标成单个 Contents,运行时实际
@@ -304,34 +333,64 @@ export function createEngine(container: HTMLElement): ReaderEngine {
         continue
       }
 
-      selection.removeAllRanges()
       // 这段选区马上就会变成一块盖在同一片文字上的高亮,而松手之后浏览器还会在
       // 松手那个点上补一次 click——正落在这块新高亮里。先把那一下挡下来,
       // 否则这次划选画出来就被自己抹掉,见 swallowNextClick() 的注释。
-      swallowNextClick(contents.document)
+      swallowNextClick(contents.document, press)
       // 快照一份再逐个确认还在不在名单里,理由见 notify() 的注释。
       const round = [...selectionListeners]
       for (const cb of round) {
         if (selectionListeners.includes(cb)) cb(cfiRange, text)
       }
-      return
+      // 通知完了才收选区,顺序不能倒过来。这是鼠标事件的回调,没有任何调用栈接得住
+      // 订阅者抛出来的异常:先收选区的话,一个订阅者炸了,后面的订阅者收不到通知,
+      // 而选区已经没了——引用没加上,用户手里连可复制的文字都不剩。留着选区,至少
+      // 他刚拖出来的那段话还在。
+      selection.removeAllRanges()
     }
   }
 
   /**
-   * 松开鼠标。两个地方都要接:
-   *
-   * - 书内容 iframe 里松手,走 epub.js 转发的 mouseup(它把每份章节文档上的
-   *   DOM_EVENTS 都转发到 rendition 上,见 utils/constants.js 的 DOM_EVENTS 和
-   *   rendition.js 的 passEvents,mouseup 就在那个列表里);
-   * - 拖着拖着拖出了 iframe、在外面松手,那一下落在外层窗口上,iframe 里收不到,
-   *   所以外层窗口也挂一个。
-   *
-   * 两条路进的是同一个函数,重复触发也无所谓:先到的那次会把选区收走,后到的那次
-   * 读到的就是空选区,直接什么都不做。
+   * 这一次按下是不是落在书内容里。见 handleOuterRelease() 的注释。
+   * 书内容是一份独立的文档,它里面的事件不会冒到外层,所以两边各自看到的按下
+   * 天然是互斥的:里面按下就只有 rendition 收得到,外面按下就只有外层窗口收得到。
    */
-  function handleMouseUp(): void {
-    consumeSelection()
+  let pressedInContent = false
+
+  function handleContentPress(): void {
+    pressedInContent = true
+  }
+
+  function handleOuterPress(): void {
+    pressedInContent = false
+  }
+
+  /**
+   * 在书内容里松手。走 epub.js 转发的 mouseup/touchend——它把每份章节文档上的
+   * DOM_EVENTS 都转发到 rendition 上(见 utils/constants.js 的 DOM_EVENTS 和
+   * rendition.js 的 passEvents,mouseup 和 touchend 都在那个列表里),和 keydown
+   * 走同一条路,不需要我们自己往每份文档上挂监听。
+   *
+   * 手指和触控笔也要接:它们划完一段文字的最后一步是 touchend,不是 mouseup。
+   * 只听 mouseup 的话,在触摸屏上划选完全没有任何反应。
+   */
+  function handleContentRelease(e: Event): void {
+    pressedInContent = false
+    consumeSelection(pressKindOf(e))
+  }
+
+  /**
+   * 在书内容外面松手。只有当这一次按下本来就落在书内容里(也就是真的是一次从书里
+   * 开始、拖出了 iframe 才松开的拖选)才算数。
+   *
+   * 不看这个的话,外层界面上任何一次松开都会被当成一次拖选的结束:用户用键盘选中
+   * 了一段话,随手去点工具栏上的一个按钮,那一下松开落在外层窗口上,就会把这段话
+   * 悄悄变成一条引用——他既没打算引用它,也不知道自己刚引用了什么。
+   */
+  function handleOuterRelease(e: Event): void {
+    if (!pressedInContent) return
+    pressedInContent = false
+    consumeSelection(pressKindOf(e))
   }
 
   /**
@@ -364,7 +423,11 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   // 拖选拖出了书内容 iframe、在外面松手时,那一下只有外层窗口收得到(iframe 里的
   // 文档和外层是两份文档,事件不会从里面冒到外面)。和上面的 keydown 一样,
   // 从 createEngine() 起订到 destroy(),跟某一次 open() 的 rendition 无关。
-  window.addEventListener('mouseup', handleMouseUp)
+  // 按下也要接:外层界面上的按下说明这一次不是从书里开始的拖选,见 handleOuterRelease()。
+  window.addEventListener('mousedown', handleOuterPress)
+  window.addEventListener('touchstart', handleOuterPress)
+  window.addEventListener('mouseup', handleOuterRelease)
+  window.addEventListener('touchend', handleOuterRelease)
 
   /**
    * 释放某次 open() 调用在本地创建、但还没发布到闭包变量就被取代的 book/rendition。
@@ -391,7 +454,10 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   function destroyStale(staleBook: Book, staleRendition: Rendition): void {
     staleRendition.q.stop()
     staleRendition.off('keydown', handleContentKeydown)
-    staleRendition.off('mouseup', handleMouseUp)
+    staleRendition.off('mousedown', handleContentPress)
+    staleRendition.off('touchstart', handleContentPress)
+    staleRendition.off('mouseup', handleContentRelease)
+    staleRendition.off('touchend', handleContentRelease)
     staleRendition.off('rendered', syncHighlights)
     try {
       staleRendition.destroy()
@@ -415,10 +481,13 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     // 挂在旧章节文档上的那个"吞掉下一下 click"要先摘掉:文档马上就跟着 rendition
     // 一起没了,监听器本身会跟着消失,但 disarmClickSwallow 这个引用留在这里,
     // 下一次划选时 swallowNextClick() 会先调它一次,对着一份已经销毁的文档做事。
-    disarmClickSwallow?.()
-    disarmClickSwallow = null
+    disarmAllClickSwallows()
+    pressedInContent = false
     rendition?.off('keydown', handleContentKeydown)
-    rendition?.off('mouseup', handleMouseUp)
+    rendition?.off('mousedown', handleContentPress)
+    rendition?.off('touchstart', handleContentPress)
+    rendition?.off('mouseup', handleContentRelease)
+    rendition?.off('touchend', handleContentRelease)
     rendition?.off('rendered', syncHighlights)
     // rendition.q 里可能还排着一个我们自己调用过、还没跑到的 display() 任务(见
     // ReaderView.boot() 里 `await engine.display(...)`):它是 epub.js 内部靠
@@ -550,11 +619,14 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       // 见上面 handleContentKeydown 的注释:这一行订阅之后,书内容 iframe 里发生的
       // keydown 会被 epub.js 自己转发到这里,不需要我们逐个文档去挂监听器。
       nextRendition.on('keydown', handleContentKeydown)
-      // 松手即高亮:mouseup 同样是 epub.js 自己从每份章节文档上收上来再转发的
-      // (见 handleMouseUp 的注释),和 keydown 一样只在这里订阅一次。注意这一行在
-      // 两次批次号检查之后,被取代的那次 open() 走不到这里,不会给一个马上要销毁的
-      // rendition 挂监听。
-      nextRendition.on('mouseup', handleMouseUp)
+      // 松手即高亮:mouseup / touchend 同样是 epub.js 自己从每份章节文档上收上来再
+      // 转发的(见 handleContentRelease 的注释),和 keydown 一样只在这里订阅一次。
+      // 注意这几行在两次批次号检查之后,被取代的那次 open() 走不到这里,不会给一个
+      // 马上要销毁的 rendition 挂监听。
+      nextRendition.on('mousedown', handleContentPress)
+      nextRendition.on('touchstart', handleContentPress)
+      nextRendition.on('mouseup', handleContentRelease)
+      nextRendition.on('touchend', handleContentRelease)
       // 章节渲染出来的那一刻把高亮和引擎这份账对齐一次,见 syncHighlights() 的注释。
       // 和上面两行一样在两次批次号检查之后,被取代的那次 open() 走不到这里。
       nextRendition.on('rendered', syncHighlights)
@@ -709,7 +781,10 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       keyListeners = []
       selectionListeners = []
       window.removeEventListener('keydown', handleWindowKeydown)
-      window.removeEventListener('mouseup', handleMouseUp)
+      window.removeEventListener('mousedown', handleOuterPress)
+      window.removeEventListener('touchstart', handleOuterPress)
+      window.removeEventListener('mouseup', handleOuterRelease)
+      window.removeEventListener('touchend', handleOuterRelease)
     }
   }
 }

@@ -60,6 +60,8 @@ function createFakeEpub() {
       getRangeAt: () => ({ collapsed: sel.collapsed }),
       removeAllRanges: () => {
         sel.cleared = true
+        sel.rangeCount = 0
+        sel.collapsed = true
       }
     }
   }
@@ -265,5 +267,145 @@ describe('高亮与 epub.js 标注表', () => {
     f.setViewCount(1)
     f.emit('rendered')
     expect(f.trace().sort()).toEqual(['remove cfi-1', 'remove cfi-2'])
+  })
+})
+
+describe('松手即划选', () => {
+  /** 订上一个只记账的划选订阅者,返回它收到的东西。 */
+  function watch(engine: ReaderEngine): { cfiRange: string; text: string }[] {
+    const seen: { cfiRange: string; text: string }[] = []
+    engine.onSelected((cfiRange, text) => seen.push({ cfiRange, text }))
+    return seen
+  }
+
+  it('书内容里松手,选中的那段文字进入订阅者手里,选区被收走', async () => {
+    const f = createFakeEpub()
+    const engine = await openEngine()
+    const c = f.addContents('cfi-1', '他终于明白')
+    const seen = watch(engine)
+
+    f.emit('mouseup', new Event('mouseup'))
+
+    expect(seen).toEqual([{ cfiRange: 'cfi-1', text: '他终于明白' }])
+    expect(c.selection.cleared).toBe(true)
+  })
+
+  it('手指松开(touchend)一样算一次划选', async () => {
+    const f = createFakeEpub()
+    const engine = await openEngine()
+    f.addContents('cfi-1', '他终于明白')
+    const seen = watch(engine)
+
+    f.emit('touchend', new Event('touchend'))
+
+    expect(
+      seen,
+      '手指和触控笔划完一段文字的最后一步是 touchend 不是 mouseup;只听 mouseup 的话,触摸屏上划选完全没有任何反应'
+    ).toHaveLength(1)
+  })
+
+  it('外层界面上的松开,只有这一次按下落在书内容里时才算一次划选的结束', async () => {
+    const f = createFakeEpub()
+    const engine = await openEngine()
+    const c = f.addContents('cfi-1', '他终于明白')
+    const seen = watch(engine)
+
+    // 用键盘选中了一段话,然后随手去点工具栏上的按钮:按下和松开都落在外层界面上。
+    fakeWindow.dispatchEvent(new Event('mousedown'))
+    fakeWindow.dispatchEvent(new Event('mouseup'))
+
+    expect(
+      seen,
+      '这一下松开跟书里那段选区毫无关系,却把它悄悄变成了一条引用——用户既没打算引用它,也不知道自己刚引用了什么'
+    ).toEqual([])
+    expect(c.selection.cleared).toBe(false)
+
+    // 真的从书里开始、拖出 iframe 才松手:这一次才算数。
+    f.emit('mousedown', new Event('mousedown'))
+    fakeWindow.dispatchEvent(new Event('mouseup'))
+
+    expect(seen).toHaveLength(1)
+  })
+
+  it('两份章节文档各自的选区都要处理,不能碰到第一份就收工', async () => {
+    const f = createFakeEpub()
+    const engine = await openEngine()
+    const left = f.addContents('cfi-left', '左页这一句')
+    const right = f.addContents('cfi-right', '右页这一句')
+    const seen = watch(engine)
+
+    f.emit('mouseup', new Event('mouseup'))
+
+    expect(
+      seen.map((q) => q.cfiRange),
+      '双页排版下两份文档各有各的选区。只收第一份的话,另一份里那段会一直留着,等用户下一次在别处松手才被翻出来,变成一段莫名其妙冒出来的引用'
+    ).toEqual(['cfi-left', 'cfi-right'])
+    expect(left.selection.cleared).toBe(true)
+    expect(right.selection.cleared).toBe(true)
+  })
+
+  it('订阅者抛异常时选区还留着,用户手里至少还有可复制的文字', async () => {
+    const f = createFakeEpub()
+    const engine = await openEngine()
+    const c = f.addContents('cfi-1', '他终于明白')
+    engine.onSelected(() => {
+      throw new Error('订阅者炸了')
+    })
+
+    // 这是鼠标事件的回调,没有任何调用栈接得住这个异常。
+    expect(() => f.emit('mouseup', new Event('mouseup'))).toThrow('订阅者炸了')
+
+    expect(
+      c.selection.cleared,
+      '先收选区再通知的话,订阅者一炸,引用没加上、选区也没了,用户刚拖出来的那段话连复制都做不到'
+    ).toBe(false)
+  })
+
+  it('消费掉选区之后,章节文档上紧跟着的那一下 click 被吞掉,下一次按下解除它', async () => {
+    const f = createFakeEpub()
+    const engine = await openEngine()
+    const c = f.addContents('cfi-1', '他终于明白')
+    watch(engine)
+
+    f.emit('mouseup', new Event('mouseup'))
+
+    // marks-pane 的替身:它在章节文档上挂的转发是冒泡阶段,永远排在引擎那个捕获
+    // 阶段的监听后面。这里在同一个 EventTarget 上后注册来代表这个先后关系;真实
+    // 的捕获/冒泡先后由端到端测试在真 iframe 里证明。
+    let forwarded = 0
+    c.document.addEventListener('click', () => {
+      forwarded++
+    })
+
+    c.document.dispatchEvent(new Event('click'))
+    expect(forwarded).toBe(0)
+
+    // 吞掉的只有紧挨着的那一下:再点就该转发出去了。
+    c.document.dispatchEvent(new Event('click'))
+    expect(forwarded).toBe(1)
+  })
+
+  it('补发的那一下 click 没来,下一次按下也会把吞噬解除掉', async () => {
+    const f = createFakeEpub()
+    const engine = await openEngine()
+    const c = f.addContents('cfi-1', '他终于明白')
+    watch(engine)
+
+    f.emit('mouseup', new Event('mouseup'))
+
+    let forwarded = 0
+    c.document.addEventListener('click', () => {
+      forwarded++
+    })
+
+    // 拖出了 iframe 才松手,补发的那一下 click 落在外层文档上,章节文档这边一直没来。
+    // 用户接着去点这块高亮:按下 → 松开 → click,这一下必须点得到。
+    c.document.dispatchEvent(new Event('mousedown'))
+    c.document.dispatchEvent(new Event('click'))
+
+    expect(
+      forwarded,
+      '解除时机要是靠定时器上的毫秒数,机器一卡就会把用户真正想点的那一下吞掉'
+    ).toBe(1)
   })
 })
