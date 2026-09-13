@@ -148,6 +148,20 @@ describe('对话表', () => {
     db.close()
   })
 
+  it('给不存在的书创建对话时报中文错误,不是 SQLite 的英文原文', () => {
+    const db = openDatabase(':memory:')
+    expect(() => insertConversation(db, conv('a', { bookId: '没有这本书' }))).toThrow(
+      /这本书不存在/
+    )
+    db.close()
+  })
+
+  it('给不存在的对话追加消息时报中文错误,不是 SQLite 的英文原文', () => {
+    const db = openDatabase(':memory:')
+    expect(() => insertMessage(db, msg('m1', '没有这个对话'))).toThrow(/对话不存在/)
+    db.close()
+  })
+
   it('删掉书时它的对话和消息一并消失', () => {
     const db = openDatabase(':memory:')
     db.prepare(

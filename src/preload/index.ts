@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
   AppendMessageInput,
   BookRecord,
+  ChatDoneResult,
   ConversationRecord,
   ConversationWithCount,
   CreateConversationInput,
@@ -74,9 +75,9 @@ const api = {
     ipcRenderer.on('chat:chunk', handler)
     return () => ipcRenderer.off('chat:chunk', handler)
   },
-  onChatDone: (cb: (requestId: string, error: string | null) => void): (() => void) => {
-    const handler = (_e: unknown, requestId: string, error: string | null): void =>
-      cb(requestId, error)
+  onChatDone: (cb: (requestId: string, result: ChatDoneResult) => void): (() => void) => {
+    const handler = (_e: unknown, requestId: string, result: ChatDoneResult): void =>
+      cb(requestId, result)
     ipcRenderer.on('chat:done', handler)
     return () => ipcRenderer.off('chat:done', handler)
   }

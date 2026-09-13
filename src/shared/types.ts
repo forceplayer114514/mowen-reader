@@ -74,3 +74,16 @@ export interface AppendMessageInput {
 export interface StartChatInput {
   messages: { role: string; content: string }[]
 }
+
+/**
+ * chat:done 事件携带的最终结果。
+ *
+ * 'finished' 和 'stopped' 分开是必须的:两者在 streamChat 那一侧都是"没有
+ * 抛出异常地 resolve",区别只在于 AbortSignal 有没有被触发过——用户主动
+ * 点了停止,和模型自己把话说完,界面上应该是完全不同的呈现(比如要不要显示
+ * "已停止"字样),不能都用同一个 null 打包糊弄过去。
+ */
+export type ChatDoneResult =
+  | { status: 'finished' }
+  | { status: 'stopped' }
+  | { status: 'error'; message: string }

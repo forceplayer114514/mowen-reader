@@ -5,6 +5,7 @@ import { dialog, ipcMain } from 'electron'
 import type {
   AppendMessageInput,
   BookRecord,
+  ChatDoneResult,
   ConversationRecord,
   CreateConversationInput,
   FinishImportInput,
@@ -269,7 +270,11 @@ export function registerIpc(): void {
     const endpoint = getSetting(db, 'llmEndpoint') ?? ''
     const model = getSetting(db, 'llmModel') ?? ''
 
-    if (!endpoint || !model) throw new Error('还没有配置接口地址和模型名,请先到设置里填写')
+    // 分开说是必须的:两者共用一句"都去填一下"的话,用户看到提示时并不知道
+    // 到底是哪一项真的没填,还要自己回设置页逐个对照检查。
+    if (!endpoint && !model) throw new Error('还没有配置接口地址和模型名,请先到设置里填写')
+    if (!endpoint) throw new Error('还没有配置接口地址,请先到设置里填写')
+    if (!model) throw new Error('还没有配置模型名,请先到设置里填写')
 
     // 必须在取密钥之前校验地址:一个被攻破的渲染层能通过毫无白名单的
     // settings:set 把 llmEndpoint 改成任意地址,这里就是唯一还能拦住
@@ -316,9 +321,22 @@ export function registerIpc(): void {
         signal: session.signal,
         onChunk: (text) => send('chat:chunk', session.id, text)
       })
-        .then(() => send('chat:done', session.id, null))
+        .then(() => {
+          // streamChat 对"模型正常说完"和"用户中途点了停止"一视同仁地
+          // resolve,区分两者要看 AbortSignal 有没有被触发过——如果触发过,
+          // 一定是 chat:abort 或者 bindSessionLifecycle 主动中止的,不是
+          // 模型自己说完的。
+          const result: ChatDoneResult = session.signal.aborted
+            ? { status: 'stopped' }
+            : { status: 'finished' }
+          send('chat:done', session.id, result)
+        })
         .catch((err: unknown) => {
-          send('chat:done', session.id, err instanceof Error ? err.message : '请求失败')
+          const result: ChatDoneResult = {
+            status: 'error',
+            message: err instanceof Error ? err.message : '请求失败'
+          }
+          send('chat:done', session.id, result)
         })
         .finally(() => {
           dispose()

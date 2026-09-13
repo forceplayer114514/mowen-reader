@@ -33,19 +33,41 @@ function toConv(row: ConvRow): ConversationRecord {
 const CONV_COLUMNS =
   'id, book_id, start_cfi, end_cfi, merged_end_cfi, chapter_label, excerpt, created_at'
 
+/**
+ * node:sqlite 在外键约束失败时抛出的是英文原文("FOREIGN KEY constraint
+ * failed"),code 是 'ERR_SQLITE_ERROR'——渲染层不该直接看到这个。
+ * 用 errcode 787(SQLITE_CONSTRAINT_FOREIGNKEY)配合消息内容判断,
+ * 避免把其它种类的 SQLITE_ERROR 也误判成外键问题。
+ */
+function isForeignKeyViolation(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const e = error as NodeJS.ErrnoException & { errcode?: number }
+  if (e.code !== 'ERR_SQLITE_ERROR') return false
+  // errcode 787 就是 SQLITE_CONSTRAINT_FOREIGNKEY,实测 node:sqlite 会带上它。
+  // 但 node:sqlite 仍是实验特性,errcode 不在它承诺的接口里,所以再留一条按
+  // 消息原文判断的后路,哪天这个字段没了也不至于把中文提示整个丢掉。
+  if (e.errcode === 787) return true
+  return e.message.includes('FOREIGN KEY')
+}
+
 export function insertConversation(db: Db, c: ConversationRecord): void {
-  db.prepare(
-    `INSERT INTO conversations (${CONV_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    c.id,
-    c.bookId,
-    c.startCfi,
-    c.endCfi,
-    c.mergedEndCfi,
-    c.chapterLabel,
-    c.excerpt,
-    c.createdAt
-  )
+  try {
+    db.prepare(
+      `INSERT INTO conversations (${CONV_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      c.id,
+      c.bookId,
+      c.startCfi,
+      c.endCfi,
+      c.mergedEndCfi,
+      c.chapterLabel,
+      c.excerpt,
+      c.createdAt
+    )
+  } catch (error) {
+    if (isForeignKeyViolation(error)) throw new Error('这本书不存在,无法创建对话')
+    throw error
+  }
 }
 
 export function getConversation(db: Db, id: string): ConversationRecord | null {
@@ -106,10 +128,15 @@ function parseQuotes(raw: string): QuoteRecord[] {
 }
 
 export function insertMessage(db: Db, m: MessageRecord): void {
-  db.prepare(
-    `INSERT INTO messages (id, conversation_id, role, content, quotes, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(m.id, m.conversationId, m.role, m.content, JSON.stringify(m.quotes), m.createdAt)
+  try {
+    db.prepare(
+      `INSERT INTO messages (id, conversation_id, role, content, quotes, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(m.id, m.conversationId, m.role, m.content, JSON.stringify(m.quotes), m.createdAt)
+  } catch (error) {
+    if (isForeignKeyViolation(error)) throw new Error('对话不存在,无法添加这条消息')
+    throw error
+  }
 }
 
 export function listMessages(db: Db, conversationId: string): MessageRecord[] {
