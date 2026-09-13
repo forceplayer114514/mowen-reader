@@ -86,4 +86,19 @@ describe('流式响应解析', () => {
     const mixed = chunk('第一条') + chunk('第二条').replace(/\n/g, '\r\n') + chunk('第三条').replace(/\n\n$/, '\r\r')
     expect(p.push(mixed)).toEqual(['第一条', '第二条', '第三条'])
   })
+
+  it('没有分隔符的畸形流持续增长也不会撑爆缓冲区,之后正常的流还能继续解析', () => {
+    const p = createSseParser()
+    const piece = 'x'.repeat(64 * 1024) // 64KB 一片,不含任何分隔符
+    let out: string[] = []
+    for (let i = 0; i < 20; i++) {
+      // 累计推入超过 1MB,期间应该已经被丢弃过至少一次,不会一直增长
+      out = out.concat(p.push(piece))
+    }
+    // 再单独推入一块超过上限的垃圾,确保不管前面剩了多少都必定触发丢弃
+    out = out.concat(p.push('y'.repeat(2 * 1024 * 1024)))
+    expect(out).toEqual([])
+    // 丢弃之后缓冲区是干净的,正常事件照常解析
+    expect(p.push(chunk('恢复正常'))).toEqual(['恢复正常'])
+  })
 })

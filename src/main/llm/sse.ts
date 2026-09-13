@@ -8,6 +8,9 @@
  * 极少数老式实现还会用 \r\r。三种都要认。
  */
 
+/** 单次事件通常只有几 KB;缓冲区超过这个上限还凑不出一个分隔符,说明这段流是坏的。 */
+const MAX_BUFFER_SIZE = 1024 * 1024 // 1MB,留足够余量,避免正常大事件被误伤
+
 /** 在 buffer 里找出现得最早的空行分隔符,返回起始位置和分隔符长度。 */
 function findSeparator(buffer: string): { index: number; length: number } | null {
   const candidates: { index: number; length: number }[] = [
@@ -54,6 +57,11 @@ export function createSseParser(): { push(chunk: string): string[]; done(): void
         const text = parseEvent(block)
         if (text !== null) out.push(text)
         sep = findSeparator(buffer)
+      }
+      // 一直凑不出分隔符,且已经攒了太多字节:这段流是坏的,丢掉重来,
+      // 不能让它无限增长把主进程内存吃光。
+      if (buffer.length > MAX_BUFFER_SIZE) {
+        buffer = ''
       }
       return out
     },
