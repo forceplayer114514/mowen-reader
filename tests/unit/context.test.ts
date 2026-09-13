@@ -221,6 +221,27 @@ describe('超限裁剪', () => {
     expect(joined).toContain('回答旧')
   })
 
+  it('历史多轮超限时,每丢一轮就记一条,不是只记一次', () => {
+    // 3 轮问答(6 条消息),前两轮权重相近。裁前 351 token;
+    // 删第一轮后还有 213 token(仍超限),删第二轮后剩 75 token。
+    // limit 取 90:75 <= 90 < 213,必须删两轮才够,trimmed 里应该有两条
+    // 'drop-history',而不是不管删几轮都只记一条。
+    const history = [
+      { role: 'user' as const, content: '问一'.repeat(30) },
+      { role: 'assistant' as const, content: '答一'.repeat(30) },
+      { role: 'user' as const, content: '问二'.repeat(30) },
+      { role: 'assistant' as const, content: '答二'.repeat(30) },
+      { role: 'user' as const, content: '问三' },
+      { role: 'assistant' as const, content: '答三' }
+    ]
+    const r = buildContext(input({ toc: [], history, limit: 90 }))
+    expect(r.trimmed.filter((a) => a === 'drop-history')).toHaveLength(2)
+    const joined = r.messages.map((m) => m.content).join('')
+    expect(joined).not.toContain('问一')
+    expect(joined).not.toContain('问二')
+    expect(joined).toContain('问三')
+  })
+
   it('第三步把目录整个丢掉', () => {
     // toc(200) 先被第一步裁成局部窗口(8 条,默认章节 ch3 靠窗口开头,被截断),
     // 裁完还有 138 token,仍然超限;把目录整个丢掉后降到 83 token。

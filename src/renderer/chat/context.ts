@@ -125,10 +125,11 @@ export function buildContext(input: ContextInput): ContextResult {
   }
 
   // ② 删最早的一轮问答——一问和它对应的答一起删,可以一直删到历史清空,
-  // 不会因为剩最后一条删不成对就永远留着
+  // 不会因为剩最后一条删不成对就永远留着。每删一轮都记一条,不是只记一次:
+  // 调用方得知道到底丢了几轮对话,而不是"丢了,但不知道丢了多少"。
   while (history.length > 0) {
     history = dropOldestExchange(history)
-    if (!trimmed.includes('drop-history')) trimmed.push('drop-history')
+    trimmed.push('drop-history')
     messages = assemble()
     if (total(messages) <= input.limit) return { messages, trimmed }
   }
