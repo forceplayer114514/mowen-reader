@@ -311,6 +311,10 @@ export function createEngine(container: HTMLElement): ReaderEngine {
 
       let text = ''
       let rangeCfi = ''
+      // 只有下面的 try 正常走完才是"屏幕上精确可见的那一小段";一旦落进 catch,
+      // text 就是整份章节文档的全文这种近似值,调用方必须能分辨这两种情况
+      // (见 types.ts 里 VisibleRange.approximate 的注释)。
+      let approximate = false
       try {
         // makeRangeCfi 在 CFI 不合法、缺少章节分隔符、或起止跨越两个章节时会抛错
         rangeCfi = makeRangeCfi(start.cfi, end.cfi)
@@ -321,6 +325,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
         // 直接读取当前渲染的第一个文档的全文作为近似正文——注意这通常会超过一屏的内容,
         // 只是为了不让上层拿到完全空白的正文。
         rangeCfi = ''
+        approximate = true
         // rendition.getContents() 在这版 epub.js 的类型声明里被错标成单个 Contents,
         // 运行时实际返回数组,这里只在本文件内断言,不改动对外类型。
         const contents = rendition.getContents() as unknown as Contents[]
@@ -339,6 +344,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
 
       return {
         text,
+        approximate,
         startCfi: start.cfi,
         endCfi: end.cfi,
         rangeCfi,
