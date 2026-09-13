@@ -8,6 +8,26 @@ interface Part {
   terminal: { offset: number | null; assertion: string | null } | null
 }
 
+/**
+ * 从某个 raw 片段里 "[...]" 断言的起始位置(bracket,指向左方括号本身)开始,
+ * 找到与之配对的右方括号的下标。CFI 的转义规则是 "^" 转义紧跟着的下一个字符,
+ * 所以扫描时遇到 "^" 要连同它转义的那个字符一起跳过——不能把被转义的 "]"
+ * 当成断言的结束,比如 "cha^]p]" 里第一个 "]" 是转义出来的字面量,真正的
+ * 结束括号是最后那个。
+ */
+function findAssertionEnd(raw: string, bracket: number): number {
+  let i = bracket + 1
+  while (i < raw.length) {
+    if (raw[i] === '^') {
+      i += 2 // 跳过 ^ 本身和它转义的下一个字符,那个字符不能被当成结束的 ]
+      continue
+    }
+    if (raw[i] === ']') return i
+    i++
+  }
+  throw new Error(`CFI 断言缺少闭合的 ]:${raw}`)
+}
+
 function parseSegment(segment: string): Part {
   const steps: Step[] = []
   let terminal: Part['terminal'] = null
@@ -22,7 +42,7 @@ function parseSegment(segment: string): Part {
     }
     const bracket = raw.indexOf('[')
     const index = Number(bracket >= 0 ? raw.slice(0, bracket) : raw)
-    const id = bracket >= 0 ? raw.slice(bracket + 1, raw.indexOf(']', bracket)) : null
+    const id = bracket >= 0 ? raw.slice(bracket + 1, findAssertionEnd(raw, bracket)) : null
     steps.push({ index, id })
   }
   return { steps, terminal }
@@ -49,7 +69,15 @@ function split(cfi: string): { base: string; part: Part } {
 
 /**
  * 比较两个 Part 的先后顺序:先按步骤序号逐级比较,序号全部相同时路径短的排在前面,
- * 路径也完全相同时按字符偏移比较(缺失的偏移当作 0)。
+ * 路径也完全相同时按字符偏移比较。
+ *
+ * 缺失偏移量(没有冒号,比如纯粹指向一个元素节点而不是文本节点里的某个字符位置)
+ * 不能当成偏移量 0 处理:两者是不同的位置形状,如果都当 0 看待,一个带 ":0"、
+ * 另一个完全没写偏移量的两个标记会被判定成"相同位置",遇到需要纠正顺序的场景
+ * (见 makeRangeCfi 里对调换过的起止点做的容错)就会被漏掉,不会被交换。
+ * 这里让"没有偏移量"在数值上恒小于任何写出来的偏移量(包括显式的 0),
+ * 用 -1 当哨兵值——偏移量本身不会是负数,所以不会和真实值撞上。
+ *
  * 返回负数表示 a 在 b 之前,正数表示 a 在 b 之后,0 表示相同。
  */
 function comparePart(a: Part, b: Part): number {
@@ -58,9 +86,25 @@ function comparePart(a: Part, b: Part): number {
     if (a.steps[i].index !== b.steps[i].index) return a.steps[i].index - b.steps[i].index
   }
   if (a.steps.length !== b.steps.length) return a.steps.length - b.steps.length
-  const aOffset = a.terminal?.offset ?? 0
-  const bOffset = b.terminal?.offset ?? 0
+  const aOffset = a.terminal?.offset ?? -1
+  const bOffset = b.terminal?.offset ?? -1
   return aOffset - bOffset
+}
+
+/**
+ * 比较同一章节内两个 CFI 标记的先后顺序,供下一阶段(对话内容的定位锚点)复用。
+ *
+ * 只解析 "!" 之后、代表章节内位置的那部分——不检查、也不知道两个 CFI 的章节前缀
+ * (base,"!" 之前的部分)是否相同。两个不同章节的 CFI 传进来也不会报错,只会
+ * 拿章节内的步骤/偏移比出一个没有意义的顺序,调用方必须自己先确认过章节相同
+ * (比如比较 base 字符串,或者更可靠地比较 spine 索引)再调用这个函数。
+ *
+ * 返回负数表示 cfiA 在 cfiB 之前,正数表示 cfiA 在 cfiB 之后,0 表示相同位置。
+ */
+export function compareCfiPositions(cfiA: string, cfiB: string): number {
+  const a = split(cfiA)
+  const b = split(cfiB)
+  return comparePart(a.part, b.part)
 }
 
 /**
