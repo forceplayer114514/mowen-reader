@@ -3,6 +3,7 @@ import {
   chapterHighlights,
   chapterQuotes,
   chapterSelectionText,
+  clickChapterHighlight,
   closeAllApps,
   enableSelectionStore,
   importBareNavFixture,
@@ -388,4 +389,59 @@ test('一次拖选只留下一段引用和一块高亮——中途停住也不�
     '拖到一半停住会让 epub.js 在鼠标还按着的时候先发一次 selected,如果那一次就当成了一次划选,松手后的完整范围会再进来一段,两段文字一长一短、互相重叠'
   ).toHaveLength(1)
   await expect(chapterHighlights(h)).toHaveCount(1)
+})
+
+test('拖选一句话会画出高亮,点一下这块高亮就取消掉', async () => {
+  const h = await launch()
+  await importFixture(h)
+  await enableSelectionStore(h)
+  await h.page.getByTestId('book-card').first().click()
+  await h.page.getByTestId('reader-page').waitFor()
+  await waitForLocationsReady(h)
+
+  await slowDragSelectInChapter(h)
+
+  const highlight = chapterHighlights(h)
+  await expect(highlight).toHaveCount(1)
+  expect((await chapterQuotes(h))[0]?.text).toBe('开端的第2段。这是一段用于测试分页与划选的正文,')
+  // 配色是画在 <g> 元素的属性上的(marks-pane 把传进去的 styles 原样 setAttribute
+  // 到这个元素上),不是给文字加背景色。
+  await expect(highlight).toHaveAttribute('fill', '#f2c14e')
+  // 选区被收走了,原生的蓝色选中块不会再压在自定义高亮上面。
+  expect(await chapterSelectionText(h)).toBe('')
+
+  await clickChapterHighlight(h)
+
+  await expect(highlight).toHaveCount(0)
+  expect(await chapterQuotes(h)).toHaveLength(0)
+})
+
+test('换主题时高亮按新配色重画,既不消失也不会叠成两块,点一下照样取消得掉', async () => {
+  const h = await launch()
+  await importFixture(h)
+  await enableSelectionStore(h)
+  await h.page.getByTestId('book-card').first().click()
+  await h.page.getByTestId('reader-page').waitFor()
+  await waitForLocationsReady(h)
+
+  await slowDragSelectInChapter(h)
+  const highlight = chapterHighlights(h)
+  await expect(highlight).toHaveCount(1)
+  await expect(highlight).toHaveAttribute('fill', '#f2c14e')
+
+  await h.page.getByRole('button', { name: '夜间' }).click()
+  await expect(h.page.getByRole('button', { name: '日间' })).toBeVisible()
+
+  // 高亮的配色是创建那一刻写死在 SVG 属性上的,不会跟着主题走。浅色那块正片叠底的
+  // 黄色落到夜间的深色背景上会被压得几乎看不见——用户选了几句话顺手点了「夜间」,
+  // 选中标记就没了,但引用其实还在列表里。所以换主题要按新配色重画一遍,而且只能
+  // 有一块:重画前没把旧的那层抹掉的话,marks-pane 上会留下一层再也摸不到的矩形。
+  await expect(highlight).toHaveCount(1)
+  await expect(highlight).toHaveAttribute('fill', '#7aa2f7')
+  expect(await chapterQuotes(h)).toHaveLength(1)
+
+  // 重画必须把原来的点击回调原样再传进去,否则重画出来的高亮点了不取消。
+  await clickChapterHighlight(h)
+  await expect(highlight).toHaveCount(0)
+  expect(await chapterQuotes(h)).toHaveLength(0)
 })

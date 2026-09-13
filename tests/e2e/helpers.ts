@@ -271,3 +271,19 @@ export async function chapterQuotes(h: Harness): Promise<{ cfiRange: string; tex
       ).__E2E_QUOTES__?.() ?? []
   )
 }
+
+/**
+ * 点一下页面上那块划选高亮。
+ *
+ * 高亮那层 SVG 自己是 pointer-events: none 的,marks-pane 是靠监听章节文档里的点击、
+ * 再按坐标把事件转发给对应的矩形来实现"点高亮"(见 node_modules/marks-pane/src/events.js
+ * 的 proxyMouse),所以要点的是正文上那块地方,而不能去点这个 SVG 元素本身。
+ * 点之前先停一下:marks-pane 的矩形是按正文的 getClientRects() 现算现画的,刚画完那
+ * 一瞬间量到的位置不一定是最终位置。
+ */
+export async function clickChapterHighlight(h: Harness): Promise<void> {
+  await h.page.waitForTimeout(200)
+  const box = await chapterHighlights(h).first().boundingBox()
+  if (!box || box.width < 1 || box.height < 1) throw new Error('取不到高亮的位置')
+  await h.page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
+}
