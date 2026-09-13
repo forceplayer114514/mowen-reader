@@ -19,7 +19,15 @@ export function createSelectionStore(engine: ReaderEngine): {
 
   function notify(): void {
     const snapshot = [...quotes]
-    for (const cb of listeners) cb(snapshot)
+    // 先把这一轮要通知的人定下来,再逐个确认他还在不在最新的名单里。
+    // 退订是用 filter 生成一个新数组再重新赋值的:直接遍历 listeners 这个变量,
+    // for...of 拿住的还是赋值前的旧数组,谁在回调里退订(包括调用 dispose())
+    // 都照样会收到这一轮——对一个正因为要卸载才退订的订阅者来说太晚了。
+    // 反过来,在回调里新订上来的人不该被这一轮带上,快照也一并挡住了。
+    const round = [...listeners]
+    for (const cb of round) {
+      if (listeners.includes(cb)) cb(snapshot)
+    }
   }
 
   function toggle(cfiRange: string, text: string): void {

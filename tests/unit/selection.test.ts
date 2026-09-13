@@ -95,6 +95,25 @@ describe('划选引用', () => {
     expect(cb).not.toHaveBeenCalled()
   })
 
+  it('在一个订阅者的回调里退掉另一个订阅者,后者当轮就不该再收到通知', () => {
+    const f = fakeEngine()
+    const store = createSelectionStore(f.engine)
+    const seen: string[] = []
+    let offSecond: (() => void) | null = null
+    store.subscribe(() => {
+      seen.push('第一个')
+      offSecond?.()
+    })
+    offSecond = store.subscribe(() => {
+      seen.push('第二个')
+    })
+    f.select('cfi-1', '他终于明白')
+    // 退订是用 filter 生成一个新数组再重新赋值的。分发时如果直接遍历那个变量,
+    // for...of 拿住的还是赋值前的旧数组,已经退订的人照样会收到这一轮——
+    // 对一个正因为要卸载才退订的订阅者来说,这一轮通知来得太晚了。
+    expect(seen).toEqual(['第一个'])
+  })
+
   it('dispose 会退订引擎,之后的拖选不再进入列表', () => {
     const f = fakeEngine()
     const store = createSelectionStore(f.engine)

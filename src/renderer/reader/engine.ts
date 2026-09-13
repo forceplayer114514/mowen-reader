@@ -105,12 +105,29 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     return matched !== undefined ? `${matched}${fragment}` : target
   }
 
+  /**
+   * 先把这一轮要通知的人定下来,再逐个确认他还在不在最新的名单里。
+   *
+   * 退订(onRelocated/onKey/onSelected 返回的那个函数)是用 filter 生成一个新数组
+   * 再重新赋值的:直接遍历 listeners 这个变量,for...of 拿住的还是赋值前的旧数组,
+   * 谁在别人的回调里退订都照样会收到这一轮——对一个正因为要卸载才退订的订阅者来说
+   * 太晚了。反过来,在回调里新订上来的人不该被这一轮带上,快照也一并挡住了。
+   * 三处分发(relocated、按键、划选)都照这个来:留着两处一样一处不一样,比三处
+   * 都有同一个毛病更难查。
+   */
   function notify(): void {
-    for (const cb of listeners) cb()
+    const round = [...listeners]
+    for (const cb of round) {
+      if (listeners.includes(cb)) cb()
+    }
   }
 
+  /** 见 notify() 的注释。 */
   function notifyKey(key: string): void {
-    for (const cb of keyListeners) cb(key)
+    const round = [...keyListeners]
+    for (const cb of round) {
+      if (keyListeners.includes(cb)) cb(key)
+    }
   }
 
   /**
@@ -162,7 +179,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       }
 
       selection.removeAllRanges()
-      // 快照一份再发,理由见 notify() 的注释。
+      // 快照一份再逐个确认还在不在名单里,理由见 notify() 的注释。
       const round = [...selectionListeners]
       for (const cb of round) {
         if (selectionListeners.includes(cb)) cb(cfiRange, text)
