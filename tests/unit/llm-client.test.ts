@@ -1,0 +1,151 @@
+import { describe, expect, it, vi } from 'vitest'
+import { streamChat } from '../../src/main/llm/client'
+
+function sseResponse(texts: string[], status = 200): Response {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const enc = new TextEncoder()
+      for (const t of texts) {
+        controller.enqueue(
+          enc.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: t } }] })}\n\n`)
+        )
+      }
+      controller.enqueue(enc.encode('data: [DONE]\n\n'))
+      controller.close()
+    }
+  })
+  return new Response(body, { status })
+}
+
+function base(over: Partial<Parameters<typeof streamChat>[0]> = {}) {
+  return {
+    endpoint: 'https://example.invalid/v1',
+    model: 'test-model',
+    apiKey: 'sk-test',
+    messages: [{ role: 'user', content: '你好' }],
+    signal: new AbortController().signal,
+    onChunk: () => {},
+    ...over
+  }
+}
+
+describe('流式请求', () => {
+  it('把收到的文字块按顺序交给回调', async () => {
+    const got: string[] = []
+    await streamChat(
+      base({
+        onChunk: (t) => got.push(t),
+        fetchImpl: async () => sseResponse(['你', '好', '吗'])
+      })
+    )
+    expect(got).toEqual(['你', '好', '吗'])
+  })
+
+  it('请求发到 endpoint 下的 chat/completions,带上 Bearer 密钥和模型名', async () => {
+    const spy = vi.fn(async () => sseResponse(['x']))
+    await streamChat(base({ fetchImpl: spy as unknown as typeof fetch }))
+    const [url, init] = spy.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('https://example.invalid/v1/chat/completions')
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer sk-test')
+    const sent = JSON.parse(init.body as string) as { model: string; stream: boolean }
+    expect(sent.model).toBe('test-model')
+    expect(sent.stream).toBe(true)
+  })
+
+  it('endpoint 末尾有没有斜杠都不影响拼出的地址', async () => {
+    const spy = vi.fn(async () => sseResponse(['x']))
+    await streamChat(
+      base({ endpoint: 'https://example.invalid/v1/', fetchImpl: spy as unknown as typeof fetch })
+    )
+    expect((spy.mock.calls[0] as unknown as [string])[0]).toBe(
+      'https://example.invalid/v1/chat/completions'
+    )
+  })
+
+  it('密钥不出现在抛出的错误信息里', async () => {
+    const fetchImpl = async () => new Response('{"error":{"message":"bad key"}}', { status: 401 })
+    await expect(streamChat(base({ fetchImpl: fetchImpl as unknown as typeof fetch })))
+      .rejects.toThrow(/密钥/)
+    await streamChat(base({ fetchImpl: fetchImpl as unknown as typeof fetch })).catch((e: Error) => {
+      expect(e.message).not.toContain('sk-test')
+    })
+  })
+
+  it('HTTP 错误被翻译成中文抛出', async () => {
+    await expect(
+      streamChat(
+        base({
+          fetchImpl: (async () => new Response('', { status: 429 })) as unknown as typeof fetch
+        })
+      )
+    ).rejects.toThrow(/额度|频繁/)
+  })
+
+  it('网络层抛错也被翻译成中文', async () => {
+    const boom = Object.assign(new Error('fetch failed'), { cause: { code: 'ECONNREFUSED' } })
+    await expect(
+      streamChat(
+        base({
+          fetchImpl: (async () => {
+            throw boom
+          }) as unknown as typeof fetch
+        })
+      )
+    ).rejects.toThrow(/连不上|地址/)
+  })
+
+  it('用户中止时正常结束,不抛错', async () => {
+    const ac = new AbortController()
+    const err = Object.assign(new Error('aborted'), { name: 'AbortError' })
+    ac.abort()
+    await expect(
+      streamChat(
+        base({
+          signal: ac.signal,
+          fetchImpl: (async () => {
+            throw err
+          }) as unknown as typeof fetch
+        })
+      )
+    ).resolves.toBeUndefined()
+  })
+
+  it('中止后不再继续交付文字块', async () => {
+    const ac = new AbortController()
+    const got: string[] = []
+    const fetchImpl = async (): Promise<Response> => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const enc = new TextEncoder()
+          controller.enqueue(
+            enc.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: '第一块' } }] })}\n\n`)
+          )
+          ac.abort()
+          controller.enqueue(
+            enc.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: '第二块' } }] })}\n\n`)
+          )
+          controller.close()
+        }
+      })
+      return new Response(body, { status: 200 })
+    }
+    await streamChat(
+      base({
+        signal: ac.signal,
+        onChunk: (t) => got.push(t),
+        fetchImpl: fetchImpl as unknown as typeof fetch
+      })
+    )
+    expect(got).not.toContain('第二块')
+  })
+
+  it('响应没有 body 时报出中文错误', async () => {
+    await expect(
+      streamChat(
+        base({
+          fetchImpl: (async () => new Response(null, { status: 200 })) as unknown as typeof fetch
+        })
+      )
+    ).rejects.toThrow(/没有返回/)
+  })
+})
