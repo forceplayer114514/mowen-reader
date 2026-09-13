@@ -169,6 +169,56 @@ describe('流式请求', () => {
     expect(got).not.toContain('第二块')
   })
 
+  it('URL 拼接:朴素的 base 地址', async () => {
+    const spy = vi.fn(async () => sseResponse(['x']))
+    await streamChat(
+      base({ endpoint: 'https://example.invalid/v1', fetchImpl: spy as unknown as typeof fetch })
+    )
+    expect((spy.mock.calls[0] as unknown as [string])[0]).toBe(
+      'https://example.invalid/v1/chat/completions'
+    )
+  })
+
+  it('URL 拼接:base 已经以 /chat/completions 结尾,不重复拼接', async () => {
+    const spy = vi.fn(async () => sseResponse(['x']))
+    await streamChat(
+      base({
+        endpoint: 'https://example.invalid/v1/chat/completions',
+        fetchImpl: spy as unknown as typeof fetch
+      })
+    )
+    expect((spy.mock.calls[0] as unknown as [string])[0]).toBe(
+      'https://example.invalid/v1/chat/completions'
+    )
+  })
+
+  it('URL 拼接:带查询串的 Azure 风格地址,路径追加而不破坏查询串', async () => {
+    const spy = vi.fn(async () => sseResponse(['x']))
+    await streamChat(
+      base({
+        endpoint: 'https://example.invalid/openai/deployments/x?api-version=2024-05-01',
+        fetchImpl: spy as unknown as typeof fetch
+      })
+    )
+    expect((spy.mock.calls[0] as unknown as [string])[0]).toBe(
+      'https://example.invalid/openai/deployments/x/chat/completions?api-version=2024-05-01'
+    )
+  })
+
+  it('URL 拼接:解析不了的地址不会崩溃,退化成中文错误', async () => {
+    const fetchImpl = async (): Promise<Response> => {
+      throw new TypeError('Failed to parse URL')
+    }
+    await expect(
+      streamChat(
+        base({
+          endpoint: 'not a url at all',
+          fetchImpl: fetchImpl as unknown as typeof fetch
+        })
+      )
+    ).rejects.toThrow(/请检查网络与接口地址/)
+  })
+
   it('onChunk 抛出的异常不会被误判成网络问题,原始信息保留', async () => {
     const cancel = vi.fn(async () => undefined)
     const fetchImpl = async (): Promise<Response> => {

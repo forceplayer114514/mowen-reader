@@ -12,8 +12,29 @@ export interface StreamOptions {
   fetchImpl?: typeof fetch
 }
 
+const COMPLETIONS_PATH = '/chat/completions'
+
+/**
+ * 拼出实际请求地址。
+ *
+ * 优先用 URL API 解析:地址本身已经以 /chat/completions 结尾就原样使用
+ * (避免重复拼接),否则只在路径部分追加,查询串和 fragment 原样保留
+ * (Azure 风格的 ?api-version=... 不会被路径追加破坏)。
+ * 用户填的地址可能压根不是合法 URL(比如漏填协议头),这种输入不该让程序
+ * 崩掉,所以解析失败时退回原来的字符串拼接方式。
+ */
 function chatUrl(endpoint: string): string {
-  return `${endpoint.replace(/\/+$/, '')}/chat/completions`
+  try {
+    const url = new URL(endpoint)
+    if (!url.pathname.endsWith(COMPLETIONS_PATH)) {
+      url.pathname = `${url.pathname.replace(/\/+$/, '')}${COMPLETIONS_PATH}`
+    }
+    return url.toString()
+  } catch {
+    const stripped = endpoint.replace(/\/+$/, '')
+    if (stripped.endsWith(COMPLETIONS_PATH)) return stripped
+    return `${stripped}${COMPLETIONS_PATH}`
+  }
 }
 
 /**
