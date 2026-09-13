@@ -251,3 +251,23 @@ export async function slowDragSelectInChapter(h: Harness): Promise<void> {
 export function chapterHighlights(h: Harness): Locator {
   return h.page.locator('[data-testid="reader-page"] g.epubjs-hl')
 }
+
+/**
+ * 打开书之前置上标记,让阅读界面建一个真的划选 store 订上去(见 ReaderView.tsx 里
+ * SelectionTestHooks 的注释)。必须在点开书卡片之前调用——store 是开书那一步建的。
+ */
+export async function enableSelectionStore(h: Harness): Promise<void> {
+  await h.page.evaluate(() => {
+    ;(window as unknown as { __E2E_SELECTION__?: boolean }).__E2E_SELECTION__ = true
+  })
+}
+
+/** 当前划选 store 里的引用列表。需要先 enableSelectionStore()。 */
+export async function chapterQuotes(h: Harness): Promise<{ cfiRange: string; text: string }[]> {
+  return h.page.evaluate(
+    () =>
+      (
+        window as unknown as { __E2E_QUOTES__?: () => { cfiRange: string; text: string }[] }
+      ).__E2E_QUOTES__?.() ?? []
+  )
+}

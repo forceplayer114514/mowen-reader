@@ -114,29 +114,77 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   }
 
   /**
-   * 处理书内容里的一次拖选。
+   * 把书内容里当前选中的那段文字交给订阅者,并把选区收走。
    *
-   * epub.js 给 selected 事件带的第一个参数是这次选区的范围 CFI,第二个参数是选区所在
-   * 的那份文档对应的 Contents(见 node_modules/epubjs/src/rendition.js 的
-   * triggerSelectedEvent),选中的文字要自己从那份文档的窗口选区里取。
+   * 为什么不直接用 epub.js 的 selected 事件:那个事件是从**最后一次选区变化**起算
+   * 250 毫秒的防抖(node_modules/epubjs/src/contents.js 的 onSelectionChange),不是
+   * 从松开鼠标起算。用户拖慢一点、中途停一下想想,防抖就会在鼠标还按着的时候先发
+   * 一次,发出去的是拖到一半的那个短范围;继续拖到底松手,又发一次完整范围。两次
+   * 范围字符串不同,上层按范围去重也拦不住,结果是一次拖选变成两段一长一短、互相
+   * 重叠的引用,点一下只取消得掉其中一块,取消掉哪一块还取决于两层矩形谁后画。
    *
-   * 选区只在真的被人用掉的时候才清:一是原生的蓝色选中块会盖在随后加上的自定义高亮
-   * 上面,两层颜色叠在一起看不出哪句是已经选进引用的;二是选区留着的话,用户下一次
-   * 点击页面别处又会触发一轮 selectionchange。清空本身也会触发 selectionchange,但
-   * epub.js 那边只在选区非折叠时才往外发事件(见 contents.js 的 triggerSelectedEvent),
-   * 空选区不会再绕回这里,不存在自己喂自己的循环。
+   * 设计要求是"拖选松开即高亮",所以这里改成由 mouseup 驱动:松手那一刻自己读一次
+   * 选区,算出范围再发出去。范围用 contents.cfiFromRange() 算——它和 epub.js 在
+   * selected 事件里用的是同一行代码(两边都是 new EpubCFI(range, cfiBase).toString(),
+   * 见 contents.js 的 cfiFromRange 与 triggerSelectedEvent),所以算出来的字符串跟
+   * 事件给的完全一致,换驱动方式不会换掉范围的写法。
    *
-   * 反过来,没人订阅、或者这次什么文字都没选中(比如拖过了段落之间的空隙)时,一定
-   * 不能动选区:清掉它换不来任何东西,用户看到的只是自己刚拖出来的一段话在 250 毫秒
-   * 后无声无息地消失,连复制都做不到。所以先判断能不能用,再决定要不要收走。
+   * 收走选区还顺带把 epub.js 那边还挂着的防抖掐掉:定时器到点时读到的是空选区,
+   * 而它只在选区非折叠时才往外发事件,所以松手之后不会再补一次。
+   *
+   * 选区只在真的被人用掉的时候才清:原生的蓝色选中块会盖在随后加上的自定义高亮
+   * 上面,两层颜色叠在一起看不出哪句已经选进引用了。反过来,没人订阅、或者这次
+   * 什么文字都没选中(比如拖过了段落之间的空隙、或者只是点了一下),一定不能动
+   * 选区——清掉它换不来任何东西,用户看到的只是自己刚拖出来的一段话无声无息地
+   * 消失,连复制都做不到。
    */
-  function handleSelected(cfiRange: string, contents: Contents): void {
-    const selection = contents.window.getSelection()
-    const text = selection?.toString() ?? ''
-    if (text.trim().length === 0) return
+  function consumeSelection(): void {
     if (selectionListeners.length === 0) return
-    selection?.removeAllRanges()
-    for (const cb of selectionListeners) cb(cfiRange, text)
+    if (!rendition) return
+    // getContents() 在这版 epub.js 的类型声明里被错标成单个 Contents,运行时实际
+    // 返回数组(和 getVisible() 里那处断言同因),这里只在本文件内断言。
+    const all = rendition.getContents() as unknown as Contents[]
+    for (const contents of all) {
+      const selection = contents.window?.getSelection()
+      if (!selection || selection.rangeCount === 0) continue
+      const range = selection.getRangeAt(0)
+      if (range.collapsed) continue
+      const text = selection.toString()
+      if (text.trim().length === 0) continue
+
+      let cfiRange: string
+      try {
+        cfiRange = contents.cfiFromRange(range)
+      } catch {
+        // 选区落在 epub.js 算不出 CFI 的地方。这里是鼠标事件的回调,抛出去没有任何
+        // 调用栈接得住,会变成未捕获的全局异常,只能放弃这一次划选。
+        continue
+      }
+
+      selection.removeAllRanges()
+      // 快照一份再发,理由见 notify() 的注释。
+      const round = [...selectionListeners]
+      for (const cb of round) {
+        if (selectionListeners.includes(cb)) cb(cfiRange, text)
+      }
+      return
+    }
+  }
+
+  /**
+   * 松开鼠标。两个地方都要接:
+   *
+   * - 书内容 iframe 里松手,走 epub.js 转发的 mouseup(它把每份章节文档上的
+   *   DOM_EVENTS 都转发到 rendition 上,见 utils/constants.js 的 DOM_EVENTS 和
+   *   rendition.js 的 passEvents,mouseup 就在那个列表里);
+   * - 拖着拖着拖出了 iframe、在外面松手,那一下落在外层窗口上,iframe 里收不到,
+   *   所以外层窗口也挂一个。
+   *
+   * 两条路进的是同一个函数,重复触发也无所谓:先到的那次会把选区收走,后到的那次
+   * 读到的就是空选区,直接什么都不做。
+   */
+  function handleMouseUp(): void {
+    consumeSelection()
   }
 
   /**
@@ -166,6 +214,10 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   }
 
   window.addEventListener('keydown', handleWindowKeydown)
+  // 拖选拖出了书内容 iframe、在外面松手时,那一下只有外层窗口收得到(iframe 里的
+  // 文档和外层是两份文档,事件不会从里面冒到外面)。和上面的 keydown 一样,
+  // 从 createEngine() 起订到 destroy(),跟某一次 open() 的 rendition 无关。
+  window.addEventListener('mouseup', handleMouseUp)
 
   /**
    * 释放某次 open() 调用在本地创建、但还没发布到闭包变量就被取代的 book/rendition。
@@ -192,7 +244,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   function destroyStale(staleBook: Book, staleRendition: Rendition): void {
     staleRendition.q.stop()
     staleRendition.off('keydown', handleContentKeydown)
-    staleRendition.off('selected', handleSelected)
+    staleRendition.off('mouseup', handleMouseUp)
     try {
       staleRendition.destroy()
     } catch {
@@ -213,7 +265,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
    */
   function teardown(): void {
     rendition?.off('keydown', handleContentKeydown)
-    rendition?.off('selected', handleSelected)
+    rendition?.off('mouseup', handleMouseUp)
     // rendition.q 里可能还排着一个我们自己调用过、还没跑到的 display() 任务(见
     // ReaderView.boot() 里 `await engine.display(...)`):它是 epub.js 内部靠
     // requestAnimationFrame 驱动的队列,当前这一帧不一定跑得到它。如果不在这里
@@ -341,10 +393,11 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       // 见上面 handleContentKeydown 的注释:这一行订阅之后,书内容 iframe 里发生的
       // keydown 会被 epub.js 自己转发到这里,不需要我们逐个文档去挂监听器。
       nextRendition.on('keydown', handleContentKeydown)
-      // 同样是 epub.js 自己从每份章节文档上收上来再转发的(见 handleSelected 的注释),
-      // 所以和 keydown 一样只在这里订阅一次。注意这一行在两次批次号检查之后,
-      // 被取代的那次 open() 走不到这里,不会给一个马上要销毁的 rendition 挂监听。
-      nextRendition.on('selected', handleSelected)
+      // 松手即高亮:mouseup 同样是 epub.js 自己从每份章节文档上收上来再转发的
+      // (见 handleMouseUp 的注释),和 keydown 一样只在这里订阅一次。注意这一行在
+      // 两次批次号检查之后,被取代的那次 open() 走不到这里,不会给一个马上要销毁的
+      // rendition 挂监听。
+      nextRendition.on('mouseup', handleMouseUp)
     },
 
     async display(target?: string): Promise<void> {
@@ -507,6 +560,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       keyListeners = []
       selectionListeners = []
       window.removeEventListener('keydown', handleWindowKeydown)
+      window.removeEventListener('mouseup', handleMouseUp)
     }
   }
 }

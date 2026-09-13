@@ -1,7 +1,10 @@
 import { expect, test } from '@playwright/test'
 import {
+  chapterHighlights,
+  chapterQuotes,
   chapterSelectionText,
   closeAllApps,
+  enableSelectionStore,
   importBareNavFixture,
   importFixture,
   importRealisticFixture,
@@ -365,4 +368,24 @@ test('没有人消费划选时,拖选出来的文字不会被清掉', async () =
     (await chapterSelectionText(h)).trim().length,
     '侧边栏还没接进来,页面上没有任何人订阅划选;这时候把浏览器选区清掉,用户拖选一段话只会看到它自己消失,连复制都做不到'
   ).toBeGreaterThan(0)
+})
+
+test('一次拖选只留下一段引用和一块高亮——中途停住也不会变成两段', async () => {
+  const h = await launch()
+  await importFixture(h)
+  await enableSelectionStore(h)
+  await h.page.getByTestId('book-card').first().click()
+  await h.page.getByTestId('reader-page').waitFor()
+  await waitForLocationsReady(h)
+
+  await slowDragSelectInChapter(h)
+  // epub.js 的 selected 是从最后一次选区变化起算 250 毫秒,等够久让"松手之后还会不会
+  // 再补一段"这件事有机会发生,否则第二段还没冒出来就断言,红不了也说明不了问题。
+  await h.page.waitForTimeout(1200)
+
+  expect(
+    await chapterQuotes(h),
+    '拖到一半停住会让 epub.js 在鼠标还按着的时候先发一次 selected,如果那一次就当成了一次划选,松手后的完整范围会再进来一段,两段文字一长一短、互相重叠'
+  ).toHaveLength(1)
+  await expect(chapterHighlights(h)).toHaveCount(1)
 })

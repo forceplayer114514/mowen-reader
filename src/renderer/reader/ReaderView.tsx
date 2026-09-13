@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { BookRecord } from '@shared/types'
+import type { BookRecord, QuoteRecord } from '@shared/types'
 import TocPanel from './TocPanel'
 import { createEngine } from './engine'
+import { createSelectionStore } from './selection'
 import type { ReaderEngine, ThemeName, TocItem, VisibleRange } from './types'
 
 const FONT_MIN = 14
@@ -14,6 +15,20 @@ const VISIBLE_STUCK_TIMEOUT_MS = 5000
 /** 等下一帧再继续——给 epub.js 一点时间把刚创建窗口时还没定型的排版尺寸重新测量一遍。 */
 function waitForFrame(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()))
+}
+
+/**
+ * 仅端到端测试使用的两个 window 字段,和书架那边的 __E2E_FILES__ 是同一个路子。
+ * 划选引用要等侧边栏那个任务才会被真正接进界面,在那之前页面上没有任何人订阅
+ * onSelected;而引擎的划选、加高亮、点高亮取消、换主题重画这几条路只有在真实的
+ * EPUB 和真实的 iframe 里才试得出来,单元测试那边的假引擎根本碰不到。测试先把
+ * __E2E_SELECTION__ 置上再打开书,下面才会建一个真的 selection store 订上去,
+ * 并把它的引用列表通过 __E2E_QUOTES__ 暴露出来供断言。正常运行时这个标记不存在,
+ * 什么都不会建、也什么都不会暴露。
+ */
+interface SelectionTestHooks {
+  __E2E_SELECTION__?: boolean
+  __E2E_QUOTES__?: () => QuoteRecord[]
 }
 
 interface Props {
@@ -35,6 +50,7 @@ export default function ReaderView({ book, onBack }: Props) {
   useEffect(() => {
     let cancelled = false
     let engine: ReaderEngine | null = null
+    let selectionStore: ReturnType<typeof createSelectionStore> | null = null
     let unsubscribeRelocated: (() => void) | null = null
     let unsubscribeKey: (() => void) | null = null
     let stuckTimer: ReturnType<typeof setTimeout> | null = null
@@ -86,6 +102,14 @@ export default function ReaderView({ book, onBack }: Props) {
 
         engine = createEngine(hostRef.current)
         engineRef.current = engine
+
+        // 见上面 SelectionTestHooks 的注释:只有端到端测试先置了标记才会走到这里。
+        const hooks = window as unknown as SelectionTestHooks
+        if (hooks.__E2E_SELECTION__) {
+          const store = createSelectionStore(engine)
+          selectionStore = store
+          hooks.__E2E_QUOTES__ = () => store.list()
+        }
         setFontSize(Number.isFinite(savedFont) ? savedFont : 18)
         setTheme(savedTheme)
         document.documentElement.dataset.theme = savedTheme
@@ -238,6 +262,10 @@ export default function ReaderView({ book, onBack }: Props) {
       clearStuckTimer()
       unsubscribeRelocated?.()
       unsubscribeKey?.()
+      // 先退掉划选 store 再销毁引擎:store 自己会把页面上剩下的高亮抹掉,
+      // 放到 destroy() 之后就成了对着已经销毁的 rendition 做事。
+      selectionStore?.dispose()
+      delete (window as unknown as SelectionTestHooks).__E2E_QUOTES__
       engine?.destroy()
       engineRef.current = null
     }
