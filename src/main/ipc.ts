@@ -313,7 +313,15 @@ export function registerIpc(): void {
     const apiKey = stored.key
 
     const session = sessions.start()
+
+    // 生命周期中止过之后,这个 WebContents 上跑的已经不是发起这次请求的那个
+    // 页面了。刷新不销毁 WebContents,isDestroyed() 仍然是 false,消息照样
+    // 发得出去——而生命周期中止之后 streamChat 是正常 resolve 的,于是刷新后
+    // 的新页面会收到一条它从没发起过的请求的 { status: 'stopped' }。渲染层按
+    // id 过滤能忽略它,但这条消息根本不该越过页面边界。
+    let lifecycleAborted = false
     const send = (channel: string, ...args: unknown[]): void => {
+      if (lifecycleAborted) return
       if (!event.sender.isDestroyed()) event.sender.send(channel, ...args)
     }
 
@@ -321,7 +329,10 @@ export function registerIpc(): void {
     // 新的导航(含刷新)时立即中止,否则请求会在没有任何界面持有它的 id 的
     // 情况下继续跑、继续计费。下面 streamChat 链路的 .finally() 里会在请求
     // 正常结束时解绑这两个监听器,长期开着的窗口不会累积用不到的监听器。
-    const dispose = bindSessionLifecycle(event.sender, () => sessions.abort(session.id))
+    const dispose = bindSessionLifecycle(event.sender, () => {
+      lifecycleAborted = true
+      sessions.abort(session.id)
+    })
 
     // 这里不能直接调用 streamChat——必须等 chat:start 这次 invoke 的回复先
     // 送回渲染层,渲染层才知道该拿哪个 id 去匹配后面的 chat:chunk /

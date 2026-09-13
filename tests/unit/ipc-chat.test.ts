@@ -184,3 +184,43 @@ describe('chat:start 在取密钥之前先核对接口地址', () => {
     expect(mocks.streamChat).not.toHaveBeenCalled()
   })
 })
+
+describe('页面刷新之后不再往它发对话事件', () => {
+  it('刷新过的页面收不到这次请求的 chat:done 和 chat:chunk', async () => {
+    call('secrets:setApiKey', null, 'sk-真的密钥')
+    let release = (): void => {}
+    let capturedOnChunk: (text: string) => void = () => {}
+    mocks.streamChat.mockImplementation((options: { onChunk: (t: string) => void }) => {
+      capturedOnChunk = options.onChunk
+      return new Promise<void>((resolve) => {
+        release = resolve
+      })
+    })
+
+    const sender = fakeSender()
+    await call('chat:start', sender, { messages: [] })
+    await flush()
+    expect(mocks.streamChat).toHaveBeenCalledTimes(1)
+
+    // 用户刷新了整个页面:WebContents 没被销毁,isDestroyed() 仍然是 false
+    sender.fire('did-start-navigation', undefined, 'app://reload', false, true)
+
+    // 中止之后才到达的文字块和收尾,都不该越过页面边界
+    capturedOnChunk('迟到的文字')
+    release()
+    await flush()
+    await flush()
+
+    expect(sender.sent).toEqual([])
+  })
+
+  it('页面没刷新时 chat:done 照常送达', async () => {
+    call('secrets:setApiKey', null, 'sk-真的密钥')
+    const sender = fakeSender()
+    await call('chat:start', sender, { messages: [] })
+    await flush()
+    await flush()
+    expect(sender.sent.map((s) => s.channel)).toEqual(['chat:done'])
+    expect(sender.sent[0].args[1]).toEqual({ status: 'finished' })
+  })
+})
