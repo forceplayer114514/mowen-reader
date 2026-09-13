@@ -17,22 +17,38 @@ export interface ChatSession {
  * 只有主 frame 的导航(用户重新加载或跳转了整个应用页面)才代表"这个请求
  * 已经没有界面能再收到结果了"。
  *
+ * 这个标志从 details 对象上读,读不到才退回那个已经废弃的位置参数:哪天
+ * 位置参数真的被去掉,第四个参数会变成 undefined,判断恒为假,主 frame 的
+ * 刷新就再也中止不了请求——而且既不会有编译错误,也不会有测试失败,是那种
+ * 只能靠用户报障发现的故障。
+ *
  * 也正因为要挑主 frame,导航必须用 on 而不是 once:once 是"事件一触发就摘
  * 监听器",摘不摘跟回调自己动不动手无关。用 once 的话,用户翻一次章节
  * (子 frame 导航)就把监听器消耗掉了,之后再刷新页面就没人中止请求——
  * 恰恰是这个绑定本来要解决的问题。多出来的监听器由 dispose 负责摘。
  */
+/**
+ * 'did-start-navigation' 第一个参数(details)上真正被支持的那一项。
+ * Electron 44 仍然额外传 url / isInPlace / isMainFrame 三个位置参数,但
+ * electron.d.ts 里这三个都已经标了 @deprecated,受支持的读法是这个对象上的
+ * isMainFrame。写成可选是为了同时容纳更早的、details 上没有这一项的形状。
+ */
+export interface NavigationDetails {
+  isMainFrame?: boolean
+}
+
+type NavigationListener = (
+  details: NavigationDetails,
+  url?: string,
+  isInPlace?: boolean,
+  isMainFrame?: boolean
+) => void
+
 export interface LifecycleTarget {
   once(event: 'destroyed', listener: () => void): unknown
-  on(
-    event: 'did-start-navigation',
-    listener: (event: unknown, url: string, isInPlace: boolean, isMainFrame: boolean) => void
-  ): unknown
+  on(event: 'did-start-navigation', listener: NavigationListener): unknown
   off(event: 'destroyed', listener: () => void): unknown
-  off(
-    event: 'did-start-navigation',
-    listener: (event: unknown, url: string, isInPlace: boolean, isMainFrame: boolean) => void
-  ): unknown
+  off(event: 'did-start-navigation', listener: NavigationListener): unknown
 }
 
 /**
@@ -55,12 +71,12 @@ export interface LifecycleTarget {
 export function bindSessionLifecycle(target: LifecycleTarget, abort: () => void): () => void {
   const onDestroyed = (): void => abort()
   const onNavigate = (
-    _event: unknown,
-    _url: string,
-    _isInPlace: boolean,
-    isMainFrame: boolean
+    details: NavigationDetails,
+    _url?: string,
+    _isInPlace?: boolean,
+    isMainFrame?: boolean
   ): void => {
-    if (isMainFrame) abort()
+    if (details?.isMainFrame ?? isMainFrame) abort()
   }
 
   target.once('destroyed', onDestroyed)

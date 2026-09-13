@@ -202,8 +202,9 @@ describe('页面刷新之后不再往它发对话事件', () => {
     await flush()
     expect(mocks.streamChat).toHaveBeenCalledTimes(1)
 
-    // 用户刷新了整个页面:WebContents 没被销毁,isDestroyed() 仍然是 false
-    sender.fire('did-start-navigation', undefined, 'app://reload', false, true)
+    // 用户刷新了整个页面:WebContents 没被销毁,isDestroyed() 仍然是 false。
+    // 事件形状按 Electron 现在支持的来:标志在第一个 details 对象上。
+    sender.fire('did-start-navigation', { isMainFrame: true }, 'app://reload', false)
 
     // 中止之后才到达的文字块和收尾,都不该越过页面边界
     capturedOnChunk('迟到的文字')

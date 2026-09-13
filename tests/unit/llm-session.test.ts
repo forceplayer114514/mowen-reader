@@ -71,10 +71,21 @@ type Listener = (...args: unknown[]) => void
  * once 必须是真的 once:事件一触发就摘掉监听器,不管回调自己做不做事。
  * 这个区别正是下面那条回归测试要抓的东西——如果这里把 once 实现成"加进去
  * 就不再摘",子 frame 导航吃掉监听器的那个 bug 在假对象上根本不会重现。
+ *
+ * 导航事件有两种形状,fire 的第三个参数决定用哪一种:
+ * - 'details'(默认,也是 Electron 现在支持的形状):标志在第一个 details
+ *   对象上,后面那几个位置参数已经被标记为废弃,这里直接传 undefined,
+ *   模拟将来某个版本把它们彻底去掉的样子。
+ * - 'positional'(旧形状):details 对象上没有这个标志,只有第四个位置参数
+ *   带着它。
+ * 两种形状都要能认出主 frame,否则哪天位置参数消失了,主 frame 的刷新就再也
+ * 中止不了请求,而且不会有编译错误、也不会有测试失败。
  */
+type NavigationShape = 'details' | 'positional'
+
 function fakeWebContents(): LifecycleTarget & {
   fire(event: 'destroyed'): void
-  fire(event: 'did-start-navigation', isMainFrame: boolean): void
+  fire(event: 'did-start-navigation', isMainFrame: boolean, shape?: NavigationShape): void
   listenerCount(event: string): number
 } {
   const listeners = new Map<string, Set<Listener>>()
@@ -105,15 +116,17 @@ function fakeWebContents(): LifecycleTarget & {
       const wrapper = onceWrappers.get(listener)
       if (wrapper) set.delete(wrapper)
     },
-    fire: (event: string, isMainFrame?: boolean): void => {
+    fire: (event: string, isMainFrame?: boolean, shape: NavigationShape = 'details'): void => {
+      const details = shape === 'details' ? { isMainFrame } : {}
+      const positional = shape === 'details' ? undefined : isMainFrame
       for (const listener of [...get(event)]) {
-        listener(undefined, 'https://example.invalid', false, isMainFrame)
+        listener(details, 'https://example.invalid', false, positional)
       }
     },
     listenerCount: (event: string): number => get(event).size
   } as LifecycleTarget & {
     fire(event: 'destroyed'): void
-    fire(event: 'did-start-navigation', isMainFrame: boolean): void
+    fire(event: 'did-start-navigation', isMainFrame: boolean, shape?: NavigationShape): void
     listenerCount(event: string): number
   }
 }
@@ -200,5 +213,37 @@ describe('请求生命周期绑定到 WebContents', () => {
     dispose()
     expect(target.listenerCount('did-start-navigation')).toBe(0)
     expect(target.listenerCount('destroyed')).toBe(0)
+  })
+
+  it('旧形状:标志只带在第四个位置参数上时,主 frame 导航照样中止', () => {
+    const target = fakeWebContents()
+    const abort = vi.fn()
+    bindSessionLifecycle(target, abort)
+    target.fire('did-start-navigation', true, 'positional')
+    expect(abort).toHaveBeenCalledTimes(1)
+  })
+
+  it('旧形状:子 frame 导航同样不会误杀', () => {
+    const target = fakeWebContents()
+    const abort = vi.fn()
+    bindSessionLifecycle(target, abort)
+    target.fire('did-start-navigation', false, 'positional')
+    expect(abort).not.toHaveBeenCalled()
+  })
+
+  it('新形状:位置参数全没了,只剩 details 对象,也能认出主 frame', () => {
+    const target = fakeWebContents()
+    const abort = vi.fn()
+    bindSessionLifecycle(target, abort)
+    target.fire('did-start-navigation', true, 'details')
+    expect(abort).toHaveBeenCalledTimes(1)
+  })
+
+  it('新形状:details 说这是子 frame,就不中止', () => {
+    const target = fakeWebContents()
+    const abort = vi.fn()
+    bindSessionLifecycle(target, abort)
+    target.fire('did-start-navigation', false, 'details')
+    expect(abort).not.toHaveBeenCalled()
   })
 })
