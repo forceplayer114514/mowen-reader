@@ -278,7 +278,15 @@ export default function ReaderView({ book, onBack }: Props) {
 
   const jump = useCallback((href: string) => {
     setShowToc(false)
-    void engineRef.current?.display(href)
+    // display() 的目标解析不出章节时,epub.js 会用 "No Section Found" reject 这个
+    // promise(见 node_modules/epubjs/src/rendition.js 的 _display())。这里之前
+    // 没接住:调用方是事件回调而不是 async 函数,没人 await 这个 promise,拒绝会
+    // 变成未处理的 rejection,界面上则是点了目录条目却什么反应都没有,也不告诉
+    // 用户为什么。跳转失败不应该把已经在正常显示的阅读界面清空——只在页脚已有的
+    // 错误提示位置说一句,读到的内容照样留在原处。
+    engineRef.current?.display(href).catch(() => {
+      setError('跳转失败,目标章节可能已被移动')
+    })
   }, [])
 
   // error 同时承载两类情况:书打不开(致命,此时 visible 还没被设置过,整页替换成
