@@ -25,6 +25,9 @@ function findSeparator(buffer: string): { index: number; length: number } | null
 export function createSseParser(): { push(chunk: string): string[]; done(): void } {
   let buffer = ''
   let finished = false
+  // 缓冲区因超限被丢弃之后置位:说明当前 buffer 里剩的、还有之后紧跟着到达
+  // 的字节,来源都对不上了,不能再当成正常事件的开头去解析。
+  let resyncing = false
 
   function parseEvent(block: string): string | null {
     for (const rawLine of block.split(/\r\n|\n|\r/)) {
@@ -50,6 +53,18 @@ export function createSseParser(): { push(chunk: string): string[]; done(): void
       if (finished) return []
       buffer += chunk
       const out: string[] = []
+
+      if (resyncing) {
+        // 还没等到一个干净的分隔符之前,这些字节都可能是坏流的残余——
+        // 不能留着它们,留着就会粘到后面正常事件的前面,把正常事件也拖下水。
+        // 一直扔,扔到某次推入里终于凑出一个完整分隔符为止,再继续往下走正常流程。
+        if (findSeparator(buffer) === null) {
+          buffer = ''
+          return out
+        }
+        resyncing = false
+      }
+
       let sep = findSeparator(buffer)
       while (sep !== null) {
         const block = buffer.slice(0, sep.index)
@@ -59,15 +74,17 @@ export function createSseParser(): { push(chunk: string): string[]; done(): void
         sep = findSeparator(buffer)
       }
       // 一直凑不出分隔符,且已经攒了太多字节:这段流是坏的,丢掉重来,
-      // 不能让它无限增长把主进程内存吃光。
+      // 不能让它无限增长把主进程内存吃光。之后进入重新同步状态。
       if (buffer.length > MAX_BUFFER_SIZE) {
         buffer = ''
+        resyncing = true
       }
       return out
     },
     done(): void {
       finished = true
       buffer = ''
+      resyncing = false
     }
   }
 }

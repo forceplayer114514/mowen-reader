@@ -87,7 +87,7 @@ describe('流式响应解析', () => {
     expect(p.push(mixed)).toEqual(['第一条', '第二条', '第三条'])
   })
 
-  it('没有分隔符的畸形流持续增长也不会撑爆缓冲区,之后正常的流还能继续解析', () => {
+  it('没有分隔符的畸形流持续增长也不会撑爆缓冲区', () => {
     const p = createSseParser()
     const piece = 'x'.repeat(64 * 1024) // 64KB 一片,不含任何分隔符
     let out: string[] = []
@@ -98,7 +98,16 @@ describe('流式响应解析', () => {
     // 再单独推入一块超过上限的垃圾,确保不管前面剩了多少都必定触发丢弃
     out = out.concat(p.push('y'.repeat(2 * 1024 * 1024)))
     expect(out).toEqual([])
-    // 丢弃之后缓冲区是干净的,正常事件照常解析
-    expect(p.push(chunk('恢复正常'))).toEqual(['恢复正常'])
+  })
+
+  it('缓冲区因超限被丢弃后进入重新同步状态,不会把残留垃圾粘到下一个正常事件前面', () => {
+    const p = createSseParser()
+    // 两段不含分隔符的垃圾累计超过 1MB 上限,触发丢弃
+    expect(p.push('x'.repeat(700 * 1024))).toEqual([])
+    expect(p.push('x'.repeat(700 * 1024))).toEqual([])
+    // 丢弃之后又来一段没超限的垃圾——旧实现会原样留着它,等着粘到下一个事件前面
+    expect(p.push('x'.repeat(10 * 1024))).toEqual([])
+    // 一个完整的正常事件到达:应该正常吐出内容,不能被前面的垃圾一起拖累丢掉
+    expect(p.push(chunk('还是丢了吗'))).toEqual(['还是丢了吗'])
   })
 })
