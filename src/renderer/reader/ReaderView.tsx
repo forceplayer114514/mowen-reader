@@ -63,6 +63,18 @@ export default function ReaderView({ book, onBack }: Props) {
       }
     }
 
+    // 恢复上次读到的位置期间(见下面 boot() 里 book.lastReadCfi 那一段)先landing
+    // 一次、再校验、必要时重新 display() 的整个过程都算"恢复进行中"。这段时间里
+    // onRelocated 触发的每一次 relocate 都不是用户翻页翻出来的,不能当成新的阅读
+    // 位置写回数据库——校验循环重试到一半、机器慢或书大导致最终放弃时,最后落定的
+    // 位置往往比 book.lastReadCfi 更靠前,如果照常保存,书签就会被这次没验证通过的
+    // 落点悄悄往回带,下次打开再触发一次同样的偏差,一次比一次靠前。这个标记只在
+    // 存在 book.lastReadCfi 时才需要置为 true(全新的书没有可恢复的位置,不存在
+    // 这个问题),并且用 try/finally 包住整段恢复流程,不管正常收尾、中途 cancelled
+    // 提前 return 还是抛出异常,都会在 finally 里被清掉,不会卡在 true 上永远
+    // 拒绝保存后续翻页产生的正常进度。
+    let restoringPosition = Boolean(book.lastReadCfi)
+
     async function boot(): Promise<void> {
       if (!hostRef.current) return
       try {
@@ -96,9 +108,12 @@ export default function ReaderView({ book, onBack }: Props) {
             // 下面的 stuckTimer 兜底会在几秒后把这个情况变成界面上的错误提示。
           })
           const cfi = engine!.currentCfi()
-          if (cfi) {
+          if (cfi && !restoringPosition) {
             // 存阅读进度失败先静默处理:偶发失败不值得打断阅读体验,下次翻页/
             // relocate 触发时会用最新位置重试,不会残留未处理的 rejection。
+            // restoringPosition 为 true 时这次 relocate 是恢复流程内部的中间落点,
+            // 不是用户翻页翻出来的,不能当成新的阅读位置写回去(见上面变量声明处
+            // 的注释)。
             void window.api.saveProgress(book.id, cfi).catch(() => {})
           }
 
@@ -139,33 +154,43 @@ export default function ReaderView({ book, onBack }: Props) {
         }, VISIBLE_STUCK_TIMEOUT_MS)
 
         setToc(engine.toc())
-        await engine.display(book.lastReadCfi ?? undefined)
-        if (cancelled) return
+        try {
+          await engine.display(book.lastReadCfi ?? undefined)
+          if (cancelled) return
 
-        // 恢复上次读到的位置时,这次 display() 有时会落在比保存的位置更靠前的地方
-        // (亲测偏差正好是几个物理翻页)。原因是 epub.js 把 CFI 换算成滚动偏移量靠的
-        // 是 manager.moveTo() 里的 view.locationOf()/this.layout.delta(见
-        // node_modules/epubjs/src/managers/default/index.js 的 display()/moveTo()),
-        // 这次调用发生在这本书在这个全新窗口里第一次真正跑完排版之前,量出来的列宽
-        // /偏移还没定型,算出的滚动位置自然是错的。这个时机窗口有多长跟机器快慢有关,
-        // 不能靠"反正再调一次 display() 时机就够晚了"这种运气——机器足够快或足够慢,
-        // 两次调用都可能落进同一个还没定型的窗口。这里改成校验而不是假设:display()
-        // 之后用 currentCfi() 回读引擎实际落到了哪里,跟目标位置比对,不一致就等一帧
-        // (给排版一点时间定型)再重新 display() 一次,最多重试 MAX_POSITION_VERIFY_ATTEMPTS
-        // 次;还是不一致就安静放弃,不能无限重试卡住阅读。首次打开新书(没有
-        // lastReadCfi)不存在这个问题,不需要这段校验。
-        if (book.lastReadCfi) {
-          const target = book.lastReadCfi
-          for (
-            let attempt = 0;
-            attempt < MAX_POSITION_VERIFY_ATTEMPTS && engine.currentCfi() !== target;
-            attempt++
-          ) {
-            await waitForFrame()
-            if (cancelled) return
-            await engine.display(target)
-            if (cancelled) return
+          // 恢复上次读到的位置时,这次 display() 有时会落在比保存的位置更靠前的地方
+          // (亲测偏差正好是几个物理翻页)。原因是 epub.js 把 CFI 换算成滚动偏移量靠的
+          // 是 manager.moveTo() 里的 view.locationOf()/this.layout.delta(见
+          // node_modules/epubjs/src/managers/default/index.js 的 display()/moveTo()),
+          // 这次调用发生在这本书在这个全新窗口里第一次真正跑完排版之前,量出来的列宽
+          // /偏移还没定型,算出的滚动位置自然是错的。这个时机窗口有多长跟机器快慢有关,
+          // 不能靠"反正再调一次 display() 时机就够晚了"这种运气——机器足够快或足够慢,
+          // 两次调用都可能落进同一个还没定型的窗口。这里改成校验而不是假设:display()
+          // 之后用 currentCfi() 回读引擎实际落到了哪里,跟目标位置比对,不一致就等一帧
+          // (给排版一点时间定型)再重新 display() 一次,最多重试 MAX_POSITION_VERIFY_ATTEMPTS
+          // 次;还是不一致就安静放弃,不能无限重试卡住阅读。首次打开新书(没有
+          // lastReadCfi)不存在这个问题,不需要这段校验。
+          if (book.lastReadCfi) {
+            const target = book.lastReadCfi
+            for (
+              let attempt = 0;
+              attempt < MAX_POSITION_VERIFY_ATTEMPTS && engine.currentCfi() !== target;
+              attempt++
+            ) {
+              await waitForFrame()
+              if (cancelled) return
+              await engine.display(target)
+              if (cancelled) return
+            }
           }
+        } finally {
+          // 不管上面这段是正常验证完(不管最后是对上了还是重试用完次数放弃)、
+          // 因为 cancelled 提前 return,还是抛出了异常,都要在这里把标记摘掉——
+          // 否则一旦卡在 true 上,后续用户翻页产生的正常阅读进度会被误当成
+          // "恢复中的中间落点"而永远不再保存。restoringPosition 本来就只在
+          // book.lastReadCfi 存在时才是 true,这里无条件清零对新书(本来就是
+          // false)也是安全的空操作。
+          restoringPosition = false
         }
 
         // open()/display() 期间位置索引可能已经在 onRelocated 订阅注册之后、
