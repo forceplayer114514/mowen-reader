@@ -58,6 +58,10 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   // 记的是回调而不只是范围字符串:换主题时要按新配色把同一段重新画一遍,
   // 重画就得把原来的点击回调原样再传进去,否则重画完的高亮点了没反应。
   const highlights = new Map<string, () => void>()
+  // 该从 epub.js 那边摘掉、但当时一个章节视图都没渲染出来所以没敢摘的范围。
+  // 见 hasRenderedViews() 的注释:那种时候摘会把 epub.js 自己的两张表弄成不一致。
+  // 等下一次有视图渲染出来,syncHighlights() 会把这里欠着的一并补掉。
+  const pendingRemovals = new Set<string>()
   // 当前主题。加高亮时要按它取配色,所以不能只交给 rendition.themes 自己记。
   let theme: ThemeName = 'light'
   let locationsReady = false
@@ -103,6 +107,78 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     const normalized = normalizeChapterHref(target)
     const matched = spineHrefs.find((href) => normalizeChapterHref(href) === normalized)
     return matched !== undefined ? `${matched}${fragment}` : target
+  }
+
+  /**
+   * 现在有没有已经渲染出来的章节视图。所有对 epub.js 标注表的改动都先问这一句。
+   *
+   * epub.js 的 Annotations.remove()(node_modules/epubjs/src/annotations.js)把两件
+   * 事写在"遍历当前渲染出来的视图"这个循环**里面**:从按章节分组的索引里摘掉这条
+   * 记录、把画在页面上的那层 SVG 从视图上摘下来;而"从总表里删掉这条记录"那一行
+   * 写在循环**外面**,无条件执行。于是一个视图都没渲染的时候调它,总表里的记录没
+   * 了、分组索引里那条却留着——等这一章再渲染出来,epub.js 自己的 inject() 钩子会
+   * 照着分组索引去总表里取,取到 undefined 再对它调 attach(),当场抛 TypeError,
+   * 这一章直接渲染不出来。就算侥幸没抛,那块矩形也再没人摸得到了:引擎这边的账已经
+   * 删掉,epub.js 那边也查不到,它既取消不了、点了也没有任何意义。
+   *
+   * 所以规矩是:一个视图都没渲染出来的时候,一律不碰 epub.js 的标注表,只改引擎
+   * 自己这份账,等 syncHighlights() 在下一次渲染时把两边对齐。
+   */
+  function hasRenderedViews(): boolean {
+    return (rendition?.views().length ?? 0) > 0
+  }
+
+  /** 把一段范围按当前主题画上去。现在画不了就只留在账上,等下一次渲染时补画。 */
+  function attachHighlight(cfiRange: string, onClick: () => void): void {
+    if (!rendition || !hasRenderedViews()) return
+    // 先删一次再加:epub.js 的 Annotations 用「范围+类型」当 key 存(annotations.js
+    // 的 add()),同一段重复加会把记录覆盖掉,但页面上先画的那层 SVG 矩形还挂在
+    // marks-pane 上没人再摸得到,颜色越叠越深且永远删不掉。
+    rendition.annotations.remove(cfiRange, 'highlight')
+    pendingRemovals.delete(cfiRange)
+    // 第二个参数是挂在这条标注上的自定义数据,epub.js 会往里写 epubcfi 字段
+    // (iframe.js 的 highlight()),所以每次都给一个新的空对象,不要共用。
+    // 第四个参数是 CSS 类名,给 undefined 就用库自己的默认值 epubjs-hl。
+    rendition.annotations.highlight(cfiRange, {}, onClick, undefined, HIGHLIGHT_STYLES[theme])
+  }
+
+  /** 把一段范围从页面上摘掉。现在摘不安全就欠着,见 hasRenderedViews()。 */
+  function detachHighlight(cfiRange: string): void {
+    if (!rendition) return
+    if (!hasRenderedViews()) {
+      pendingRemovals.add(cfiRange)
+      return
+    }
+    pendingRemovals.delete(cfiRange)
+    // 第二个参数不能省:Annotations.remove() 拿「范围+类型」拼出 key 去查,
+    // 少了类型就查不到任何东西,这一行会变成静默的空操作。
+    rendition.annotations.remove(cfiRange, 'highlight')
+  }
+
+  /**
+   * 让页面上画着的高亮和引擎这份账对齐:先把欠着的摘除补掉,再把账上的每一段按
+   * 当前主题重画一遍。
+   *
+   * 两处会走到这里:
+   *
+   * - 换主题。高亮的配色是创建那一刻写死在 SVG 矩形属性上的,换主题不会自己跟着
+   *   变:浅色主题那块正片叠底的黄色落到夜间的深色背景上会被压得几乎看不见,用户
+   *   选了几句话顺手点了「夜间」,选中标记就没了,但引用其实还在列表里。重画要带上
+   *   原来的点击回调,否则新画出来的高亮点了不取消。
+   * - 章节渲染出来的时候。这一条把"加高亮的时候还没渲染"和"摘高亮的时候没有视图"
+   *   两种欠账都在同一个时刻结清:欠着的摘除在这里真的摘掉,账上还没画过的在这里
+   *   画上。也就是说,一段在渲染之前就记下的高亮,是在书渲染出来的那一刻出现的,
+   *   而不是拖到用户下一次换主题才莫名其妙冒出来。
+   */
+  function syncHighlights(): void {
+    if (!rendition || !hasRenderedViews()) return
+    for (const cfiRange of pendingRemovals) {
+      rendition.annotations.remove(cfiRange, 'highlight')
+    }
+    pendingRemovals.clear()
+    for (const [cfiRange, onClick] of highlights) {
+      attachHighlight(cfiRange, onClick)
+    }
   }
 
   /**
@@ -316,6 +392,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     staleRendition.q.stop()
     staleRendition.off('keydown', handleContentKeydown)
     staleRendition.off('mouseup', handleMouseUp)
+    staleRendition.off('rendered', syncHighlights)
     try {
       staleRendition.destroy()
     } catch {
@@ -342,6 +419,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     disarmClickSwallow = null
     rendition?.off('keydown', handleContentKeydown)
     rendition?.off('mouseup', handleMouseUp)
+    rendition?.off('rendered', syncHighlights)
     // rendition.q 里可能还排着一个我们自己调用过、还没跑到的 display() 任务(见
     // ReaderView.boot() 里 `await engine.display(...)`):它是 epub.js 内部靠
     // requestAnimationFrame 驱动的队列,当前这一帧不一定跑得到它。如果不在这里
@@ -384,6 +462,9 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     // 下一本书刚打开就会以为页面上已经有高亮,clearHighlights() 会对着新书里
     // 根本不存在的范围做删除。
     highlights.clear()
+    // 欠着的摘除也跟着这本书一起作废:范围字符串是这本书的,留到下一本书上
+    // 只会对着不存在的范围做删除。
+    pendingRemovals.clear()
     locationsReady = false
   }
 
@@ -474,6 +555,9 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       // 两次批次号检查之后,被取代的那次 open() 走不到这里,不会给一个马上要销毁的
       // rendition 挂监听。
       nextRendition.on('mouseup', handleMouseUp)
+      // 章节渲染出来的那一刻把高亮和引擎这份账对齐一次,见 syncHighlights() 的注释。
+      // 和上面两行一样在两次批次号检查之后,被取代的那次 open() 走不到这里。
+      nextRendition.on('rendered', syncHighlights)
     },
 
     async display(target?: string): Promise<void> {
@@ -504,15 +588,8 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     setTheme(name: ThemeName): void {
       theme = name
       rendition?.themes.select(name)
-      // 高亮的配色是创建那一刻写死在 SVG 矩形属性上的,换主题不会自己跟着变:
-      // 浅色主题那块正片叠底的黄色落到夜间的深色背景上会被压得几乎看不见。
-      // 所以把还在的高亮按新配色原样重画一遍——重画要带上原来的点击回调,
-      // 否则新画出来的高亮点了不取消。
-      if (!rendition) return
-      for (const [cfiRange, onClick] of highlights) {
-        rendition.annotations.remove(cfiRange, 'highlight')
-        rendition.annotations.highlight(cfiRange, {}, onClick, undefined, HIGHLIGHT_STYLES[name])
-      }
+      // 配色跟着主题走,见 syncHighlights() 的注释。
+      syncHighlights()
     },
 
     async getVisible(): Promise<VisibleRange> {
@@ -602,31 +679,22 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     addHighlight(cfiRange: string, onClick: () => void): void {
       // 先记账,再看画不画得出来。书还没渲染出来时(引擎刚建好、open() 还没跑完)
       // 直接返回、连账都不记的话,上层的引用列表里已经躺着这一段,引擎这边却当它
-      // 从来没存在过:这条引用永远不会有对应的高亮,clearHighlights() 也数不到它,
-      // 换主题重画同样跳过它。记下来至少让两边对同一段范围的认知是一致的——
-      // 这份账本来就跟着当前这本书走,teardown() 会连它一起清掉,不会带到下一本书。
+      // 从来没存在过:这条引用永远不会有对应的高亮,clearHighlights() 也数不到它。
+      // 记下来两边对同一段范围的认知才是一致的,而且章节一渲染出来 syncHighlights()
+      // 就会把它画上(见那个函数的注释)。这份账跟着当前这本书走,teardown() 会连它
+      // 一起清掉,不会带到下一本书。
       highlights.set(cfiRange, onClick)
-      if (!rendition) return
-      // 先删一次再加:epub.js 的 Annotations 用「范围+类型」当 key 存(annotations.js
-      // 的 add()),同一段重复加会把记录覆盖掉,但页面上先画的那层 SVG 矩形还挂在
-      // marks-pane 上没人再摸得到,颜色越叠越深且永远删不掉。
-      rendition.annotations.remove(cfiRange, 'highlight')
-      // 第二个参数是挂在这条标注上的自定义数据,epub.js 会往里写 epubcfi 字段
-      // (iframe.js 的 highlight()),所以每次都给一个新的空对象,不要共用。
-      // 第四个参数是 CSS 类名,给 undefined 就用库自己的默认值 epubjs-hl。
-      rendition.annotations.highlight(cfiRange, {}, onClick, undefined, HIGHLIGHT_STYLES[theme])
+      attachHighlight(cfiRange, onClick)
     },
 
     removeHighlight(cfiRange: string): void {
       highlights.delete(cfiRange)
-      // 第二个参数不能省:Annotations.remove() 拿「范围+类型」拼出 key 去查,
-      // 少了类型就查不到任何东西,这一行会变成静默的空操作。
-      rendition?.annotations.remove(cfiRange, 'highlight')
+      detachHighlight(cfiRange)
     },
 
     clearHighlights(): void {
       for (const cfiRange of highlights.keys()) {
-        rendition?.annotations.remove(cfiRange, 'highlight')
+        detachHighlight(cfiRange)
       }
       highlights.clear()
     },
