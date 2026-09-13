@@ -54,6 +54,20 @@ describe('HTTP 错误分类', () => {
     expect(msg).not.toMatch(/[\r\n\t]/)
     expect(msg).toContain('第一行 第二行 第三行 带制表符')
   })
+
+  it('服务端说明全是控制字符时,清理完是空的,不会显示空括注', () => {
+    const body = JSON.stringify({ error: { message: '\x01\x02\x03' } })
+    const msg = classifyHttpError(404, body)
+    expect(msg).not.toContain('(')
+    expect(msg).not.toContain('服务端说明')
+  })
+
+  it('服务端说明全是空白时,清理完是空的,不会显示空括注', () => {
+    const body = JSON.stringify({ error: { message: '   \t  ' } })
+    const msg = classifyHttpError(404, body)
+    expect(msg).not.toContain('(')
+    expect(msg).not.toContain('服务端说明')
+  })
 })
 
 describe('网络错误分类', () => {

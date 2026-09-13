@@ -26,7 +26,11 @@ function sanitizeServerReason(reason: string): string {
 function withReason(base: string, body: string): string {
   const reason = serverReason(body)
   if (!reason) return base
-  return `${base}(服务端说明:${sanitizeServerReason(reason)})`
+  // 清理之后才能判断是否还有内容——原始消息可能全是控制字符或空白,
+  // 清理完就是空串,这种情况不能显示一个空的括注。
+  const sanitized = sanitizeServerReason(reason)
+  if (!sanitized) return base
+  return `${base}(服务端说明:${sanitized})`
 }
 
 /**
