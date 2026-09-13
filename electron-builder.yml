@@ -1,0 +1,25 @@
+appId: com.github.aireader
+productName: AI 阅读器
+directories:
+  output: release
+  buildResources: build
+files:
+  - out/**/*
+  - package.json
+mac:
+  category: public.app-category.book
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+  # 不做签名与公证。用户首次打开需右键→打开,README 有说明。
+  identity: null
+  hardenedRuntime: false
+  entitlements: build/entitlements.mac.plist
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  artifactName: ${productName}-${version}-setup.${ext}

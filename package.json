@@ -1,0 +1,41 @@
+{
+  "name": "ai-reader",
+  "version": "0.1.0",
+  "description": "EPUB 桌面阅读器",
+  "main": "./out/main/index.js",
+  "type": "module",
+  "license": "MIT",
+  "author": "forceplayer114514",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "tsc --noEmit && electron-vite build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "npm run build && playwright test",
+    "fixture": "tsx scripts/make-fixture-epub.ts",
+    "dist": "npm run build && electron-builder"
+  },
+  "dependencies": {
+    "epubjs": "^0.3.93"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^44.3.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^2.3.0",
+    "jszip": "^3.10.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11",
+    "vitest": "^3.0.0"
+  }
+}

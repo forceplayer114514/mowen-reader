@@ -1,4 +1,9 @@
 node_modules/
 dist/
 out/
+release/
 .DS_Store
+.superpowers/
+tests/fixtures/*.epub
+test-results/
+playwright-report/
