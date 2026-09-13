@@ -30,6 +30,17 @@ function redactCredentials(message: string, apiKey: string): string {
   return out.replace(/Bearer\s+\S+/gi, 'Bearer ***')
 }
 
+/** 用 onChunk 自己的异常把网络异常路径区分开,不让两者混在一起被误判成网络问题。 */
+class CallbackError extends Error {
+  constructor(public readonly cause: unknown) {
+    super('回调出错')
+  }
+}
+
+function describeUnknown(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
 /**
  * 向 OpenAI 兼容接口发起流式请求。
  *
@@ -81,10 +92,17 @@ export async function streamChat(options: StreamOptions): Promise<void> {
       if (options.signal.aborted) break
       for (const text of parser.push(decoder.decode(value, { stream: true }))) {
         if (options.signal.aborted) break
-        options.onChunk(text)
+        try {
+          options.onChunk(text)
+        } catch (err) {
+          throw new CallbackError(err)
+        }
       }
     }
   } catch (err) {
+    if (err instanceof CallbackError) {
+      throw new Error(`处理时出错(不是网络问题):${describeUnknown(err.cause)}`)
+    }
     const message = classifyNetworkError(err)
     if (message !== '') throw new Error(message)
   } finally {

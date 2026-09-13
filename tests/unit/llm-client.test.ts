@@ -169,6 +169,45 @@ describe('流式请求', () => {
     expect(got).not.toContain('第二块')
   })
 
+  it('onChunk 抛出的异常不会被误判成网络问题,原始信息保留', async () => {
+    const cancel = vi.fn(async () => undefined)
+    const fetchImpl = async (): Promise<Response> => {
+      // 流特意不关闭:如果流已经 close 了,reader.cancel() 在一个已关闭的流
+      // 上不会触发下面这个 cancel 回调,就测不出"reader 真的被释放了"这件事。
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const enc = new TextEncoder()
+          controller.enqueue(
+            enc.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: '你' } }] })}\n\n`)
+          )
+        },
+        cancel
+      })
+      return new Response(body, { status: 200 })
+    }
+    await expect(
+      streamChat(
+        base({
+          onChunk: () => {
+            throw new Error('BUG')
+          },
+          fetchImpl: fetchImpl as unknown as typeof fetch
+        })
+      )
+    ).rejects.toThrow(/BUG/)
+    await expect(
+      streamChat(
+        base({
+          onChunk: () => {
+            throw new Error('BUG')
+          },
+          fetchImpl: fetchImpl as unknown as typeof fetch
+        })
+      )
+    ).rejects.not.toThrow(/请检查网络与接口地址/)
+    expect(cancel).toHaveBeenCalled()
+  })
+
   it('响应没有 body 时报出中文错误', async () => {
     await expect(
       streamChat(
