@@ -2388,8 +2388,11 @@ git commit -m "feat: expose conversation, secret and streaming channels over ipc
 **Files:**
 - Modify: `src/renderer/reader/engine.ts`
 - Modify: `src/renderer/reader/types.ts`
+- Modify: `src/renderer/reader/ReaderView.tsx`(**偏差,实施时补入**:划选、加高亮、点高亮取消、换主题重画这几条路只有在真实 EPUB + 真实 iframe 里才试得出来,而划选 store 要等 Task 11 才被侧边栏消费,在那之前页面上没有任何人订阅 `onSelected`,端到端根本画不出高亮。所以这里加了一段只在测试置了 `window.__E2E_SELECTION__` 时才生效的接线,和书架的 `__E2E_FILES__` 同一路子;正常运行时什么都不建。这不是提前做 Task 11 的接线)
 - Create: `src/renderer/reader/selection.ts`
 - Test: `tests/unit/selection.test.ts`
+- Test: `tests/unit/engine.test.ts`(**偏差,实施时补入**:引擎对 epub.js 标注表说了什么话、松手那串鼠标事件被怎么处理,这些判断在 `selection.test.ts` 的假引擎里看不见,真实 epub.js 又要一份真 EPUB 才跑得起来;把 epubjs 换成只负责记账的替身,断言调用序列)
+- Test: `tests/e2e/reader.spec.ts` + `tests/e2e/helpers.ts`(**偏差,实施时补入**:同上,划选与高亮的六条端到端用例)
 
 **Interfaces:**
 - Consumes: `ReaderEngine`
