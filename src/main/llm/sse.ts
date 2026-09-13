@@ -3,13 +3,28 @@
  *
  * 网络片段可能在任意字节处被切断——一个事件可能被劈成两半,也可能几个事件
  * 挤在同一个片段里。所以必须自己缓冲,只处理已经收到完整空行分隔的部分。
+ *
+ * 真实服务器发的换行不一定是 \n\n:不少 OpenAI 兼容网关和代理会用 \r\n\r\n,
+ * 极少数老式实现还会用 \r\r。三种都要认。
  */
+
+/** 在 buffer 里找出现得最早的空行分隔符,返回起始位置和分隔符长度。 */
+function findSeparator(buffer: string): { index: number; length: number } | null {
+  const candidates: { index: number; length: number }[] = [
+    { index: buffer.indexOf('\r\n\r\n'), length: 4 },
+    { index: buffer.indexOf('\n\n'), length: 2 },
+    { index: buffer.indexOf('\r\r'), length: 2 }
+  ].filter((c) => c.index >= 0)
+  if (candidates.length === 0) return null
+  return candidates.reduce((best, c) => (c.index < best.index ? c : best))
+}
+
 export function createSseParser(): { push(chunk: string): string[]; done(): void } {
   let buffer = ''
   let finished = false
 
   function parseEvent(block: string): string | null {
-    for (const rawLine of block.split('\n')) {
+    for (const rawLine of block.split(/\r\n|\n|\r/)) {
       const line = rawLine.trim()
       if (!line.startsWith('data:')) continue
       const payload = line.slice('data:'.length).trim()
@@ -32,13 +47,13 @@ export function createSseParser(): { push(chunk: string): string[]; done(): void
       if (finished) return []
       buffer += chunk
       const out: string[] = []
-      let cut = buffer.indexOf('\n\n')
-      while (cut >= 0) {
-        const block = buffer.slice(0, cut)
-        buffer = buffer.slice(cut + 2)
+      let sep = findSeparator(buffer)
+      while (sep !== null) {
+        const block = buffer.slice(0, sep.index)
+        buffer = buffer.slice(sep.index + sep.length)
         const text = parseEvent(block)
         if (text !== null) out.push(text)
-        cut = buffer.indexOf('\n\n')
+        sep = findSeparator(buffer)
       }
       return out
     },
