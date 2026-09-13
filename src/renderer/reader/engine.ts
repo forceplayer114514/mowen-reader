@@ -1,6 +1,6 @@
 import ePub, { type Book, type Contents, type NavItem, type Rendition } from 'epubjs'
 import { makeRangeCfi } from './cfi'
-import { normalizeChapterHref } from './href'
+import { normalizeChapterHref, resolveNavigationHref } from './href'
 import type { OpenOptions, ReaderEngine, ThemeName, TocItem, VisibleRange } from './types'
 
 const THEMES: Record<ThemeName, Record<string, Record<string, string>>> = {
@@ -44,11 +44,18 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   // 直接放弃、不再碰任何闭包变量——用来防止过期的 open() 续写覆盖新书的状态。
   let generation = 0
 
-  function flatToc(items: NavItem[], depth: number, out: TocItem[]): void {
+  /**
+   * navDocPath 是导航文档自己相对 OPF 目录的路径(book.packaging.navPath,没有
+   * EPUB 3 导航文档时是 book.packaging.ncxPath——epub.js 自己解析导航时就是这么
+   * 退回的,见 open() 里取值处的注释),用来把目录项里原始的 href 解析成和 spine
+   * 同一基准的路径,见 href.ts 的 resolveNavigationHref() 注释。
+   */
+  function flatToc(items: NavItem[], depth: number, navDocPath: string, out: TocItem[]): void {
     for (const item of items) {
-      out.push({ label: String(item.label ?? '').trim(), href: String(item.href ?? ''), depth })
+      const href = resolveNavigationHref(String(item.href ?? ''), navDocPath)
+      out.push({ label: String(item.label ?? '').trim(), href, depth })
       if (Array.isArray(item.subitems) && item.subitems.length > 0) {
-        flatToc(item.subitems, depth + 1, out)
+        flatToc(item.subitems, depth + 1, navDocPath, out)
       }
     }
   }
@@ -233,8 +240,13 @@ export function createEngine(container: HTMLElement): ReaderEngine {
         return
       }
 
+      // book.packaging.navPath 是 EPUB 3 导航文档相对 OPF 目录的路径,没有导航文档、
+      // 只用 EPUB 2 toc.ncx 时是空字符串——这时退回 ncxPath,和 epub.js 自己
+      // loadNavigation() 里 `packaging.navPath || packaging.ncxPath` 的退回逻辑保持
+      // 一致,因为 nav.toc 本来就是从这两者之一解析出来的。
+      const navDocPath = nextBook.packaging.navPath || nextBook.packaging.ncxPath || ''
       const items: TocItem[] = []
-      flatToc(nav.toc, 0, items)
+      flatToc(nav.toc, 0, navDocPath, items)
 
       // epub.js 的类型声明里 Spine.each() 只标成 (...args: any[]) => any,没有把
       // 回调参数标成 Section——这里只声明用得到的 href 字段,断言过去。

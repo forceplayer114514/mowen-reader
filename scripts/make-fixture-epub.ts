@@ -354,6 +354,100 @@ export async function buildRealisticFixtureEpub(): Promise<Uint8Array> {
   return zip.generateAsync({ type: 'uint8array' })
 }
 
+const BARE_TITLE = '裸文件名目录测试书'
+const BARE_AUTHOR = '裸文件名测试作者'
+
+const BARE_CHAPTERS = [
+  { id: 'ch1', title: '第一章 起点', seed: '起点' },
+  { id: 'ch2', title: '第二章 中途', seed: '中途' },
+  { id: 'ch3', title: '第三章 终点', seed: '终点' }
+]
+
+/**
+ * 导航文档(EPUB 3 nav.xhtml)和它链接的章节放在同一目录下(OEBPS/Text/),
+ * 链接直接写不带任何前缀的裸文件名,比如 "ch1.xhtml"——Sigil 默认就生成这种写法。
+ */
+function bareNavXhtml(): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="zh-CN">
+<head><title>目录</title></head>
+<body>
+  <nav epub:type="toc" id="toc">
+    <h1>目录</h1>
+    <ol>
+${BARE_CHAPTERS.map((c) => `      <li><a href="${c.id}.xhtml">${c.title}</a></li>`).join('\n')}
+    </ol>
+  </nav>
+</body></html>`
+}
+
+function bareContentOpf(): string {
+  const manifestItems = BARE_CHAPTERS.map(
+    (c) => `<item id="${c.id}" href="Text/${c.id}.xhtml" media-type="application/xhtml+xml"/>`
+  ).join('\n    ')
+  const spine = BARE_CHAPTERS.map((c) => `<itemref idref="${c.id}"/>`).join('\n    ')
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">urn:uuid:reader-fixture-barenav-0001</dc:identifier>
+    <dc:title>${BARE_TITLE}</dc:title>
+    <dc:creator>${BARE_AUTHOR}</dc:creator>
+    <dc:language>zh-CN</dc:language>
+  </metadata>
+  <manifest>
+    <item id="nav" href="Text/nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    ${manifestItems}
+  </manifest>
+  <spine>
+    ${spine}
+  </spine>
+</package>`
+}
+
+/**
+ * 第三个样本,专门复现 review 指出的第二种真实场景:导航文档跟它链接的章节放在
+ * 同一目录(OEBPS/Text/ 下),链接直接写不带任何前缀的裸文件名(比如 "ch1.xhtml"),
+ * 而不是 buildRealisticFixtureEpub() 里那种从 OEBPS 绕回来的 "../Text/ch1.xhtml"。
+ * 这是 Sigil 默认就会生成的写法,和前一种同样常见,但字符串形态不同、不能互相
+ * 替代验证:前者归一化路径的 ".."/"." 段就能和 spine 对上,后者必须先把 href
+ * 解析到导航文档自己的目录下才行,光归一化没用(见 href.ts 里
+ * resolveNavigationHref() 的注释)。只保留验证这一件事所需的最小结构——样式表、
+ * 封面图、EPUB 2 toc.ncx 已经由 buildRealisticFixtureEpub() 覆盖过,这里重复
+ * 只会让样本更难看懂。和另外两个样本一样靠固定时间戳保证字节确定性。
+ */
+export async function buildBareNavFixtureEpub(): Promise<Uint8Array> {
+  const zip = new JSZip()
+
+  zip.file('mimetype', 'application/epub+zip', {
+    compression: 'STORE',
+    date: ENTRY_DATE,
+    createFolders: false
+  })
+
+  zip.file(
+    'META-INF/container.xml',
+    `<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>`,
+    { date: ENTRY_DATE, createFolders: false }
+  )
+
+  zip.file('OEBPS/content.opf', bareContentOpf(), { date: ENTRY_DATE, createFolders: false })
+  zip.file('OEBPS/Text/nav.xhtml', bareNavXhtml(), { date: ENTRY_DATE, createFolders: false })
+
+  for (const c of BARE_CHAPTERS) {
+    zip.file(`OEBPS/Text/${c.id}.xhtml`, chapterXhtml(c.title, c.seed), {
+      date: ENTRY_DATE,
+      createFolders: false
+    })
+  }
+
+  return zip.generateAsync({ type: 'uint8array' })
+}
+
 const isMain = process.argv[1] && resolve(process.argv[1]).endsWith('make-fixture-epub.ts')
 if (isMain) {
   const out = resolve('tests/fixtures/sample.epub')
@@ -364,4 +458,8 @@ if (isMain) {
   const realOut = resolve('tests/fixtures/sample-realistic.epub')
   writeFileSync(realOut, await buildRealisticFixtureEpub())
   console.log(`已生成 ${realOut}`)
+
+  const bareOut = resolve('tests/fixtures/sample-barenav.epub')
+  writeFileSync(bareOut, await buildBareNavFixtureEpub())
+  console.log(`已生成 ${bareOut}`)
 }

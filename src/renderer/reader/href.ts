@@ -25,3 +25,62 @@ export function normalizeChapterHref(href: string): string {
   }
   return stack.join('/')
 }
+
+/** 取路径里目录部分(不含末尾斜杠);没有 "/" 时说明就在根目录,返回空字符串。 */
+function directoryOf(path: string): string {
+  const idx = path.lastIndexOf('/')
+  return idx === -1 ? '' : path.slice(0, idx)
+}
+
+/** 解码 href 里的百分号转义;遇到不合法的转义序列(比如孤立的 "%")原样返回,不抛错。 */
+function decodePercentEncoding(href: string): string {
+  try {
+    return decodeURIComponent(href)
+  } catch {
+    return href
+  }
+}
+
+/**
+ * 把导航文档(EPUB 3 的 nav.xhtml,或没有 nav 时退回的 EPUB 2 toc.ncx)里写的原始
+ * href,解析成和 spine 报告的路径同一基准的相对路径(相对 OPF 目录),供上层归一化
+ * 比较用。
+ *
+ * 问题出在 epub.js 自己身上:它解析导航文档时只是原样读出 `<a href>` /
+ * `<content src>` 属性值(见 node_modules/epubjs/src/navigation.js 的 parseNav()/
+ * parseNcx(),两处都是 `content.getAttribute('href'/'src')` 直接拿字符串),
+ * 从来没有把这个值解析到导航文档自己的实际位置——但 HTML/XML 里的相对链接,
+ * 语义上就是相对"写这个链接的文档自己所在的目录",不是相对 OPF 目录。
+ *
+ * 之前 normalizeChapterHref() 只处理了 "导航文档自己就在 Text/ 目录下,但作者
+ * 手滑写成从 OEBPS 绕回来的 ../Text/ch1.xhtml" 这一种(仍然合法、只是啰嗦的)
+ * 写法。但同样常见、Sigil 默认就这么生成的另一种写法——导航文档和它链接的章节
+ * 放在同一目录,链接直接写不带任何前缀的裸文件名,比如 "ch1.xhtml"——
+ * normalizeChapterHref() 单独处理不了:它不知道这个相对路径是相对哪个目录写的,
+ * 只能原样吐回 "ch1.xhtml",而 spine 报告的是相对 OPF 目录的 "Text/ch1.xhtml",
+ * 两者永远比较不出相等。
+ *
+ * 这里补上 epub.js 没做的这一步解析:navigationDocumentPath 是导航文档自己相对
+ * OPF 目录的路径,从 book.packaging.navPath 拿(没有 EPUB 3 导航文档、只有 EPUB 2
+ * toc.ncx 时用 book.packaging.ncxPath——epub.js 自己内部也是这么退回的,见
+ * node_modules/epubjs/src/book.js loadNavigation() 里的
+ * `packaging.navPath || packaging.ncxPath`)。取它的目录部分,和 href 拼在一起,
+ * 再交给 normalizeChapterHref() 处理 "."/".." 段,两种写法都会归一化成同一个、
+ * 和 spine 路径同一基准的结果。
+ *
+ * 同时在这里解码百分号转义:导航文档里的链接可能被生成工具编码过(比如文件名
+ * 里的空格写成 "%20"),而 spine 报告的路径通常是解码后的原始文件名,不解码
+ * 直接比较同样会一直匹配不上。
+ *
+ * 返回值保留原始的 "#锚点"(如果有),不做解析——锚点不影响文件层面的路径解析,
+ * 调用方各自决定要不要再拿 normalizeChapterHref() 去掉它。
+ */
+export function resolveNavigationHref(href: string, navigationDocumentPath: string): string {
+  const fragmentIndex = href.indexOf('#')
+  const fragment = fragmentIndex === -1 ? '' : href.slice(fragmentIndex)
+  const path = fragmentIndex === -1 ? href : href.slice(0, fragmentIndex)
+  const decoded = decodePercentEncoding(path)
+  const dir = directoryOf(navigationDocumentPath)
+  const combined = dir ? `${dir}/${decoded}` : decoded
+  return `${normalizeChapterHref(combined)}${fragment}`
+}

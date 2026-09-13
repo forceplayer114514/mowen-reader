@@ -1,6 +1,10 @@
 import JSZip from 'jszip'
 import { describe, expect, it } from 'vitest'
-import { buildFixtureEpub, buildRealisticFixtureEpub } from '../../scripts/make-fixture-epub'
+import {
+  buildBareNavFixtureEpub,
+  buildFixtureEpub,
+  buildRealisticFixtureEpub
+} from '../../scripts/make-fixture-epub'
 
 describe('样本 EPUB', () => {
   it('是个 zip,且第一个条目是未压缩的 mimetype', async () => {
@@ -111,6 +115,46 @@ describe('更接近真实排版的样本 EPUB', () => {
       const bytes1 = await buildRealisticFixtureEpub()
       await new Promise((r) => setTimeout(r, 2500))
       const bytes2 = await buildRealisticFixtureEpub()
+
+      expect(bytes1.length).toBe(bytes2.length)
+      expect(bytes1).toEqual(bytes2)
+    },
+    15000
+  )
+})
+
+describe('导航文档和章节同目录、裸文件名的样本 EPUB', () => {
+  it('导航文档跟章节文件放在同一个 OEBPS/Text/ 目录下', async () => {
+    const zip = await JSZip.loadAsync(await buildBareNavFixtureEpub())
+    const names = Object.keys(zip.files)
+    expect(names).toContain('OEBPS/Text/nav.xhtml')
+    expect(names).toContain('OEBPS/Text/ch1.xhtml')
+    expect(names).toContain('OEBPS/Text/ch2.xhtml')
+    expect(names).toContain('OEBPS/Text/ch3.xhtml')
+  })
+
+  it('目录里的链接是裸文件名,不带 "../" 或任何目录前缀', async () => {
+    const zip = await JSZip.loadAsync(await buildBareNavFixtureEpub())
+    const nav = await zip.file('OEBPS/Text/nav.xhtml')!.async('string')
+    expect(nav).toContain('href="ch1.xhtml"')
+    expect(nav).not.toContain('../')
+    const opf = await zip.file('OEBPS/content.opf')!.async('string')
+    expect(opf).toContain('href="Text/ch1.xhtml"')
+  })
+
+  it('元数据写的是这个样本约定好的书名和作者', async () => {
+    const zip = await JSZip.loadAsync(await buildBareNavFixtureEpub())
+    const opf = await zip.file('OEBPS/content.opf')!.async('string')
+    expect(opf).toContain('<dc:title>裸文件名目录测试书</dc:title>')
+    expect(opf).toContain('<dc:creator>裸文件名测试作者</dc:creator>')
+  })
+
+  it(
+    '生成的字节完全相同,确定性和另外两个样本一样成立',
+    async () => {
+      const bytes1 = await buildBareNavFixtureEpub()
+      await new Promise((r) => setTimeout(r, 2500))
+      const bytes2 = await buildBareNavFixtureEpub()
 
       expect(bytes1.length).toBe(bytes2.length)
       expect(bytes1).toEqual(bytes2)

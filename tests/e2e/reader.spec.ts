@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test'
 import {
   closeAllApps,
+  importBareNavFixture,
   importFixture,
   importRealisticFixture,
   launch,
@@ -98,6 +99,34 @@ test('真实排版样本:目录链接带 ../ 前缀,页脚仍能显示章节名�
   await h.page.getByTestId('toggle-toc').click()
   await h.page.getByTestId('toc').getByText('第一节 起').click()
   await expect(h.page.getByTestId('reader-foot')).toContainText('第一章 楔子', {
+    timeout: 20_000
+  })
+})
+
+test('裸文件名样本:导航文档和章节同目录、链接不带任何前缀,页脚仍能显示章节名、目录跳转仍然生效', async () => {
+  const h = await launch()
+  await importBareNavFixture(h)
+  await h.page.getByTestId('book-card').first().click()
+  await h.page.getByTestId('reader-page').waitFor()
+
+  // 这本样本的目录(EPUB 3 nav)和它链接的章节放在同一目录下,链接直接写裸文件名
+  // "ch1.xhtml",不带任何前缀——跟真实排版样本里 "../Text/ch1.xhtml" 那种字符串
+  // 形态完全不同。只把 "."/".." 段拿掉的归一化对这种写法没用,必须先把 href
+  // 解析到导航文档自己的目录下才能跟 spine 报告的 "Text/ch1.xhtml" 对上
+  // (见 href.ts 的 resolveNavigationHref())。
+  await expect(h.page.getByTestId('reader-foot')).toContainText('第一章 起点', {
+    timeout: 20_000
+  })
+
+  await h.page.getByTestId('toggle-toc').click()
+  const toc = h.page.getByTestId('toc')
+  await expect(toc.getByText('第一章 起点')).toBeVisible()
+  await expect(toc.getByText('第三章 终点')).toBeVisible()
+
+  // 点目录里的第二章:如果解析不出章节,epub.js 会用 "No Section Found" 拒绝
+  // display() 这个 promise,界面上什么反应都不会发生——这里断言真的跳转过去了。
+  await toc.getByText('第二章 中途').click()
+  await expect(h.page.getByTestId('reader-foot')).toContainText('第二章 中途', {
     timeout: 20_000
   })
 })
