@@ -148,6 +148,33 @@ describe('超限裁剪', () => {
     expect(systemOf(r)).not.toContain('第1章 标题1')
   })
 
+  it('目录条数不超过窗口大小(11 条)时,也要先试着裁成局部,不能因为条数少就跳过', () => {
+    // 目录只有 11 条,不比窗口大小(当前章节前后各 5 条 = 11 条)多,
+    // 但裁成局部窗口后仍然从 11 条变成 6 条(当前章节在最前面,窗口被开头截断),
+    // 能省下的量比直接去删对话历史划算,所以这一步不该因为"条数不超过窗口"被跳过。
+    const label = (i: number): string => `第${i}章 标题${i}长一点点内容撑起字数`
+    const elevenToc: TocItem[] = Array.from({ length: 11 }, (_, i) => ({
+      label: label(i + 1),
+      href: `Text/ch${i + 1}.xhtml`,
+      depth: 0
+    }))
+    const r = buildContext(
+      input({
+        toc: elevenToc,
+        visible: visible({ chapterHref: 'Text/ch1.xhtml', chapterLabel: label(1) }),
+        history: [
+          { role: 'user', content: '之前问的问题内容' },
+          { role: 'assistant', content: '之前的回答内容也不短' }
+        ],
+        limit: 200
+      })
+    )
+    expect(r.trimmed).toContain('toc-local')
+    expect(r.trimmed).not.toContain('drop-history')
+    expect(systemOf(r)).toContain(label(1))
+    expect(systemOf(r)).not.toContain(label(11))
+  })
+
   it('第二步删最早的一轮问答,成对删除', () => {
     const history = [
       { role: 'user' as const, content: '很早的问题'.repeat(40) },

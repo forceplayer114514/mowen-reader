@@ -97,12 +97,17 @@ export function buildContext(input: ContextInput): ContextResult {
   let messages = assemble()
   if (total(messages) <= input.limit) return { messages, trimmed }
 
-  // ① 目录裁成当前章节前后各 5 条
-  if (toc && toc.length > TOC_NEIGHBOURS * 2 + 1) {
-    toc = localToc(toc, input.visible.chapterHref)
-    trimmed.push('toc-local')
-    messages = assemble()
-    if (total(messages) <= input.limit) return { messages, trimmed }
+  // ① 目录裁成当前章节前后各 5 条——只要有目录就尝试,裁完真的变小才采用。
+  // 不能按目录条数是否超过窗口大小来决定要不要试:哪怕目录只有几条,裁一下
+  // 也可能刚好够用,比起跳过这一步直接去删对话历史要划算。
+  if (toc) {
+    const local = localToc(toc, input.visible.chapterHref)
+    if (local.length < toc.length) {
+      toc = local
+      trimmed.push('toc-local')
+      messages = assemble()
+      if (total(messages) <= input.limit) return { messages, trimmed }
+    }
   }
 
   // ② 一问一答成对删除最早的一轮
