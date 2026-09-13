@@ -94,29 +94,41 @@ describe('safeStorage 未初始化', () => {
 
 describe('密钥与填写它时的接口地址一起存', () => {
   it('存的时候记下地址,读回来能拿到', () => {
-    setApiKey('sk-x', 'api.openai.com')
-    expect(readApiKey()).toEqual({ key: 'sk-x', host: 'api.openai.com' })
+    setApiKey('sk-x', 'https://api.openai.com')
+    expect(readApiKey()).toEqual({ key: 'sk-x', origin: 'https://api.openai.com' })
   })
 
   it('落盘的内容里地址也不是明文', () => {
-    setApiKey('sk-x', 'api.openai.com')
+    setApiKey('sk-x', 'https://api.openai.com')
     expect(readFileSync(keyFilePath()).toString('utf8')).not.toContain('api.openai.com')
   })
 
   it('重写密钥会一并换掉记下的地址', () => {
-    setApiKey('sk-x', 'api.openai.com')
-    setApiKey('sk-y', '127.0.0.1:1234')
-    expect(readApiKey()).toEqual({ key: 'sk-y', host: '127.0.0.1:1234' })
+    setApiKey('sk-x', 'https://api.openai.com')
+    setApiKey('sk-y', 'http://127.0.0.1:1234')
+    expect(readApiKey()).toEqual({ key: 'sk-y', origin: 'http://127.0.0.1:1234' })
   })
 
   it('没设过时读出来是 null', () => {
     expect(readApiKey()).toBeNull()
   })
 
+  it('v2 只记了主机名、没记协议,读出来地址是 null —— 本机 443 和 80 会塌缩成同一个', () => {
+    // v2 记的是 URL 的 host。host 省不省略端口跟着协议走,于是
+    // `https://localhost:443` 和 `http://localhost:80` 的 host 都是
+    // `localhost`,两个毫不相干的服务被当成同一个收件人。所以 v2 一律按
+    // "没记地址"处理,要求重填一次。
+    writeFileSync(
+      keyFilePath(),
+      fakeSafeStorage.encryptString(JSON.stringify({ v: 2, host: 'localhost', key: 'sk-v2' }))
+    )
+    expect(readApiKey()).toEqual({ key: 'sk-v2', origin: null })
+  })
+
   it('旧版本直接加密裸密钥存下的文件,读出来密钥照旧、地址是 null', () => {
     // 旧格式就是"把密钥字符串本身加密后落盘",这里原样重建那个文件
     writeFileSync(keyFilePath(), fakeSafeStorage.encryptString('sk-老版本存的'))
-    expect(readApiKey()).toEqual({ key: 'sk-老版本存的', host: null })
+    expect(readApiKey()).toEqual({ key: 'sk-老版本存的', origin: null })
     expect(getApiKey()).toBe('sk-老版本存的')
   })
 })

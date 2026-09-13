@@ -50,17 +50,24 @@ export function assertSafeLlmEndpoint(endpoint: string): void {
 }
 
 /**
- * 取出接口地址的主机名,含端口。
+ * 取出接口地址的来源:协议 + 主机名 + 端口。
  *
- * 用 URL 的 `host` 而不是 `hostname`:同一台机器上不同端口跑的是不同的服务
- * (本地 11434 是 Ollama、1234 可能是别的东西),把端口丢掉就等于认为它们
- * 是同一个收件人。`host` 只在端口是该协议默认端口时才省略端口,
- * `https://a.com` 和 `https://a.com:443` 因此仍然算同一个,这是对的。
- * URL 解析本身会把主机名统一成小写,大小写不同的同一个域名不会被当成两个。
+ * 用 URL 的 `origin` 而不是 `host`,三件事都要:
+ * - 端口不能丢。同一台机器上不同端口跑的是不同的服务(本地 11434 是
+ *   Ollama、1234 可能是别的东西),丢掉端口就等于认为它们是同一个收件人。
+ * - 协议也不能丢。`host` 省不省略端口是跟着协议走的:端口是该协议的默认端口
+ *   时才省略,于是 `https://localhost:443` 和 `http://localhost:80` 的 `host`
+ *   都是 `localhost`,两个毫不相干的服务塌缩成同一个字符串。用户把密钥填给
+ *   本机 443 上一个带证书的本地模型服务之后,被攻破的渲染层只要把地址改成
+ *   `http://localhost`,协议校验因为是回环地址放行、地址比对因为两边都是
+ *   `localhost` 也放行,密钥就以明文 HTTP 送到了本机 80 端口上监听的东西。
+ * - 大小写和国际化域名要先归一。URL 解析会把主机名统一成小写、把中文或
+ *   西里尔字母域名转成 punycode,所以同一个域名的不同写法不会被当成两个,
+ *   而长得像的异体域名也不会被当成同一个。
  */
-export function llmEndpointHost(endpoint: string): string {
+export function llmEndpointOrigin(endpoint: string): string {
   try {
-    return new URL(endpoint).host
+    return new URL(endpoint).origin
   } catch {
     throw new Error(`接口地址填的不是一个合法的网址,请到设置里检查:${endpoint}`)
   }
@@ -72,30 +79,31 @@ export function llmEndpointHost(endpoint: string): string {
  * 只校验 https 拦不住真正的问题:证书是免费的,攻击者的地址一样可以是
  * https。被攻破的渲染层只要把 `llmEndpoint` 改成自己的地址,主进程就会
  * 老老实实地解密真实密钥、以 `Authorization: Bearer <明文>` 送过去。
- * 所以密钥落盘时会连同"当时设置里的接口地址主机名"一起加密保存(见
- * secrets.ts),这里在密钥被交给请求之前比一次:对不上就拒绝。
+ * 所以密钥落盘时会连同"当时设置里的接口地址来源(协议 + 主机名 + 端口)"
+ * 一起加密保存(见 secrets.ts),这里在密钥被交给请求之前比一次:对不上就
+ * 拒绝。
  *
  * 渲染层能单独改的只有设置表里的 `llmEndpoint`,改不了加密文件里记下的那个
  * 主机名——要换那个主机名,必须走 `secrets:setApiKey` 重新输入一次密钥,
  * 而密钥它并不知道。于是这条攻击链的结果从"密钥被送走"变成"用户看到一句
  * '接口地址变了',而这个改动并不是用户自己做的"。
  *
- * storedHost 为 null 表示这份密钥是更早的版本存下的、没有记下地址。这种
+ * storedOrigin 为 null 表示这份密钥是更早的版本存下的、没有记下地址。这种
  * 情况一律拒绝而不是放行:放行等于给所有升级上来的用户留着原来那个洞,
  * 而"把它当作绑定到当前地址"更糟——当前地址正可能就是攻击者刚写进去的。
  * 代价只是用户重新输入一次密钥。
  */
-export function assertKeyBoundToEndpoint(storedHost: string | null, endpoint: string): void {
-  const current = llmEndpointHost(endpoint)
-  if (storedHost === null) {
+export function assertKeyBoundToEndpoint(storedOrigin: string | null, endpoint: string): void {
+  const current = llmEndpointOrigin(endpoint)
+  if (storedOrigin === null) {
     throw new Error(
       '保存的 API 密钥是旧版本存下的,没有记录它当初是填给哪个接口地址的。' +
         '为了不把密钥发到不该去的地方,请到设置里重新填写一次 API 密钥。'
     )
   }
-  if (storedHost !== current) {
+  if (storedOrigin !== current) {
     throw new Error(
-      `接口地址现在是 ${current},而 API 密钥当初是填给 ${storedHost} 的,两者对不上,` +
+      `接口地址现在是 ${current},而 API 密钥当初是填给 ${storedOrigin} 的,两者对不上,` +
         `这次请求已经取消。如果这个地址不是你自己改的,请检查设置;` +
         `确实要换到新地址,请到设置里重新填写一次 API 密钥。`
     )

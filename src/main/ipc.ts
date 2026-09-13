@@ -37,7 +37,11 @@ import {
   updateConversationMerge
 } from './db/conversations'
 import { assertAllowedSettingKey, getSetting, setSetting } from './db/settings'
-import { assertKeyBoundToEndpoint, assertSafeLlmEndpoint, llmEndpointHost } from './llm/endpoint'
+import {
+  assertKeyBoundToEndpoint,
+  assertSafeLlmEndpoint,
+  llmEndpointOrigin
+} from './llm/endpoint'
 import { streamChat } from './llm/client'
 import { bindSessionLifecycle, createSessionRegistry } from './llm/session'
 import { dbFile } from './paths'
@@ -284,7 +288,7 @@ export function registerIpc(): void {
       throw new Error('请先在设置里填好接口地址,再填写 API 密钥——密钥会和填写时的接口地址绑定')
     }
     assertSafeLlmEndpoint(endpoint)
-    setApiKey(key, llmEndpointHost(endpoint))
+    setApiKey(key, llmEndpointOrigin(endpoint))
   })
   ipcMain.handle('secrets:clearApiKey', () => clearApiKey())
 
@@ -309,7 +313,7 @@ export function registerIpc(): void {
     if (!stored) throw new Error('还没有填写 API 密钥,请先到设置里填写')
     // 地址核对放在取出 stored.key 之前:解密只是主进程内部读一下,真正
     // 危险的是把这个值交给 streamChat 去发出去,而这一步在核对之后。
-    assertKeyBoundToEndpoint(stored.host, endpoint)
+    assertKeyBoundToEndpoint(stored.origin, endpoint)
     const apiKey = stored.key
 
     const session = sessions.start()
