@@ -120,20 +120,22 @@ export function createEngine(container: HTMLElement): ReaderEngine {
    * 的那份文档对应的 Contents(见 node_modules/epubjs/src/rendition.js 的
    * triggerSelectedEvent),选中的文字要自己从那份文档的窗口选区里取。
    *
-   * 取完文字立刻把选区清掉,有两个原因:一是原生的蓝色选中块会盖在随后加上的自定义
-   * 高亮上面,两层颜色叠在一起看不出哪句是已经选进引用的;二是选区留着的话,用户下一
-   * 次点击页面别处又会触发一轮 selectionchange。清空本身也会触发 selectionchange,但
+   * 选区只在真的被人用掉的时候才清:一是原生的蓝色选中块会盖在随后加上的自定义高亮
+   * 上面,两层颜色叠在一起看不出哪句是已经选进引用的;二是选区留着的话,用户下一次
+   * 点击页面别处又会触发一轮 selectionchange。清空本身也会触发 selectionchange,但
    * epub.js 那边只在选区非折叠时才往外发事件(见 contents.js 的 triggerSelectedEvent),
    * 空选区不会再绕回这里,不存在自己喂自己的循环。
    *
-   * 只选中空白(比如拖过了段落之间的空隙)不往外通知——上层的引用列表也会再挡一道,
-   * 但没必要让一次什么都没选中的拖动走到那么远。
+   * 反过来,没人订阅、或者这次什么文字都没选中(比如拖过了段落之间的空隙)时,一定
+   * 不能动选区:清掉它换不来任何东西,用户看到的只是自己刚拖出来的一段话在 250 毫秒
+   * 后无声无息地消失,连复制都做不到。所以先判断能不能用,再决定要不要收走。
    */
   function handleSelected(cfiRange: string, contents: Contents): void {
     const selection = contents.window.getSelection()
     const text = selection?.toString() ?? ''
-    selection?.removeAllRanges()
     if (text.trim().length === 0) return
+    if (selectionListeners.length === 0) return
+    selection?.removeAllRanges()
     for (const cb of selectionListeners) cb(cfiRange, text)
   }
 

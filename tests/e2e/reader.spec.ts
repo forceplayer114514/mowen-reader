@@ -1,10 +1,12 @@
 import { expect, test } from '@playwright/test'
 import {
+  chapterSelectionText,
   closeAllApps,
   importBareNavFixture,
   importFixture,
   importRealisticFixture,
   launch,
+  slowDragSelectInChapter,
   pressAndSettle,
   pressUntilPageChanges,
   waitForLocationsReady,
@@ -343,4 +345,24 @@ test('删除书之后书架恢复空状态,重启也不会把它带回来', asyn
   const second = await launch(h.userData)
   await expect(second.page.getByText('书架是空的')).toBeVisible()
   await expect(second.page.getByTestId('book-card')).toHaveCount(0)
+})
+
+// --- 以下覆盖划选与高亮(Task 8):这四条只能在真实 EPUB + 真实 iframe 里跑,
+// 单元测试那边的假引擎碰不到 epub.js 的选区、标注和 marks-pane。 ---
+
+test('没有人消费划选时,拖选出来的文字不会被清掉', async () => {
+  const h = await launch()
+  await importFixture(h)
+  await h.page.getByTestId('book-card').first().click()
+  await h.page.getByTestId('reader-page').waitFor()
+  await waitForLocationsReady(h)
+
+  await slowDragSelectInChapter(h)
+  // epub.js 那边的防抖是 250 毫秒,等得比它久,确保"到点之后会不会被清掉"已经发生过。
+  await h.page.waitForTimeout(800)
+
+  expect(
+    (await chapterSelectionText(h)).trim().length,
+    '侧边栏还没接进来,页面上没有任何人订阅划选;这时候把浏览器选区清掉,用户拖选一段话只会看到它自己消失,连复制都做不到'
+  ).toBeGreaterThan(0)
 })

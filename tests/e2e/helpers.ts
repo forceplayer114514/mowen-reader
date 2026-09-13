@@ -1,7 +1,12 @@
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
+import {
+  _electron as electron,
+  type ElectronApplication,
+  type Locator,
+  type Page
+} from '@playwright/test'
 import {
   buildBareNavFixtureEpub,
   buildFixtureEpub,
@@ -177,4 +182,72 @@ export async function pressAndSettle(
     await h.page.keyboard.press(key)
   }
   return waitForStableText(indicator)
+}
+
+/** 一次划选之后,书内容 iframe 里还留着的选中文字;什么都没选中时是空字符串。 */
+export async function chapterSelectionText(h: Harness): Promise<string> {
+  return h.page.evaluate(() => {
+    const frame = document.querySelector<HTMLIFrameElement>('[data-testid="reader-page"] iframe')
+    return frame?.contentWindow?.getSelection()?.toString() ?? ''
+  })
+}
+
+/** 章节 iframe 带 allow-same-origin,主文档能直接摸到它的 document(epub.js 自己也是这么干的)。 */
+const CHAPTER_FRAME = '[data-testid="reader-page"] iframe'
+
+/** 把书内容里第 paragraphIndex 段的前 chars 个字设成选中状态。 */
+async function selectChapterText(h: Harness, paragraphIndex: number, chars: number): Promise<void> {
+  await h.page.evaluate(
+    ({ selector, paragraphIndex, chars }) => {
+      const frame = document.querySelector<HTMLIFrameElement>(selector)
+      const doc = frame?.contentDocument
+      const node = doc?.querySelectorAll('p')[paragraphIndex]?.firstChild
+      if (!doc || !node) throw new Error('取不到书内容里的段落')
+      frame?.contentWindow?.getSelection()?.setBaseAndExtent(node, 0, node, chars)
+    },
+    { selector: CHAPTER_FRAME, paragraphIndex, chars }
+  )
+}
+
+/** 往章节文档上派发一次真实的鼠标事件——epub.js 会把它转发到 rendition 上。 */
+async function dispatchChapterMouse(h: Harness, type: 'mousedown' | 'mouseup'): Promise<void> {
+  await h.page.evaluate(
+    ({ selector, type }) => {
+      const doc = document.querySelector<HTMLIFrameElement>(selector)?.contentDocument
+      if (!doc) throw new Error('取不到书内容的文档')
+      doc.dispatchEvent(new MouseEvent(type, { bubbles: true }))
+    },
+    { selector: CHAPTER_FRAME, type }
+  )
+}
+
+/**
+ * 在书内容里模拟一次"拖慢了的划选":按下 → 先选中半句 → 停一下 → 选到整句 → 松开。
+ *
+ * 为什么不用 Playwright 的真鼠标拖动:只要按下鼠标之后指针还落在 sandbox 的 srcdoc
+ * iframe 上再 mouse.move,Electron 这边的调试连接会当场断开、窗口跟着关掉,拖动永远
+ * 走不完。拿一个跟本应用毫无关系的空白 sandbox iframe 单独试过,一样会断——这是自动化
+ * 通道自己的限制,不是阅读器的缺陷,真人用鼠标拖不走这条路。所以改成直接往章节文档上
+ * 派发真实的 mousedown/mouseup,中间用 setBaseAndExtent 改选区:选区变化照样触发
+ * selectionchange,epub.js 那条 250 毫秒防抖的 selected 事件该来还是会来,引擎这一侧
+ * 收到的东西和真人拖选没有区别。
+ *
+ * 中间那次"只选半句 + 等 400 毫秒"是这个辅助函数的重点:它复现的正是用户拖慢一点、
+ * 中途停一下的情形。epub.js 的防抖是从最后一次选区变化算起、不是从松手算起,所以停
+ * 这一下就会在鼠标还按着的时候先发一次 selected——"松开才高亮"和"拖到一半就高亮"
+ * 两种实现只有在这种拖法下才分得出来。
+ */
+export async function slowDragSelectInChapter(h: Harness): Promise<void> {
+  await h.page.frameLocator(CHAPTER_FRAME).locator('p').nth(1).waitFor({ timeout: 20_000 })
+  await dispatchChapterMouse(h, 'mousedown')
+  await selectChapterText(h, 1, 8)
+  await h.page.waitForTimeout(400)
+  await selectChapterText(h, 1, 24)
+  await h.page.waitForTimeout(50)
+  await dispatchChapterMouse(h, 'mouseup')
+}
+
+/** 页面上当前画着的划选高亮(marks-pane 盖在正文上的那层 SVG)。 */
+export function chapterHighlights(h: Harness): Locator {
+  return h.page.locator('[data-testid="reader-page"] g.epubjs-hl')
 }
