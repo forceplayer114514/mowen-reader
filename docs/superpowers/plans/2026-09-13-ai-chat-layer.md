@@ -2051,12 +2051,12 @@ deleteConversations(ids: string[]): Promise<void>
 listMessages(conversationId: string): Promise<MessageRecord[]>
 appendMessage(input: AppendMessageInput): Promise<MessageRecord>
 hasApiKey(): Promise<boolean>
-setApiKey(key: string): Promise<void>
+setApiKey(key: string): Promise<void>   // 必须先存好 llmEndpoint:密钥会和当时的接口地址绑定
 clearApiKey(): Promise<void>
 startChat(input: StartChatInput): Promise<string>       // 返回本次请求的 id
 abortChat(requestId: string): Promise<void>
 onChatChunk(cb: (requestId: string, text: string) => void): () => void
-onChatDone(cb: (requestId: string, error: string | null) => void): () => void
+onChatDone(cb: (requestId: string, result: ChatDoneResult) => void): () => void
 ```
 
 ```ts
@@ -2077,6 +2077,15 @@ export interface AppendMessageInput {
 export interface StartChatInput {
   messages: { role: string; content: string }[]
 }
+/**
+ * chat:done 携带的最终结果。不能用 `string | null` 表示——"模型自己说完"
+ * 和"用户点了停止"在 streamChat 一侧都是不抛异常地 resolve,只有 AbortSignal
+ * 能区分,而界面对这两种情况的呈现是不一样的。
+ */
+export type ChatDoneResult =
+  | { status: 'finished' }
+  | { status: 'stopped' }
+  | { status: 'error'; message: string }
 ```
 
 **两条必须守住的边界:**
@@ -2347,9 +2356,9 @@ Expected: PASS
     ipcRenderer.on('chat:chunk', handler)
     return () => ipcRenderer.off('chat:chunk', handler)
   },
-  onChatDone: (cb: (requestId: string, error: string | null) => void): (() => void) => {
-    const handler = (_e: unknown, requestId: string, error: string | null): void =>
-      cb(requestId, error)
+  onChatDone: (cb: (requestId: string, result: ChatDoneResult) => void): (() => void) => {
+    const handler = (_e: unknown, requestId: string, result: ChatDoneResult): void =>
+      cb(requestId, result)
     ipcRenderer.on('chat:done', handler)
     return () => ipcRenderer.off('chat:done', handler)
   },
@@ -2863,9 +2872,11 @@ export function useChat(args: UseChatArgs): ChatState {
       accumulatedRef.current += text
       setStreaming(accumulatedRef.current)
     })
-    const offDone = window.api.onChatDone((requestId, failure) => {
+    const offDone = window.api.onChatDone((requestId, result) => {
       if (requestId !== requestIdRef.current) return
-      if (failure) setError(failure)
+      // result 是个对象,永远为真:必须看 status,不能写成 `if (result)`,
+      // 那样每一次正常说完都会被当成出错。
+      if (result.status === 'error') setError(result.message)
       void commitAssistant()
     })
     return () => {
@@ -3112,6 +3123,8 @@ git commit -m "feat: switch conversations on page turn and merge across pages"
 **设置页要点:**
 - 密钥输入框是 `type="password"`,页面只显示「已设置 / 未设置」,**永远不回显内容**——因为主进程根本不提供读取通道。
 - 填了新密钥点保存才写;留空不动则保持原值;有「清除密钥」按钮。
+- **保存顺序:先写接口地址,再写密钥。** 主进程把密钥和"填写它时的接口地址主机名"锁在同一份密文里(见 `src/main/llm/endpoint.ts` 的 `assertKeyBoundToEndpoint`),没有接口地址时 `setApiKey` 会抛出中文错误;改了接口地址之后也必须重新填一次密钥,否则下一次对话会被拒绝。这条提示要在界面上说清楚。
+- `setSetting` 只接受白名单里的键(见 `src/main/db/settings.ts` 的 `ALLOWED_SETTING_KEYS`),`SETTING_KEYS` 里新增键时两边要一起加。
 - 「测试连接」按钮:用当前配置发一条极短的请求,把成功或分类后的中文错误显示出来。
 
 **对话管理页要点(设计文档 §4):** 不显示页码——书没打开就没有分页。每行显示:
