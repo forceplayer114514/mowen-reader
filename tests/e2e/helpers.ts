@@ -195,17 +195,31 @@ export async function chapterSelectionText(h: Harness): Promise<string> {
 /** 章节 iframe 带 allow-same-origin,主文档能直接摸到它的 document(epub.js 自己也是这么干的)。 */
 const CHAPTER_FRAME = '[data-testid="reader-page"] iframe'
 
-/** 把书内容里第 paragraphIndex 段的前 chars 个字设成选中状态。 */
-async function selectChapterText(h: Harness, paragraphIndex: number, chars: number): Promise<void> {
+/**
+ * 书内容里的一段选区:从第 fromParagraph 段的第 fromOffset 个字,到第 toParagraph
+ * 段的第 toOffset 个字。跨段是为了造出一块占好几行的高亮,见 clickChapterHighlight()。
+ */
+interface ChapterRange {
+  fromParagraph: number
+  fromOffset: number
+  toParagraph: number
+  toOffset: number
+}
+
+/** 把书内容里这一段设成选中状态。 */
+async function selectChapterRange(h: Harness, at: ChapterRange): Promise<void> {
   await h.page.evaluate(
-    ({ selector, paragraphIndex, chars }) => {
+    ({ selector, at }) => {
       const frame = document.querySelector<HTMLIFrameElement>(selector)
       const doc = frame?.contentDocument
-      const node = doc?.querySelectorAll('p')[paragraphIndex]?.firstChild
-      if (!doc || !node) throw new Error('取不到书内容里的段落')
-      frame?.contentWindow?.getSelection()?.setBaseAndExtent(node, 0, node, chars)
+      const from = doc?.querySelectorAll('p')[at.fromParagraph]?.firstChild
+      const to = doc?.querySelectorAll('p')[at.toParagraph]?.firstChild
+      if (!doc || !from || !to) throw new Error('取不到书内容里的段落')
+      frame?.contentWindow
+        ?.getSelection()
+        ?.setBaseAndExtent(from, at.fromOffset, to, at.toOffset)
     },
-    { selector: CHAPTER_FRAME, paragraphIndex, chars }
+    { selector: CHAPTER_FRAME, at }
   )
 }
 
@@ -216,7 +230,7 @@ interface ChapterPoint {
 }
 
 /**
- * 量出第 paragraphIndex 段前 chars 个字在章节文档里的头尾坐标。
+ * 量出这一段选区在章节文档里的头尾坐标。
  *
  * 坐标取的是章节文档自己的视口坐标,而不是外层页面的:待会儿派发进去的 MouseEvent
  * 以章节文档为参照,marks-pane 判断"这一下点在哪块矩形里"时也是拿 clientX/clientY
@@ -225,17 +239,17 @@ interface ChapterPoint {
  */
 async function chapterDragPoints(
   h: Harness,
-  paragraphIndex: number,
-  chars: number
+  at: ChapterRange
 ): Promise<{ start: ChapterPoint; end: ChapterPoint }> {
   return h.page.evaluate(
-    ({ selector, paragraphIndex, chars }) => {
+    ({ selector, at }) => {
       const doc = document.querySelector<HTMLIFrameElement>(selector)?.contentDocument
-      const node = doc?.querySelectorAll('p')[paragraphIndex]?.firstChild
-      if (!doc || !node) throw new Error('取不到书内容里的段落')
+      const from = doc?.querySelectorAll('p')[at.fromParagraph]?.firstChild
+      const to = doc?.querySelectorAll('p')[at.toParagraph]?.firstChild
+      if (!doc || !from || !to) throw new Error('取不到书内容里的段落')
       const range = doc.createRange()
-      range.setStart(node, 0)
-      range.setEnd(node, chars)
+      range.setStart(from, at.fromOffset)
+      range.setEnd(to, at.toOffset)
       const rects = Array.from(range.getClientRects()).filter((r) => r.width > 0 && r.height > 0)
       const first = rects[0]
       const last = rects[rects.length - 1]
@@ -245,7 +259,7 @@ async function chapterDragPoints(
         end: { x: Math.round(last.right - 1), y: Math.round(last.top + last.height / 2) }
       }
     },
-    { selector: CHAPTER_FRAME, paragraphIndex, chars }
+    { selector: CHAPTER_FRAME, at }
   )
 }
 
@@ -313,12 +327,47 @@ async function dispatchChapterMouse(
  * Electron 的调试连接会当场断开、窗口跟着关掉(见上一段)。
  */
 export async function slowDragSelectInChapter(h: Harness): Promise<void> {
-  await h.page.frameLocator(CHAPTER_FRAME).locator('p').nth(1).waitFor({ timeout: 20_000 })
-  const { start, end } = await chapterDragPoints(h, 1, 24)
+  await dragSelectChapterRange(h, {
+    fromParagraph: 1,
+    fromOffset: 0,
+    toParagraph: 1,
+    toOffset: 24
+  })
+}
+
+/**
+ * 拖选从第 2 段中间一直到第 3 段中间的一片文字,得到的高亮会跨两段、画成好几块
+ * 矩形。用来验证"点高亮"在不止一行的高亮上也成立,见 clickChapterHighlight()。
+ *
+ * 为什么不用"选一段长到折行的话":这本样本书的章节文档在分栏排版下宽到八千多像素,
+ * 一整段六十来个字连一行都填不满,靠折行造不出多行高亮;跨段落是同一件事的另一种
+ * 造法——两段之间隔着段间距,整块高亮的外接框中心正好落在那条缝里。
+ */
+export async function dragSelectAcrossParagraphs(h: Harness): Promise<void> {
+  await dragSelectChapterRange(h, {
+    fromParagraph: 1,
+    fromOffset: 4,
+    toParagraph: 2,
+    toOffset: 20
+  })
+}
+
+async function dragSelectChapterRange(h: Harness, at: ChapterRange): Promise<void> {
+  await h.page
+    .frameLocator(CHAPTER_FRAME)
+    .locator('p')
+    .nth(at.toParagraph)
+    .waitFor({ timeout: 20_000 })
+  const { start, end } = await chapterDragPoints(h, at)
   await dispatchChapterMouse(h, 'mousedown', start)
-  await selectChapterText(h, 1, 8)
+  // 拖到一半:先只选到起点段落里靠前的位置。
+  await selectChapterRange(h, {
+    ...at,
+    toParagraph: at.fromParagraph,
+    toOffset: at.fromOffset + 8
+  })
   await h.page.waitForTimeout(400)
-  await selectChapterText(h, 1, 24)
+  await selectChapterRange(h, at)
   await h.page.waitForTimeout(50)
   await dispatchChapterMouse(h, 'mouseup', end)
   // 真人拖完一段文字松开鼠标,浏览器紧接着还会在松手那个点上补发一次 click
@@ -355,17 +404,29 @@ export async function chapterQuotes(h: Harness): Promise<{ cfiRange: string; tex
 }
 
 /**
- * 点一下页面上那块划选高亮。
+ * 点一下页面上那块划选高亮的第 line 行。
  *
  * 高亮那层 SVG 自己是 pointer-events: none 的,marks-pane 是靠监听章节文档里的点击、
  * 再按坐标把事件转发给对应的矩形来实现"点高亮"(见 node_modules/marks-pane/src/events.js
  * 的 proxyMouse),所以要点的是正文上那块地方,而不能去点这个 SVG 元素本身。
+ *
+ * 瞄的是**其中一行**的矩形,不是整块高亮的外接框中心。marks-pane 判断"这一下算不算
+ * 点在这块高亮上"是先看外接框、再逐个看每一行的矩形(events.js 的 contains),两关
+ * 都得过。一段话只占一行时外接框中心当然在那一行里;一旦这段话折了行,外接框就
+ * 罩住了整片区域,它的中心很可能落在两行之间的行距里——外接框那一关过了,逐行那
+ * 一关过不了,点下去什么也不会发生,而失败原因看上去会像是"取消高亮坏了"。
+ *
  * 点之前先停一下:marks-pane 的矩形是按正文的 getClientRects() 现算现画的,刚画完那
  * 一瞬间量到的位置不一定是最终位置。
  */
-export async function clickChapterHighlight(h: Harness): Promise<void> {
+export async function clickChapterHighlight(h: Harness, line = 0): Promise<void> {
   await h.page.waitForTimeout(200)
-  const box = await chapterHighlights(h).first().boundingBox()
-  if (!box || box.width < 1 || box.height < 1) throw new Error('取不到高亮的位置')
+  const box = await chapterHighlights(h).first().locator('rect').nth(line).boundingBox()
+  if (!box || box.width < 1 || box.height < 1) throw new Error('取不到高亮那一行的位置')
   await h.page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
+}
+
+/** 页面上第一块划选高亮占了几行(marks-pane 每行画一个 rect)。 */
+export async function chapterHighlightLines(h: Harness): Promise<number> {
+  return chapterHighlights(h).first().locator('rect').count()
 }

@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
 import {
+  chapterHighlightLines,
   chapterHighlights,
   chapterQuotes,
   chapterSelectionText,
@@ -10,6 +11,7 @@ import {
   importFixture,
   importRealisticFixture,
   launch,
+  dragSelectAcrossParagraphs,
   slowDragSelectInChapter,
   pressAndSettle,
   pressUntilPageChanges,
@@ -438,6 +440,29 @@ test('拖选一句话会画出高亮,点一下这块高亮就取消掉', async (
   await clickChapterHighlight(h)
 
   await expect(highlight).toHaveCount(0)
+  expect(await chapterQuotes(h)).toHaveLength(0)
+})
+
+test('划选跨两段的一片文字,高亮画成好几块矩形,点其中一块照样取消得掉', async () => {
+  const h = await launch()
+  await importFixture(h)
+  await enableSelectionStore(h)
+  await h.page.getByTestId('book-card').first().click()
+  await h.page.getByTestId('reader-page').waitFor()
+  await waitForLocationsReady(h)
+
+  await dragSelectAcrossParagraphs(h)
+  await expect(chapterHighlights(h)).toHaveCount(1)
+
+  // marks-pane 每行画一个矩形(marks.js 的 Highlight.render 遍历 getClientRects),
+  // 跨了段就不止一个。这一条同时钉住了辅助函数瞄的是哪儿:它必须瞄其中一行的矩形,
+  // 而不是整块高亮的外接框中心——后者在不止一行的高亮上会落在两行之间的缝里,
+  // marks-pane 逐行那一关过不了,点下去什么也不会发生,看上去却像是"取消高亮坏了"。
+  expect(await chapterHighlightLines(h)).toBeGreaterThan(1)
+
+  await clickChapterHighlight(h, 1)
+
+  await expect(chapterHighlights(h)).toHaveCount(0)
   expect(await chapterQuotes(h)).toHaveLength(0)
 })
 
