@@ -470,6 +470,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
    */
   function destroyStale(staleBook: Book, staleRendition: Rendition): void {
     staleRendition.q.stop()
+    staleRendition.off('relocated', notify)
     staleRendition.off('keydown', handleContentKeydown)
     staleRendition.off('mousedown', handleContentPress)
     staleRendition.off('touchstart', handleContentPress)
@@ -500,6 +501,10 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     // 下一次划选时 swallowNextClick() 会先调它一次,对着一份已经销毁的文档做事。
     disarmAllClickSwallows()
     pressedInContent = false
+    // 位置变化的订阅和下面几个一样要还回去:这是本文件自己立的规矩——订上去的
+    // 每一个都在 teardown() 里退掉。这一条以前漏了,只是因为紧接着 rendition
+    // 就被销毁、引用也被置空才没出事,那是碰巧,不是规矩。
+    rendition?.off('relocated', notify)
     rendition?.off('keydown', handleContentKeydown)
     rendition?.off('mousedown', handleContentPress)
     rendition?.off('touchstart', handleContentPress)

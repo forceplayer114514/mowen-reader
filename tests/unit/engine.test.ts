@@ -270,6 +270,30 @@ describe('高亮与 epub.js 标注表', () => {
   })
 })
 
+describe('退订', () => {
+  it('teardown 之后,rendition 上一个订阅都不剩', async () => {
+    const f = createFakeEpub()
+    const engine = await openEngine()
+
+    engine.destroy()
+
+    // 引擎自己立的规矩:订上去的每一个都要在 teardown() 里还回去。少还一个,
+    // 这份 rendition 就被一个已经作废的引擎钉在内存里,它发出来的事件还会打进
+    // 旧引擎的分发逻辑。逐个点名,别只查其中几个。
+    for (const type of [
+      'relocated',
+      'keydown',
+      'mousedown',
+      'touchstart',
+      'mouseup',
+      'touchend',
+      'rendered'
+    ]) {
+      expect(f.hasHandler(type), `${type} 订了没退`).toBe(false)
+    }
+  })
+})
+
 describe('松手即划选', () => {
   /**
    * 鼠标事件的替身。node 里没有 MouseEvent,而"这一下是哪个键松开的"恰恰是引擎要
