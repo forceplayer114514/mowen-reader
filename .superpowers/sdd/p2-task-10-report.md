@@ -44,3 +44,14 @@ Verification: `npm run build` passed; `npm test` passed (27 files / 377 tests); 
 Mutation verification: removing the owner guard made the resolve/finally race tests fail (2 failures); restoring it returned the targeted suite to green (11/11).
 
 Verification: `npm run build` passed; `npm test` passed (27 files / 383 tests); `npm run test:e2e` passed (20 tests).
+
+## Third independent review fix round (based on HEAD c5dd383)
+
+- Made `stop()` cancel the active owner across deferred conversation creation, user-message append, and `startChat`; it increments the generation, clears streaming/error UI, aborts late request ids, and removes a newly created empty conversation after cancellation or append failure without touching a newer owner.
+- Cleared `lastAttemptRef` and `error` whenever the conversation id or visible page changes, preventing retry from reusing a failure from the previous location.
+- Changed `mergeLoadedMessages` to preserve loaded order, deduplicate by message id, append same-conversation local messages missing from a non-empty snapshot, and exclude other conversations.
+- Added four hook/lifecycle tests and one merge test. The deferred append test verifies empty-conversation cleanup on failure; the deferred start test verifies a later owner still starts.
+
+Mutation verification: replacing `stop()` with a no-op failed 3 tests; removing conversation/page reset guards failed the corresponding retry tests; replacing message merge with the old snapshot return failed 3 tests. Restoring each guard returned the targeted tests to green.
+
+Verification: `npm run build` passed; `npm test` passed (27 files / 389 tests); `npm run test:e2e` passed (20 tests, 35.3s).

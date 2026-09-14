@@ -23,8 +23,20 @@ interface Props {
 
 const DEFAULT_PROMPT = '请用简体中文回答，不剧透后文，回答简洁。'
 
-export function mergeLoadedMessages(loaded: MessageRecord[], local: MessageRecord[]): MessageRecord[] {
-  return loaded.length === 0 && local.length > 0 ? local : loaded
+export function mergeLoadedMessages(
+  loaded: MessageRecord[],
+  local: MessageRecord[],
+  conversationId?: string
+): MessageRecord[] {
+  const id = conversationId ?? loaded[0]?.conversationId ?? local[0]?.conversationId
+  const localForConversation = id
+    ? local.filter((message) => message.conversationId === id)
+    : local
+  const loadedIds = new Set(loaded.map((message) => message.id))
+  return [
+    ...loaded,
+    ...localForConversation.filter((message) => !loadedIds.has(message.id))
+  ]
 }
 
 export default function Sidebar({ book, engine: _engine, visible, toc, selection }: Props) {
@@ -128,7 +140,7 @@ export default function Sidebar({ book, engine: _engine, visible, toc, selection
     void window.api.listMessages(conversationId).then((messages: MessageRecord[]) => {
       // A newly created conversation notifies after its user message is stored, but
       // keep a local message if an older/empty read races that notification.
-      if (!cancelled) chat.setMessages((local) => mergeLoadedMessages(messages, local))
+      if (!cancelled) chat.setMessages((local) => mergeLoadedMessages(messages, local, conversationId))
     }).catch(() => {
       if (!cancelled) chat.setMessages((local) => local)
     })

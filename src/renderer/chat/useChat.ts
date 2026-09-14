@@ -27,6 +27,10 @@ export interface ChatState {
 
 interface Owner {
   token: symbol
+  canceled: boolean
+  createdConversationId: string | null
+  userMessagePending: boolean
+  userMessageSaved: boolean
 }
 
 interface RequestState {
@@ -78,10 +82,22 @@ export function useChat(args: UseChatArgs): ChatState {
     })
   }, [isOwner])
 
+  const cleanupCreatedConversation = useCallback((owner: Owner) => {
+    if (
+      !owner.createdConversationId ||
+      owner.userMessagePending ||
+      owner.userMessageSaved
+    ) return
+    const id = owner.createdConversationId
+    owner.createdConversationId = null
+    void window.api.deleteConversations([id]).catch(() => {})
+  }, [])
+
   const cancelActive = useCallback(() => {
     generationRef.current += 1
     const owner = ownerRef.current
     if (!owner) return
+    owner.canceled = true
     const pending = pendingRef.current
     if (pending?.owner === owner) pending.current = false
     const current = currentRef.current
@@ -90,19 +106,27 @@ export function useChat(args: UseChatArgs): ChatState {
       abortRequest(current.id, owner)
       currentRef.current = null
     }
+    cleanupCreatedConversation(owner)
     setStreaming(null)
+    setError(null)
     release(owner)
-  }, [abortRequest, release])
+  }, [abortRequest, cleanupCreatedConversation, release])
 
   useEffect(() => {
     if (args.conversationId === conversationRef.current) return
     cancelActive()
+    lastAttemptRef.current = null
+    setError(null)
     conversationRef.current = args.conversationId
   }, [args.conversationId, cancelActive])
 
   useEffect(() => {
     const key = args.visible ? `${args.visible.startCfi}|${args.visible.endCfi}` : ''
-    if (pageKeyRef.current && pageKeyRef.current !== key) cancelActive()
+    if (pageKeyRef.current && pageKeyRef.current !== key) {
+      cancelActive()
+      lastAttemptRef.current = null
+      setError(null)
+    }
     pageKeyRef.current = key
   }, [args.visible?.startCfi, args.visible?.endCfi, cancelActive])
 
@@ -183,7 +207,7 @@ export function useChat(args: UseChatArgs): ChatState {
         id: requestId,
         conversationId,
         accumulated: '',
-        current: pending.current && isOwner(pending.owner) && !disposedRef.current,
+        current: pending.current && !pending.owner.canceled && isOwner(pending.owner) && !disposedRef.current,
         owner: pending.owner
       }
       requestsRef.current.set(requestId, request)
@@ -207,7 +231,13 @@ export function useChat(args: UseChatArgs): ChatState {
   const run = useCallback(async (text: string, quotes: QuoteRecord[]): Promise<void> => {
     if (busyRef.current) return
     busyRef.current = true
-    const owner: Owner = { token: Symbol('chat-run') }
+    const owner: Owner = {
+      token: Symbol('chat-run'),
+      canceled: false,
+      createdConversationId: null,
+      userMessagePending: false,
+      userMessageSaved: false
+    }
     ownerRef.current = owner
     const generation = generationRef.current
     setStreaming('')
@@ -254,26 +284,31 @@ export function useChat(args: UseChatArgs): ChatState {
           excerpt: visible.text.slice(0, 20)
         })
         createdConversationId = created.id
+        owner.createdConversationId = created.id
         if (generation !== generationRef.current || disposedRef.current) {
-          await window.api.deleteConversations([created.id]).catch(() => {})
+          cleanupCreatedConversation(owner)
           release(owner)
           return
         }
         conversationId = created.id
       }
       if (generation !== generationRef.current || disposedRef.current) {
-        if (createdConversationId) await window.api.deleteConversations([createdConversationId]).catch(() => {})
+        cleanupCreatedConversation(owner)
         release(owner)
         return
       }
+      owner.userMessagePending = true
       const savedUser = await window.api.appendMessage({
         conversationId,
         role: 'user',
         content: text,
         quotes
       })
+      owner.userMessagePending = false
+      owner.userMessageSaved = true
       userMessageSaved = true
       if (generation !== generationRef.current || disposedRef.current) {
+        cleanupCreatedConversation(owner)
         release(owner)
         return
       }
@@ -283,9 +318,8 @@ export function useChat(args: UseChatArgs): ChatState {
       args.clearQuotes()
       await start(assembled.messages, conversationId, owner)
     } catch (error) {
-      if (createdConversationId && !userMessageSaved) {
-        await window.api.deleteConversations([createdConversationId]).catch(() => {})
-      }
+      owner.userMessagePending = false
+      if (createdConversationId && !userMessageSaved) cleanupCreatedConversation(owner)
       const current = isOwner(owner)
       release(owner)
       if (current) {
@@ -293,7 +327,7 @@ export function useChat(args: UseChatArgs): ChatState {
         if (!disposedRef.current) setError(chatError(error, '聊天失败，请稍后重试'))
       }
     }
-  }, [args, isOwner, messages, release, start])
+  }, [args, cleanupCreatedConversation, isOwner, messages, release, start])
 
   const send = useCallback(async (text: string) => {
     const trimmed = text.trim()
@@ -307,7 +341,13 @@ export function useChat(args: UseChatArgs): ChatState {
     const conversationId = conversationRef.current
     if (!last || !visible || !conversationId) return
     busyRef.current = true
-    const owner: Owner = { token: Symbol('chat-retry') }
+    const owner: Owner = {
+      token: Symbol('chat-retry'),
+      canceled: false,
+      createdConversationId: null,
+      userMessagePending: false,
+      userMessageSaved: true
+    }
     ownerRef.current = owner
     const generation = generationRef.current
     setError(null)
@@ -341,9 +381,8 @@ export function useChat(args: UseChatArgs): ChatState {
   }, [args, isOwner, messages, release, start])
 
   const stop = useCallback(() => {
-    const current = currentRef.current
-    if (current) abortRequest(current.id, current.owner)
-  }, [abortRequest])
+    cancelActive()
+  }, [cancelActive])
 
   return { messages, streaming, error, send, stop, retry, setMessages }
 }

@@ -245,6 +245,102 @@ describe('useChat 生命周期', () => {
     expect(h.deleteConversations).toHaveBeenCalledWith(['conversation-empty'])
   })
 
+  it('stop 在创建对话尚未返回时取消请求并清掉忙碌状态', async () => {
+    const h = apiHarness()
+    let resolveCreate!: (conversation: { id: string }) => void
+    h.createConversation.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveCreate = resolve as never
+    }))
+    window.api = h.api as never
+    currentArgs = args({ conversationId: null })
+    await act(async () => { root = createRoot(host); root.render(createElement(Harness)); await Promise.resolve() })
+    await act(async () => {
+      void state.send('问题')
+      await vi.waitFor(() => expect(h.createConversation).toHaveBeenCalled())
+    })
+    act(() => state.stop())
+    expect(state.streaming).toBeNull()
+    await act(async () => { resolveCreate({ id: 'conversation-canceled' }); await Promise.resolve() })
+    expect(h.startChat).not.toHaveBeenCalled()
+    expect(h.deleteConversations).toHaveBeenCalledWith(['conversation-canceled'])
+  })
+
+  it('stop 在保存用户消息尚未返回时不启动模型且释放忙碌状态', async () => {
+    const h = apiHarness()
+    let rejectAppend!: (error: Error) => void
+    h.appendMessage.mockImplementationOnce(() => new Promise((_resolve, reject) => {
+      rejectAppend = reject
+    }))
+    window.api = h.api as never
+    currentArgs = args({ conversationId: null })
+    await act(async () => { root = createRoot(host); root.render(createElement(Harness)); await Promise.resolve() })
+    await act(async () => {
+      void state.send('问题')
+      await vi.waitFor(() => expect(h.appendMessage).toHaveBeenCalled())
+    })
+    act(() => state.stop())
+    expect(state.streaming).toBeNull()
+    await act(async () => { rejectAppend(new Error('append failed')); await Promise.resolve() })
+    expect(h.startChat).not.toHaveBeenCalled()
+    expect(h.deleteConversations).toHaveBeenCalledWith(['conversation-new'])
+  })
+
+  it('stop 在 startChat 尚未返回时清掉 UI,迟到的 request id 会被中止', async () => {
+    const h = apiHarness()
+    let resolveStart!: (id: string) => void
+    h.startChat.mockImplementationOnce(() => new Promise((resolve) => { resolveStart = resolve }))
+    window.api = h.api as never
+    currentArgs = args()
+    await act(async () => { root = createRoot(host); root.render(createElement(Harness)); await Promise.resolve() })
+    await act(async () => {
+      void state.send('问题')
+      await vi.waitFor(() => expect(h.startChat).toHaveBeenCalled())
+    })
+    expect(state.streaming).toBe('')
+    act(() => state.stop())
+    expect(state.streaming).toBeNull()
+    await act(async () => { resolveStart('late-request'); await Promise.resolve() })
+    expect(h.abortChat).toHaveBeenCalledWith('late-request')
+    expect(state.streaming).toBeNull()
+    await act(async () => { await state.send('第二个问题'); await Promise.resolve() })
+    expect(h.startChat).toHaveBeenCalledTimes(2)
+  })
+
+  it('切换会话后清掉旧失败,重试不会再次启动旧请求', async () => {
+    const h = apiHarness()
+    h.startChat.mockRejectedValueOnce(new Error('start failed'))
+    window.api = h.api as never
+    currentArgs = args({ conversationId: 'conversation-a' })
+    await act(async () => { root = createRoot(host); root.render(createElement(Harness)); await Promise.resolve() })
+    await act(async () => { await state.send('问题'); await Promise.resolve() })
+    expect(state.error).toContain('请求发不出去')
+    const starts = h.startChat.mock.calls.length
+
+    currentArgs = args({ conversationId: 'conversation-b' })
+    await act(async () => { root.render(createElement(Harness)); await Promise.resolve() })
+    expect(state.error).toBeNull()
+    await act(async () => { await state.retry(); await Promise.resolve() })
+    expect(h.startChat).toHaveBeenCalledTimes(starts)
+  })
+
+  it('切换页面后清掉旧失败,重试不会再次启动旧请求', async () => {
+    const h = apiHarness()
+    h.startChat.mockRejectedValueOnce(new Error('start failed'))
+    window.api = h.api as never
+    currentArgs = args()
+    await act(async () => { root = createRoot(host); root.render(createElement(Harness)); await Promise.resolve() })
+    await act(async () => { await state.send('问题'); await Promise.resolve() })
+    expect(state.error).toContain('请求发不出去')
+    const starts = h.startChat.mock.calls.length
+
+    const nextVisible = { ...visible, startCfi: 'epubcfi(/6/6!/4/2/2/1:0)', endCfi: 'epubcfi(/6/6!/4/2/8/1:0)' }
+    currentArgs = args({ visible: nextVisible })
+    await act(async () => { root.render(createElement(Harness)); await Promise.resolve() })
+    expect(state.error).toBeNull()
+    await act(async () => { await state.retry(); await Promise.resolve() })
+    expect(h.startChat).toHaveBeenCalledTimes(starts)
+  })
+
   it('Sidebar 的迟到空加载基于最新 state,不会覆盖刚落库的 assistant', async () => {
     const h = apiHarness()
     let resolveMessages!: (messages: MessageRecord[]) => void
@@ -289,5 +385,17 @@ describe('useChat 生命周期', () => {
     const local = [message('conversation-new', 'user', '问题')]
     expect(mergeLoadedMessages([], local)).toEqual(local)
     expect(mergeLoadedMessages([message('conversation-new', 'user', '数据库')], local)[0].content).toBe('数据库')
+  })
+
+  it('非空旧快照只补上同会话的本地新增消息', () => {
+    const loaded = [message('conversation-a', 'user', '旧用户')]
+    const local = [
+      message('conversation-a', 'user', '旧用户'),
+      message('conversation-a', 'assistant', '本地新增'),
+      message('conversation-b', 'user', '别的会话')
+    ]
+    expect(mergeLoadedMessages(loaded, local, 'conversation-a').map((item) => item.content)).toEqual([
+      '旧用户', '本地新增'
+    ])
   })
 })
