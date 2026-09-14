@@ -419,6 +419,35 @@ test('松手之后浏览器补发的那一下 click 不会把刚画出来的高�
   expect(await chapterQuotes(h)).toHaveLength(0)
 })
 
+test('页面上已经有一块高亮之后再拖选一次,新画出来的那块同样不会被补发的 click 抹掉', async () => {
+  const h = await launch()
+  await importFixture(h)
+  await enableSelectionStore(h)
+  await h.page.getByTestId('book-card').first().click()
+  await h.page.getByTestId('reader-page').waitFor()
+  await waitForLocationsReady(h)
+
+  // 第一次拖选。marks-pane 的那层转发是画第一块高亮的时候才挂到章节文档上的
+  // (epub.js 的 IframeView.highlight() 里 pane 是懒建的),在这之前它根本不存在。
+  await slowDragSelectInChapter(h)
+  await expect(chapterHighlights(h)).toHaveCount(1)
+
+  // 第二次拖选另一片文字。**这一次才真正分得出捕获阶段和注册顺序**:marks-pane 的
+  // 转发早就挂在文档上了,而引擎那份吞噬是在这一次松手时才挂上去的,注册顺序排在
+  // 它后面。引擎要是挂在冒泡阶段,谁先注册谁先跑,marks-pane 会先收到补发的这一下
+  // click,按坐标转给刚画出来的那块高亮,把它连同引用一起取消掉;挂在捕获阶段,
+  // document 的捕获排在整条传播路径最前面,和注册顺序无关,引擎才稳赢。
+  // 第一次拖选那几条用例证不到这一点:那时候引擎的监听本来就是文档上唯一的一个,
+  // 换成冒泡阶段照样全绿。
+  await dragSelectAcrossParagraphs(h)
+
+  expect(
+    await chapterQuotes(h),
+    '页面上已经有高亮时,marks-pane 的转发比引擎的吞噬先注册;只有挂在捕获阶段才轮得到引擎先处理这一下 click,否则第二次拖选画出来就被自己抹掉'
+  ).toHaveLength(2)
+  await expect(chapterHighlights(h)).toHaveCount(2)
+})
+
 test('拖选一句话会画出高亮,点一下这块高亮就取消掉', async () => {
   const h = await launch()
   await importFixture(h)

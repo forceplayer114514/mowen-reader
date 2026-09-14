@@ -428,9 +428,10 @@ describe('松手即划选', () => {
 
     f.emit('mouseup', mouseEvent('mouseup'))
 
-    // marks-pane 的替身:它在章节文档上挂的转发是冒泡阶段,永远排在引擎那个捕获
-    // 阶段的监听后面。这里在同一个 EventTarget 上后注册来代表这个先后关系;真实
-    // 的捕获/冒泡先后由端到端测试在真 iframe 里证明。
+    // marks-pane 的替身。注意这里代表的只是"有另一个监听在听同一份文档上的 click",
+    // 不是捕获与冒泡的先后:node 的 EventTarget 没有传播路径,谁先跑纯看注册顺序,
+    // 所以这一条换成冒泡阶段照样会绿。真正分得出两者的是端到端那条"页面上已经有
+    // 一块高亮之后再拖选一次"——那一次 marks-pane 的转发比引擎的吞噬先注册。
     let forwarded = 0
     c.document.addEventListener('click', () => {
       forwarded++
