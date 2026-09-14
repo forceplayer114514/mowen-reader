@@ -356,7 +356,7 @@ test('删除书之后书架恢复空状态,重启也不会把它带回来', asyn
   await expect(second.page.getByTestId('book-card')).toHaveCount(0)
 })
 
-// --- 以下覆盖划选与高亮(Task 8):这四条只能在真实 EPUB + 真实 iframe 里跑,
+// --- 以下八条覆盖划选与高亮(Task 8):它们只能在真实 EPUB + 真实 iframe 里跑,
 // 单元测试那边的假引擎碰不到 epub.js 的选区、标注和 marks-pane。 ---
 
 test('没有人消费划选时,拖选出来的文字不会被清掉', async () => {

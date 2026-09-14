@@ -2392,7 +2392,8 @@ git commit -m "feat: expose conversation, secret and streaming channels over ipc
 - Create: `src/renderer/reader/selection.ts`
 - Test: `tests/unit/selection.test.ts`
 - Test: `tests/unit/engine.test.ts`(**偏差,实施时补入**:引擎对 epub.js 标注表说了什么话、松手那串鼠标事件被怎么处理,这些判断在 `selection.test.ts` 的假引擎里看不见,真实 epub.js 又要一份真 EPUB 才跑得起来;把 epubjs 换成只负责记账的替身,断言调用序列)
-- Test: `tests/e2e/reader.spec.ts` + `tests/e2e/helpers.ts`(**偏差,实施时补入**:同上,划选与高亮的六条端到端用例)
+- Test: `tests/e2e/reader.spec.ts` + `tests/e2e/helpers.ts`(**偏差,实施时补入**:同上,划选与高亮的八条端到端用例)
+- Modify: `scripts/make-fixture-epub.ts` + `tests/unit/fixture.test.ts`(**偏差,实施时补入**:原有三个样本的正文里一个链接都没有,只有导航文档里有,所以"拖选的文字整段落在一个书内链接里"这种真实形状一条用例都够不到;加了第四个样本,第一章正文第一段整段就是一个指向第二章的链接)
 
 **Interfaces:**
 - Consumes: `ReaderEngine`
