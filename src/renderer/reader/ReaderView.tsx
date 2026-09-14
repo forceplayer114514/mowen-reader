@@ -16,6 +16,7 @@ const VISIBLE_STUCK_TIMEOUT_MS = 5000
 export interface RestoreRelocationGate {
   readonly restoring: boolean
   finishDisplay(): void
+  cancel(): void
   consumeRelocation(): boolean
 }
 
@@ -29,6 +30,10 @@ export function createRestoreRelocationGate(active: boolean): RestoreRelocationG
       if (!active) return
       restoring = false
       awaitingRelocation = true
+    },
+    cancel() {
+      restoring = false
+      awaitingRelocation = false
     },
     consumeRelocation() {
       if (!awaitingRelocation) return false
@@ -323,7 +328,11 @@ export default function ReaderView({ book, onBack }: Props) {
         }
       } catch (e) {
         clearStuckTimer()
-        if (!cancelled) setError(e instanceof Error ? e.message : '这本书打不开')
+        restoreGate.cancel()
+        if (!cancelled) {
+          setRestoring(false)
+          setError(e instanceof Error ? e.message : '这本书打不开')
+        }
       }
     }
 

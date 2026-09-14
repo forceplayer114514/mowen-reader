@@ -209,6 +209,14 @@ describe('Task 11 侧边栏接线', () => {
     expect(gate.consumeRelocation()).toBe(false)
   })
 
+  it('恢复失败取消等待后,后续 relocation 不会再次解除保护', () => {
+    const gate = createRestoreRelocationGate(true)
+    gate.finishDisplay()
+    gate.cancel()
+    expect(gate.restoring).toBe(false)
+    expect(gate.consumeRelocation()).toBe(false)
+  })
+
   it('空会话点击新对话不弹确认也不删除', async () => {
     const h = makeHarness()
     h.api.listConversations.mockResolvedValue([])
