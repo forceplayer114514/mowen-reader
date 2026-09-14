@@ -271,6 +271,16 @@ describe('高亮与 epub.js 标注表', () => {
 })
 
 describe('松手即划选', () => {
+  /**
+   * 鼠标事件的替身。node 里没有 MouseEvent,而"这一下是哪个键松开的"恰恰是引擎要
+   * 看的字段,只能自己补上:0 是左键,2 是右键。
+   */
+  function mouseEvent(type: string, button = 0): Event {
+    const e = new Event(type)
+    Object.defineProperty(e, 'button', { value: button })
+    return e
+  }
+
   /** 订上一个只记账的划选订阅者,返回它收到的东西。 */
   function watch(engine: ReaderEngine): { cfiRange: string; text: string }[] {
     const seen: { cfiRange: string; text: string }[] = []
@@ -284,7 +294,7 @@ describe('松手即划选', () => {
     const c = f.addContents('cfi-1', '他终于明白')
     const seen = watch(engine)
 
-    f.emit('mouseup', new Event('mouseup'))
+    f.emit('mouseup', mouseEvent('mouseup'))
 
     expect(seen).toEqual([{ cfiRange: 'cfi-1', text: '他终于明白' }])
     expect(c.selection.cleared).toBe(true)
@@ -312,7 +322,7 @@ describe('松手即划选', () => {
 
     // 用键盘选中了一段话,然后随手去点工具栏上的按钮:按下和松开都落在外层界面上。
     fakeWindow.dispatchEvent(new Event('mousedown'))
-    fakeWindow.dispatchEvent(new Event('mouseup'))
+    fakeWindow.dispatchEvent(mouseEvent('mouseup'))
 
     expect(
       seen,
@@ -322,8 +332,28 @@ describe('松手即划选', () => {
 
     // 真的从书里开始、拖出 iframe 才松手:这一次才算数。
     f.emit('mousedown', new Event('mousedown'))
-    fakeWindow.dispatchEvent(new Event('mouseup'))
+    fakeWindow.dispatchEvent(mouseEvent('mouseup'))
 
+    expect(seen).toHaveLength(1)
+  })
+
+  it('按下的不是左键,松开就不算一次划选', async () => {
+    const f = createFakeEpub()
+    const engine = await openEngine()
+    const c = f.addContents('cfi-1', '他终于明白')
+    const seen = watch(engine)
+
+    // 用键盘(或者双击)选中了一段话,想右键复制:右键按下弹出菜单,松开落在书内容里。
+    f.emit('mouseup', mouseEvent('mouseup', 2))
+
+    expect(
+      seen,
+      '右键松开被当成了一次拖选的结束:菜单还没点,这段话已经变成引用、选区也被收走了,用户想做的复制彻底做不成'
+    ).toEqual([])
+    expect(c.selection.cleared).toBe(false)
+
+    // 左键松开才算数。
+    f.emit('mouseup', mouseEvent('mouseup'))
     expect(seen).toHaveLength(1)
   })
 
@@ -334,7 +364,7 @@ describe('松手即划选', () => {
     const right = f.addContents('cfi-right', '右页这一句')
     const seen = watch(engine)
 
-    f.emit('mouseup', new Event('mouseup'))
+    f.emit('mouseup', mouseEvent('mouseup'))
 
     expect(
       seen.map((q) => q.cfiRange),
@@ -353,7 +383,7 @@ describe('松手即划选', () => {
     })
 
     // 这是鼠标事件的回调,没有任何调用栈接得住这个异常。
-    expect(() => f.emit('mouseup', new Event('mouseup'))).toThrow('订阅者炸了')
+    expect(() => f.emit('mouseup', mouseEvent('mouseup'))).toThrow('订阅者炸了')
 
     expect(
       c.selection.cleared,
@@ -367,7 +397,7 @@ describe('松手即划选', () => {
     const c = f.addContents('cfi-1', '他终于明白')
     watch(engine)
 
-    f.emit('mouseup', new Event('mouseup'))
+    f.emit('mouseup', mouseEvent('mouseup'))
 
     // marks-pane 的替身:它在章节文档上挂的转发是冒泡阶段,永远排在引擎那个捕获
     // 阶段的监听后面。这里在同一个 EventTarget 上后注册来代表这个先后关系;真实
@@ -391,7 +421,7 @@ describe('松手即划选', () => {
     const c = f.addContents('cfi-1', '他终于明白')
     watch(engine)
 
-    f.emit('mouseup', new Event('mouseup'))
+    f.emit('mouseup', mouseEvent('mouseup'))
 
     let forwarded = 0
     c.document.addEventListener('click', () => {

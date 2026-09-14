@@ -214,6 +214,19 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   }
 
   /**
+   * 这一次松开算不算一次拖选的结束。鼠标只认左键。
+   *
+   * 不看是哪个键的话:用户用键盘或者双击选中了一段话,想右键复制,右键按下弹出
+   * 菜单、松开这一下就被当成了一次划选的结束——菜单还没点,这段话已经变成引用、
+   * 选区也被收走了,复制彻底做不成。中键、侧键同理,它们谁也不是用来拖选的。
+   * 手指和触控笔那一路没有"哪个键"这回事,touchend 本身就是一次划选的最后一步。
+   */
+  function isSelectionRelease(e: Event): boolean {
+    if (pressKindOf(e) === 'touch') return true
+    return (e as MouseEvent).button === 0
+  }
+
+  /**
    * 每份章节文档上当前挂着的那份"吞掉下一下 click",按文档记。见 swallowNextClick()。
    * 同一份文档上同一时刻只能挂一份:两份都挂在捕获阶段,先跑到的那份一
    * stopImmediatePropagation,后一份就再也没机会解除自己,会一直留着把用户之后
@@ -376,6 +389,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
    */
   function handleContentRelease(e: Event): void {
     pressedInContent = false
+    if (!isSelectionRelease(e)) return
     consumeSelection(pressKindOf(e))
   }
 
@@ -388,8 +402,11 @@ export function createEngine(container: HTMLElement): ReaderEngine {
    * 悄悄变成一条引用——他既没打算引用它,也不知道自己刚引用了什么。
    */
   function handleOuterRelease(e: Event): void {
-    if (!pressedInContent) return
+    const startedInContent = pressedInContent
+    // 不管这一下算不算划选的结束,按下-松开这一轮都结束了:标记要复位,否则一次
+    // 右键松开会把"这次按下落在书内容里"这个状态留给下一次左键松开。
     pressedInContent = false
+    if (!startedInContent || !isSelectionRelease(e)) return
     consumeSelection(pressKindOf(e))
   }
 
