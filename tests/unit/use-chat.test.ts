@@ -3,8 +3,8 @@ import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useChat, type ChatState, type UseChatArgs } from '../../src/renderer/chat/useChat'
-import { mergeLoadedMessages } from '../../src/renderer/chat/Sidebar'
-import type { MessageRecord } from '../../src/shared/types'
+import Sidebar, { mergeLoadedMessages } from '../../src/renderer/chat/Sidebar'
+import type { ConversationWithCount, MessageRecord } from '../../src/shared/types'
 import type { VisibleRange } from '../../src/renderer/reader/types'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -30,20 +30,29 @@ function apiHarness() {
   let done: ((id: string, result: { status: 'finished' | 'error'; message?: string }) => void) | null = null
   const abortChat = vi.fn(async () => {})
   const startChat = vi.fn(async () => 'request-1')
+  const deleteConversations = vi.fn(async () => {})
+  const listConversations = vi.fn(async () => [] as ConversationWithCount[])
+  const listMessages = vi.fn(async () => [] as MessageRecord[])
+  const getSetting = vi.fn(async () => null)
+  const createConversation = vi.fn(async () => ({
+    id: 'conversation-new', bookId: 'book', startCfi: visible.startCfi, endCfi: visible.endCfi,
+    mergedEndCfi: null, chapterLabel: visible.chapterLabel, excerpt: visible.text, createdAt: Date.now()
+  }))
   const appendMessage = vi.fn(async (input: { conversationId: string; role: 'user' | 'assistant'; content: string }) =>
     message(input.conversationId, input.role, input.content))
   const api = {
-    createConversation: vi.fn(async () => ({
-      id: 'conversation-new', bookId: 'book', startCfi: visible.startCfi, endCfi: visible.endCfi,
-      mergedEndCfi: null, chapterLabel: visible.chapterLabel, excerpt: visible.text, createdAt: Date.now()
-    })),
+    createConversation,
+    deleteConversations,
+    listConversations,
+    listMessages,
+    getSetting,
     appendMessage,
     startChat,
     abortChat,
     onChatChunk: vi.fn((cb: typeof chunk) => { chunk = cb; return () => { chunk = null } }),
     onChatDone: vi.fn((cb: typeof done) => { done = cb; return () => { done = null } })
   }
-  return { api, appendMessage, startChat, abortChat, emitChunk: (id: string, text: string) => chunk?.(id, text), emitDone: (id: string) => done?.(id, { status: 'finished' }) }
+  return { api, createConversation, appendMessage, startChat, abortChat, deleteConversations, listConversations, listMessages, getSetting, emitChunk: (id: string, text: string) => chunk?.(id, text), emitDone: (id: string) => done?.(id, { status: 'finished' }) }
 }
 
 function args(over: Partial<UseChatArgs> = {}): UseChatArgs {
@@ -128,6 +137,152 @@ describe('useChat 生命周期', () => {
     await act(async () => { await state.send('问题'); await Promise.resolve() })
     expect(state.error).toContain('聊天失败')
     expect(h.startChat).not.toHaveBeenCalled()
+  })
+
+  it('旧请求迟到 resolve 不会释放新请求的锁,新请求仍可取消', async () => {
+    const h = apiHarness()
+    let resolveA!: (id: string) => void
+    let resolveB!: (id: string) => void
+    h.startChat
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveA = resolve }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveB = resolve }))
+    window.api = h.api as never
+    currentArgs = args({ conversationId: 'conversation-a' })
+    await act(async () => { root = createRoot(host); root.render(createElement(Harness)); await Promise.resolve() })
+    await act(async () => { void state.send('A'); await Promise.resolve() })
+
+    currentArgs = args({ conversationId: 'conversation-b' })
+    await act(async () => { root.render(createElement(Harness)); await Promise.resolve() })
+    await act(async () => { void state.send('B'); await Promise.resolve() })
+    await act(async () => { void state.send('第三次'); await Promise.resolve() })
+    expect(h.startChat).toHaveBeenCalledTimes(2)
+
+    await act(async () => { resolveA('request-a'); await Promise.resolve() })
+    expect(h.abortChat).toHaveBeenCalledWith('request-a')
+    expect(state.streaming).toBe('')
+    await act(async () => { void state.send('仍被锁住'); await Promise.resolve() })
+    expect(h.startChat).toHaveBeenCalledTimes(2)
+
+    currentArgs = args({ conversationId: 'conversation-c' })
+    await act(async () => { root.render(createElement(Harness)); await Promise.resolve() })
+    await act(async () => { resolveB('request-b'); await Promise.resolve() })
+    expect(h.abortChat).toHaveBeenCalledWith('request-b')
+  })
+
+  it('旧请求迟到 reject 不会清掉新请求的 streaming 状态', async () => {
+    const h = apiHarness()
+    let rejectA!: (error: Error) => void
+    let resolveB!: (id: string) => void
+    h.startChat
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectA = reject }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveB = resolve }))
+    window.api = h.api as never
+    currentArgs = args({ conversationId: 'conversation-a' })
+    await act(async () => { root = createRoot(host); root.render(createElement(Harness)); await Promise.resolve() })
+    await act(async () => { void state.send('A'); await Promise.resolve() })
+    currentArgs = args({ conversationId: 'conversation-b' })
+    await act(async () => { root.render(createElement(Harness)); await Promise.resolve() })
+    await act(async () => { void state.send('B'); await Promise.resolve() })
+    await act(async () => { rejectA(new Error('late A')); await Promise.resolve() })
+    expect(state.streaming).toBe('')
+    currentArgs = args({ conversationId: 'conversation-c' })
+    await act(async () => { root.render(createElement(Harness)); await Promise.resolve() })
+    await act(async () => { resolveB('request-b'); await Promise.resolve() })
+  })
+
+  it('旧请求 finally 不会解锁新请求,新请求仍可取消', async () => {
+    const h = apiHarness()
+    let resolveAssistant!: (message: MessageRecord) => void
+    let nextRequest = 0
+    h.startChat.mockImplementation(async () => `request-${++nextRequest}`)
+    h.appendMessage.mockImplementation(async (input: { conversationId: string; role: 'user' | 'assistant'; content: string }) => {
+      if (input.role === 'assistant') return new Promise((resolve) => { resolveAssistant = resolve })
+      return message(input.conversationId, input.role, input.content)
+    })
+    window.api = h.api as never
+    currentArgs = args({ conversationId: 'conversation-a' })
+    await act(async () => { root = createRoot(host); root.render(createElement(Harness)); await Promise.resolve() })
+    await act(async () => { void state.send('A'); await Promise.resolve() })
+    await act(async () => { h.emitChunk('request-1', '回答 A'); h.emitDone('request-1'); await Promise.resolve() })
+    await vi.waitFor(() => expect(h.appendMessage).toHaveBeenLastCalledWith(expect.objectContaining({ role: 'assistant' })))
+
+    currentArgs = args({ conversationId: 'conversation-b' })
+    await act(async () => { root.render(createElement(Harness)); await Promise.resolve() })
+    await act(async () => { void state.send('B'); await Promise.resolve() })
+    await act(async () => { resolveAssistant(message('conversation-a', 'assistant', '回答 A')); await Promise.resolve() })
+    expect(state.streaming).toBe('')
+    await act(async () => { void state.send('第三次'); await Promise.resolve() })
+    expect(h.startChat).toHaveBeenCalledTimes(2)
+
+    currentArgs = args({ conversationId: 'conversation-c' })
+    await act(async () => { root.render(createElement(Harness)); await Promise.resolve() })
+    expect(h.abortChat).toHaveBeenCalledWith('request-2')
+  })
+
+  it('切页时迟到的创建结果会删除空对话', async () => {
+    const h = apiHarness()
+    let resolveCreate!: (conversation: { id: string }) => void
+    h.createConversation.mockImplementationOnce(() => new Promise((resolve) => { resolveCreate = resolve as never }))
+    window.api = h.api as never
+    currentArgs = args({ conversationId: null })
+    await act(async () => { root = createRoot(host); root.render(createElement(Harness)); await Promise.resolve() })
+    await act(async () => { void state.send('问题'); await Promise.resolve() })
+
+    currentArgs = args({ conversationId: 'conversation-b' })
+    await act(async () => { root.render(createElement(Harness)); await Promise.resolve() })
+    await act(async () => { resolveCreate({ id: 'conversation-empty' }); await Promise.resolve() })
+    expect(h.deleteConversations).toHaveBeenCalledWith(['conversation-empty'])
+  })
+
+  it('新建对话的用户消息保存失败会删除空对话', async () => {
+    const h = apiHarness()
+    h.createConversation.mockResolvedValueOnce({ id: 'conversation-empty' } as never)
+    h.appendMessage.mockRejectedValueOnce(new Error('append failed'))
+    window.api = h.api as never
+    currentArgs = args({ conversationId: null })
+    await act(async () => { root = createRoot(host); root.render(createElement(Harness)); await Promise.resolve() })
+    await act(async () => { await state.send('问题'); await Promise.resolve() })
+    expect(h.deleteConversations).toHaveBeenCalledWith(['conversation-empty'])
+  })
+
+  it('Sidebar 的迟到空加载基于最新 state,不会覆盖刚落库的 assistant', async () => {
+    const h = apiHarness()
+    let resolveMessages!: (messages: MessageRecord[]) => void
+    const conversation = {
+      id: 'conversation-a', bookId: 'book', startCfi: visible.startCfi, endCfi: visible.endCfi,
+      mergedEndCfi: null, chapterLabel: visible.chapterLabel, excerpt: visible.text,
+      createdAt: Date.now(), messageCount: 0
+    }
+    h.listConversations.mockResolvedValueOnce([conversation])
+    h.listMessages.mockImplementationOnce(async () => new Promise<MessageRecord[]>((resolve) => { resolveMessages = resolve }))
+    window.api = h.api as never
+    const book = args().book
+    await act(async () => {
+      root = createRoot(host)
+      root.render(createElement(Sidebar, { book, engine: null, visible, toc: [], selection: null }))
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(h.listMessages).toHaveBeenCalledWith('conversation-a'))
+
+    const input = host.querySelector('[data-testid="chat-input"]') as HTMLTextAreaElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(input, '问题')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      await Promise.resolve()
+    })
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="chat-send"]')?.click()
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(h.startChat).toHaveBeenCalled())
+    await act(async () => {
+      h.emitChunk('request-1', '回答')
+      h.emitDone('request-1')
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(h.appendMessage).toHaveBeenLastCalledWith(expect.objectContaining({ role: 'assistant' })))
+    await act(async () => { resolveMessages([]); await Promise.resolve() })
+    expect(host.querySelectorAll('[data-testid="message-assistant"]').length).toBe(1)
   })
 
   it('加载到空结果时不覆盖已经写入的本地用户消息', () => {

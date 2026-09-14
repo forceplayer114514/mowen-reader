@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type SetStateAction } from 'react'
 import type { BookRecord, MessageRecord, QuoteRecord } from '@shared/types'
 import type { TocItem, VisibleRange } from '../reader/types'
 import { buildContext, type ChatMessage } from './context'
@@ -22,7 +22,11 @@ export interface ChatState {
   send: (text: string) => Promise<void>
   stop: () => void
   retry: () => Promise<void>
-  setMessages: (m: MessageRecord[]) => void
+  setMessages: (m: SetStateAction<MessageRecord[]>) => void
+}
+
+interface Owner {
+  token: symbol
 }
 
 interface RequestState {
@@ -30,11 +34,13 @@ interface RequestState {
   conversationId: string
   accumulated: string
   current: boolean
+  owner: Owner
 }
 
 interface PendingStart {
   conversationId: string
   current: boolean
+  owner: Owner
 }
 
 function chatError(error: unknown, fallback: string): string {
@@ -50,35 +56,42 @@ export function useChat(args: UseChatArgs): ChatState {
   const lastAttemptRef = useRef<{ text: string; quotes: QuoteRecord[] } | null>(null)
   const disposedRef = useRef(false)
   const busyRef = useRef(false)
+  const ownerRef = useRef<Owner | null>(null)
   const pendingRef = useRef<PendingStart | null>(null)
   const currentRef = useRef<RequestState | null>(null)
   const requestsRef = useRef(new Map<string, RequestState>())
   const pageKeyRef = useRef('')
   const generationRef = useRef(0)
 
-  const release = useCallback(() => {
-    busyRef.current = false
-    pendingRef.current = null
-  }, [])
+  const isOwner = useCallback((owner: Owner) => ownerRef.current === owner, [])
 
-  const abortRequest = useCallback((requestId: string) => {
+  const release = useCallback((owner: Owner) => {
+    if (!isOwner(owner)) return
+    busyRef.current = false
+    if (pendingRef.current?.owner === owner) pendingRef.current = null
+    ownerRef.current = null
+  }, [isOwner])
+
+  const abortRequest = useCallback((requestId: string, owner?: Owner) => {
     void window.api.abortChat(requestId).catch(() => {
-      if (!disposedRef.current) setError('停止请求失败，请稍后重试')
+      if (!disposedRef.current && (!owner || isOwner(owner))) setError('停止请求失败，请稍后重试')
     })
-  }, [])
+  }, [isOwner])
 
   const cancelActive = useCallback(() => {
     generationRef.current += 1
+    const owner = ownerRef.current
+    if (!owner) return
     const pending = pendingRef.current
-    if (pending) pending.current = false
+    if (pending?.owner === owner) pending.current = false
     const current = currentRef.current
-    if (current) {
+    if (current?.owner === owner) {
       current.current = false
-      abortRequest(current.id)
+      abortRequest(current.id, owner)
       currentRef.current = null
-      setStreaming(null)
     }
-    release()
+    setStreaming(null)
+    release(owner)
   }, [abortRequest, release])
 
   useEffect(() => {
@@ -136,7 +149,7 @@ export function useChat(args: UseChatArgs): ChatState {
         setStreaming(null)
       }
       void commitAssistant(request).finally(() => {
-        if (wasCurrent) release()
+        if (wasCurrent) release(request.owner)
       })
     })
     return () => {
@@ -153,15 +166,16 @@ export function useChat(args: UseChatArgs): ChatState {
       if (pending) pending.current = false
       for (const request of requestsRef.current.values()) {
         request.current = false
-        abortRequest(request.id)
+        abortRequest(request.id, request.owner)
       }
       currentRef.current = null
-      release()
+      const owner = ownerRef.current
+      if (owner) release(owner)
     }
   }, [abortRequest, release])
 
-  const start = useCallback(async (messagesToSend: ChatMessage[], conversationId: string): Promise<void> => {
-    const pending: PendingStart = { conversationId, current: true }
+  const start = useCallback(async (messagesToSend: ChatMessage[], conversationId: string, owner: Owner): Promise<void> => {
+    const pending: PendingStart = { conversationId, current: true, owner }
     pendingRef.current = pending
     try {
       const requestId = await window.api.startChat({ messages: messagesToSend })
@@ -169,31 +183,37 @@ export function useChat(args: UseChatArgs): ChatState {
         id: requestId,
         conversationId,
         accumulated: '',
-        current: pending.current && !disposedRef.current
+        current: pending.current && isOwner(pending.owner) && !disposedRef.current,
+        owner: pending.owner
       }
       requestsRef.current.set(requestId, request)
       if (!request.current) {
-        abortRequest(requestId)
-        release()
+        abortRequest(requestId, pending.owner)
+        release(pending.owner)
         return
       }
       currentRef.current = request
       setStreaming('')
     } catch (error) {
-      release()
-      setStreaming(null)
-      if (!disposedRef.current) setError(chatError(error, '请求发不出去，请检查设置'))
+      const current = isOwner(pending.owner)
+      release(pending.owner)
+      if (current) {
+        setStreaming(null)
+        if (!disposedRef.current) setError(chatError(error, '请求发不出去，请检查设置'))
+      }
     }
-  }, [abortRequest, release])
+  }, [abortRequest, isOwner, release])
 
   const run = useCallback(async (text: string, quotes: QuoteRecord[]): Promise<void> => {
     if (busyRef.current) return
     busyRef.current = true
+    const owner: Owner = { token: Symbol('chat-run') }
+    ownerRef.current = owner
     const generation = generationRef.current
     setStreaming('')
     const visible = args.visible
     if (!visible) {
-      release()
+      release(owner)
       setStreaming(null)
       setError('页面还没准备好，请稍等一下再问')
       return
@@ -215,12 +235,15 @@ export function useChat(args: UseChatArgs): ChatState {
         limit: args.contextLimit
       })
     } catch (error) {
-      release()
-      setError(chatError(error, '上下文拼装失败，请稍后重试'))
+      const current = isOwner(owner)
+      release(owner)
+      if (current) setError(chatError(error, '上下文拼装失败，请稍后重试'))
       return
     }
 
     let conversationId = conversationRef.current
+    let createdConversationId: string | null = null
+    let userMessageSaved = false
     try {
       if (!conversationId) {
         const created = await window.api.createConversation({
@@ -230,15 +253,17 @@ export function useChat(args: UseChatArgs): ChatState {
           chapterLabel: visible.chapterLabel,
           excerpt: visible.text.slice(0, 20)
         })
+        createdConversationId = created.id
         if (generation !== generationRef.current || disposedRef.current) {
-          release()
+          await window.api.deleteConversations([created.id]).catch(() => {})
+          release(owner)
           return
         }
         conversationId = created.id
-        conversationRef.current = created.id
       }
       if (generation !== generationRef.current || disposedRef.current) {
-        release()
+        if (createdConversationId) await window.api.deleteConversations([createdConversationId]).catch(() => {})
+        release(owner)
         return
       }
       const savedUser = await window.api.appendMessage({
@@ -247,20 +272,28 @@ export function useChat(args: UseChatArgs): ChatState {
         content: text,
         quotes
       })
+      userMessageSaved = true
       if (generation !== generationRef.current || disposedRef.current) {
-        release()
+        release(owner)
         return
       }
+      conversationRef.current = conversationId
       setMessages((old) => [...old, savedUser])
       if (!args.conversationId && conversationId) args.onConversationCreated(conversationId)
       args.clearQuotes()
-      await start(assembled.messages, conversationId)
+      await start(assembled.messages, conversationId, owner)
     } catch (error) {
-      release()
-      setStreaming(null)
-      if (!disposedRef.current) setError(chatError(error, '聊天失败，请稍后重试'))
+      if (createdConversationId && !userMessageSaved) {
+        await window.api.deleteConversations([createdConversationId]).catch(() => {})
+      }
+      const current = isOwner(owner)
+      release(owner)
+      if (current) {
+        setStreaming(null)
+        if (!disposedRef.current) setError(chatError(error, '聊天失败，请稍后重试'))
+      }
     }
-  }, [args, messages, release, start])
+  }, [args, isOwner, messages, release, start])
 
   const send = useCallback(async (text: string) => {
     const trimmed = text.trim()
@@ -274,6 +307,8 @@ export function useChat(args: UseChatArgs): ChatState {
     const conversationId = conversationRef.current
     if (!last || !visible || !conversationId) return
     busyRef.current = true
+    const owner: Owner = { token: Symbol('chat-retry') }
+    ownerRef.current = owner
     const generation = generationRef.current
     setError(null)
     setStreaming('')
@@ -291,20 +326,23 @@ export function useChat(args: UseChatArgs): ChatState {
         limit: args.contextLimit
       })
       if (generation !== generationRef.current || disposedRef.current) {
-        release()
+        release(owner)
         return
       }
-      await start(assembled.messages, conversationId)
+      await start(assembled.messages, conversationId, owner)
     } catch (error) {
-      release()
-      setStreaming(null)
-      if (!disposedRef.current) setError(chatError(error, '重试失败，请稍后重试'))
+      const current = isOwner(owner)
+      release(owner)
+      if (current) {
+        setStreaming(null)
+        if (!disposedRef.current) setError(chatError(error, '重试失败，请稍后重试'))
+      }
     }
-  }, [args, messages, release, start])
+  }, [args, isOwner, messages, release, start])
 
   const stop = useCallback(() => {
     const current = currentRef.current
-    if (current) abortRequest(current.id)
+    if (current) abortRequest(current.id, current.owner)
   }, [abortRequest])
 
   return { messages, streaming, error, send, stop, retry, setMessages }

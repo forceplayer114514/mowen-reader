@@ -118,17 +118,19 @@ export default function Sidebar({ book, engine: _engine, visible, toc, selection
   })
 
   useEffect(() => {
+    chat.setMessages((current) =>
+      conversationId ? current.filter((message) => message.conversationId === conversationId) : []
+    )
     if (!conversationId) {
-      chat.setMessages([])
       return
     }
     let cancelled = false
     void window.api.listMessages(conversationId).then((messages: MessageRecord[]) => {
       // A newly created conversation notifies after its user message is stored, but
       // keep a local message if an older/empty read races that notification.
-      if (!cancelled) chat.setMessages(mergeLoadedMessages(messages, chat.messages))
+      if (!cancelled) chat.setMessages((local) => mergeLoadedMessages(messages, local))
     }).catch(() => {
-      if (!cancelled) chat.setMessages([])
+      if (!cancelled) chat.setMessages((local) => local)
     })
     return () => {
       cancelled = true

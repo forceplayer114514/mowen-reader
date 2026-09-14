@@ -33,3 +33,14 @@ The existing Task 8 no-consumer regression remains green by retaining its explic
 - Added `cfiChapterKey`, `mergeLoadedMessages`, and five real React hook/lifecycle tests covering request binding, double-send locking, late start abort, load overwrite, and IPC errors.
 
 Verification: `npm run build` passed; `npm test` passed (27 files / 377 tests); `npx playwright test --workers=1` passed (20 tests, 35.7s).
+
+## Second independent review fix round (3b52cb6..HEAD)
+
+- Bound the busy lock, pending start, request, assistant commit, abort-error handling, and streaming cleanup to one owner token. A canceled request's late `startChat` resolve/reject or `finally` can only abort itself and cannot release or clear a newer request.
+- Delete a just-created conversation when cancellation or user-message append failure leaves it without a message; cleanup rejection is intentionally swallowed.
+- Changed `ChatState.setMessages` to accept React `SetStateAction`. Sidebar now filters old-conversation messages on every id change and uses functional updaters for late `listMessages` results, preserving newer local messages while stale loads are canceled.
+- Added real React timing tests for deferred A/B starts (resolve and reject), delayed assistant append, empty-conversation cleanup, and Sidebar's late empty load.
+
+Mutation verification: removing the owner guard made the resolve/finally race tests fail (2 failures); restoring it returned the targeted suite to green (11/11).
+
+Verification: `npm run build` passed; `npm test` passed (27 files / 383 tests); `npm run test:e2e` passed (20 tests).
