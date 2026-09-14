@@ -110,7 +110,12 @@ export default function ConversationView({
             发送
           </button>
         )}
-        <button type="button" data-testid="new-conversation" onClick={onNewConversation}>
+        <button
+          type="button"
+          data-testid="new-conversation"
+          disabled={busy}
+          onClick={onNewConversation}
+        >
           +新对话
         </button>
       </div>

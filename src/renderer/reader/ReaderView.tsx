@@ -65,9 +65,10 @@ export default function ReaderView({ book, onBack }: Props) {
     const current = engineRef.current
     if (!current) return
     if (spreadRef.current) {
-      spreadRef.current = false
-      setSpread(false)
-      void current.setSpread(false).catch(() => setError('收回双页失败，请稍后重试'))
+      void current.setSpread(false).then(() => current.next()).then(() => {
+        spreadRef.current = false
+        setSpread(false)
+      }).catch(() => setError('收回双页失败，请稍后重试'))
       return
     }
     void current.next()
@@ -77,9 +78,10 @@ export default function ReaderView({ book, onBack }: Props) {
     const current = engineRef.current
     if (!current) return
     if (spreadRef.current) {
-      spreadRef.current = false
-      setSpread(false)
-      void current.setSpread(false).catch(() => setError('收回双页失败，请稍后重试'))
+      void current.setSpread(false).then(() => {
+        spreadRef.current = false
+        setSpread(false)
+      }).catch(() => setError('收回双页失败，请稍后重试'))
       return
     }
     void current.prev()

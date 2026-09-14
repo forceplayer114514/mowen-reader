@@ -3,6 +3,8 @@ import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Sidebar from '../../src/renderer/chat/Sidebar'
+import ConversationView from '../../src/renderer/chat/ConversationView'
+import type { ChatState } from '../../src/renderer/chat/useChat'
 import type { ConversationWithCount, MessageRecord } from '../../src/shared/types'
 import type { ReaderEngine, VisibleRange } from '../../src/renderer/reader/types'
 import type { SelectionStore } from '../../src/renderer/reader/selection'
@@ -171,5 +173,61 @@ describe('Task 11 侧边栏接线', () => {
     expect(h.api.deleteConversations).not.toHaveBeenCalled()
     expect(host.querySelector('[data-testid="message-user"]')).toBeNull()
     confirm.mockRestore()
+  })
+
+  it('新会话的合并写入失败只提示,不阻断模型请求', async () => {
+    const h = makeHarness()
+    h.api.listConversations.mockResolvedValue([])
+    h.api.createConversation.mockResolvedValue({
+      id: 'new', bookId: 'book', startCfi: first.startCfi, endCfi: first.endCfi,
+      mergedEndCfi: null, chapterLabel: first.chapterLabel, excerpt: first.text, createdAt: 1
+    })
+    h.api.appendMessage.mockResolvedValue({ id: 'msg', conversationId: 'new', role: 'user', content: '问题', quotes: [], createdAt: 1 })
+    h.api.startChat.mockResolvedValue('request-1')
+    h.api.setConversationMerge.mockRejectedValueOnce(new Error('merge failed'))
+    window.api = h.api as never
+    await act(async () => {
+      root = createRoot(host)
+      root.render(createElement(Sidebar, { book, engine: h.engine, visible: first, toc: [], selection: null }))
+      await Promise.resolve()
+    })
+    await act(async () => { host.querySelector<HTMLButtonElement>('[data-testid="merge-next-page"]')?.click(); await Promise.resolve() })
+    const input = host.querySelector<HTMLTextAreaElement>('[data-testid="chat-input"]')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(input, '问题')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      host.querySelector<HTMLButtonElement>('[data-testid="chat-send"]')?.click()
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(h.api.startChat).toHaveBeenCalled())
+    expect(host.querySelector('[data-testid="sidebar-error"]')?.textContent).toContain('合并范围保存失败')
+  })
+
+  it('最后一页禁用合并按钮', async () => {
+    const h = makeHarness()
+    window.api = h.api as never
+    const last = { ...first, page: 100, totalPages: 100 }
+    await act(async () => {
+      root = createRoot(host)
+      root.render(createElement(Sidebar, { book, engine: h.engine, visible: last, toc: [], selection: null }))
+      await Promise.resolve()
+    })
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="merge-next-page"]')?.disabled).toBe(true)
+  })
+
+  it('模型响应进行中禁用新对话按钮,不触发确认或删除', () => {
+    const onNewConversation = vi.fn()
+    const chat = {
+      messages: [], streaming: '', error: null, send: vi.fn(async () => {}), stop: vi.fn(),
+      retry: vi.fn(async () => {}), setMessages: vi.fn()
+    } as unknown as ChatState
+    act(() => {
+      root = createRoot(host)
+      root.render(createElement(ConversationView, { chat, quotes: [], onRemoveQuote: vi.fn(), onNewConversation }))
+    })
+    const button = host.querySelector<HTMLButtonElement>('[data-testid="new-conversation"]')!
+    expect(button.disabled).toBe(true)
+    button.click()
+    expect(onNewConversation).not.toHaveBeenCalled()
   })
 })

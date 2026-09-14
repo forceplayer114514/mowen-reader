@@ -183,7 +183,7 @@ afterEach(() => {
 })
 
 describe('高亮与 epub.js 标注表', () => {
-  it('收回双页后内部前进一次,停在第二页而不是起始页', async () => {
+  it('setSpread 只负责收回双页并回到当前起点,前进由 ReaderView 决定', async () => {
     const f = createFakeEpub()
     const engine = await openEngine()
     f.displayTargets.length = 0
@@ -191,7 +191,7 @@ describe('高亮与 epub.js 标注表', () => {
     f.displayTargets.length = 0
     await engine.setSpread(false)
     expect(f.displayTargets).toEqual(['epubcfi(/6/4!/4/2/2/1:0)'])
-    expect(f.nextCalls).toHaveBeenCalledTimes(1)
+    expect(f.nextCalls).not.toHaveBeenCalled()
     engine.destroy()
   })
 

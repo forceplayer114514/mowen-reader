@@ -151,7 +151,11 @@ export default function Sidebar({
     onConversationCreated: async (id, createdMergedEndCfi) => {
       setConversationId(id)
       if (createdMergedEndCfi) {
-        await window.api.setConversationMerge(id, createdMergedEndCfi)
+        try {
+          await window.api.setConversationMerge(id, createdMergedEndCfi)
+        } catch {
+          setError('合并范围保存失败,当前对话仍会继续发送')
+        }
       }
       void loadConversations()
     },
@@ -310,7 +314,10 @@ export default function Sidebar({
         </div>
         {error && <div className="chat-error" data-testid="sidebar-error">{error}</div>}
         {visible && engine && (
-          <MergeButton disabled={spread} onClick={() => void mergeNextPage()} />
+          <MergeButton
+            disabled={spread || (visible.totalPages > 0 && visible.page >= visible.totalPages)}
+            onClick={() => void mergeNextPage()}
+          />
         )}
         <ConversationView
           chat={chat}

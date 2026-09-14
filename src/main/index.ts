@@ -20,7 +20,7 @@ function createWindow(): void {
     }
   })
 
-  win.once('ready-to-show', () => win.show())
+  if (!process.env.READER_E2E) win.once('ready-to-show', () => win.show())
 
   if (process.env.ELECTRON_RENDERER_URL) {
     void win.loadURL(process.env.ELECTRON_RENDERER_URL)

@@ -64,7 +64,6 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   const pendingRemovals = new Set<string>()
   // 当前主题。加高亮时要按它取配色,所以不能只交给 rendition.themes 自己记。
   let theme: ThemeName = 'light'
-  let spreadEnabled = false
   let locationsReady = false
   // 每次 open()/destroy() 自增一次,给这次调用发出的所有异步延续盖一个“批次号”。
   // 延续恢复执行时先比对批次号,号不一样说明这次 open 已经被下一次 open 或 destroy 取代,
@@ -610,7 +609,6 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     // 只会对着不存在的范围做删除。
     pendingRemovals.clear()
     locationsReady = false
-    spreadEnabled = false
   }
 
   return {
@@ -724,16 +722,10 @@ export function createEngine(container: HTMLElement): ReaderEngine {
 
     async setSpread(on: boolean): Promise<void> {
       if (!rendition) return
-      const collapsingSpread = !on && spreadEnabled
       const cfi = rendition.location?.start?.cfi
       rendition.spread(on ? 'auto' : 'none')
       // 切换后当前位置需要重新落位,否则可能停在半页。
       if (cfi) await rendition.display(cfi)
-      // epub.js's display(start) is deterministic but returns to the first
-      // page of a merged spread. Advance once internally after collapsing so
-      // the public first-next action still lands on the former second page.
-      if (collapsingSpread) await rendition.next()
-      spreadEnabled = on
     },
 
     setFontSize(px: number): void {
