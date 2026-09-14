@@ -72,3 +72,5 @@ export function createSelectionStore(engine: ReaderEngine): {
     }
   }
 }
+
+export type SelectionStore = ReturnType<typeof createSelectionStore>

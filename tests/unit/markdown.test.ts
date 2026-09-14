@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { renderMarkdown } from '../../src/renderer/chat/markdown'
 
@@ -69,5 +71,22 @@ describe('Markdown 渲染', () => {
     const html = renderMarkdown('<a href="&#106;avascript:alert(1)">点我</a>')
     expect(html).not.toContain('javascript:')
     expect(html).not.toContain('href')
+  })
+
+  it('表单和 style 属性都被消毒', () => {
+    const html = renderMarkdown('<form><input type="password"></form><p style="background:url(https://tracker.invalid/pixel)">字</p>')
+    expect(html).not.toContain('<form')
+    expect(html).not.toContain('type="password"')
+    expect(html).not.toContain('style=')
+  })
+
+  it('远程图片不保留 src,不会触发远程资源请求', () => {
+    const html = renderMarkdown('![追踪](https://tracker.invalid/pixel.png)')
+    expect(html).not.toContain('https://tracker.invalid')
+  })
+
+  it('渲染窗口的 CSP 只允许本地和 data 图片', () => {
+    const html = readFileSync(resolve(process.cwd(), 'src/renderer/index.html'), 'utf8')
+    expect(html).toContain("img-src 'self' data:")
   })
 })

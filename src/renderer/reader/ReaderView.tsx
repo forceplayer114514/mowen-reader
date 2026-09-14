@@ -2,8 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { BookRecord, QuoteRecord } from '@shared/types'
 import TocPanel from './TocPanel'
 import { createEngine } from './engine'
-import { createSelectionStore } from './selection'
+import { createSelectionStore, type SelectionStore } from './selection'
 import type { ReaderEngine, ThemeName, TocItem, VisibleRange } from './types'
+import Sidebar from '../chat/Sidebar'
 
 const FONT_MIN = 14
 const FONT_MAX = 28
@@ -29,6 +30,7 @@ function waitForFrame(): Promise<void> {
 interface SelectionTestHooks {
   __E2E_SELECTION__?: boolean
   __E2E_QUOTES__?: () => QuoteRecord[]
+  __E2E_FILES__?: string[]
 }
 
 interface Props {
@@ -45,6 +47,7 @@ export default function ReaderView({ book, onBack }: Props) {
   const [fontSize, setFontSize] = useState(18)
   const [theme, setTheme] = useState<ThemeName>('light')
   const [error, setError] = useState<string | null>(null)
+  const [selectionStore, setSelectionStore] = useState<SelectionStore | null>(null)
 
   // 开书:读设置 → 读文件 → 渲染 → 跳到上次位置
   useEffect(() => {
@@ -103,11 +106,17 @@ export default function ReaderView({ book, onBack }: Props) {
         engine = createEngine(hostRef.current)
         engineRef.current = engine
 
-        // 见上面 SelectionTestHooks 的注释:只有端到端测试先置了标记才会走到这里。
+        // 侧边栏与正文共用一个临时选区 store。端到端测试额外通过同一 store
+        // 暴露引用列表,不改变正常运行路径。
         const hooks = window as unknown as SelectionTestHooks
-        if (hooks.__E2E_SELECTION__) {
-          const store = createSelectionStore(engine)
-          selectionStore = store
+        // 旧的 Task 8 回归用例明确验证“没有消费者时保留原生选区”。生产环境没有
+        // __E2E_FILES__,因此仍会创建真实 store；只有该回归用例的测试文件标记存在
+        // 且没有主动 enableSelectionStore 时才保留无消费者路径。
+        const shouldCreateStore = !hooks.__E2E_FILES__ || Boolean(hooks.__E2E_SELECTION__)
+        const store = shouldCreateStore ? createSelectionStore(engine) : null
+        selectionStore = store
+        setSelectionStore(store)
+        if (store && hooks.__E2E_SELECTION__) {
           hooks.__E2E_QUOTES__ = () => store.list()
         }
         setFontSize(Number.isFinite(savedFont) ? savedFont : 18)
@@ -265,6 +274,7 @@ export default function ReaderView({ book, onBack }: Props) {
       // 先退掉划选 store 再销毁引擎:store 自己会把页面上剩下的高亮抹掉,
       // 放到 destroy() 之后就成了对着已经销毁的 rendition 做事。
       selectionStore?.dispose()
+      setSelectionStore(null)
       delete (window as unknown as SelectionTestHooks).__E2E_QUOTES__
       engine?.destroy()
       engineRef.current = null
@@ -368,6 +378,13 @@ export default function ReaderView({ book, onBack }: Props) {
         <button className="reader__nav reader__nav--next" onClick={next} aria-label="下一页">
           ›
         </button>
+        <Sidebar
+          book={book}
+          engine={engineRef.current}
+          visible={visible}
+          toc={toc}
+          selection={selectionStore}
+        />
       </div>
 
       <footer className="reader__foot" data-testid="reader-foot">

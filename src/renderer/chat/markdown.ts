@@ -1,6 +1,17 @@
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 
+DOMPurify.addHook('uponSanitizeAttribute', (node, data) => {
+  if (node.nodeName !== 'IMG' || data.attrName !== 'src') return
+  if (data.attrValue.startsWith('data:') || data.attrValue.startsWith('/')) return
+  try {
+    if (new URL(data.attrValue, document.baseURI).origin === location.origin) return
+  } catch {
+    // Invalid URLs are not local resources.
+  }
+  data.keepAttr = false
+})
+
 /**
  * 把模型输出的 Markdown 渲染成 HTML,并消毒。
  *
@@ -10,5 +21,10 @@ import { marked } from 'marked'
  */
 export function renderMarkdown(text: string): string {
   const raw = marked.parse(text, { async: false }) as string
-  return DOMPurify.sanitize(raw, { USE_PROFILES: { html: true } })
+  return DOMPurify.sanitize(raw, {
+    USE_PROFILES: { html: true },
+    // 表单控件也一起禁掉:只移除外层 form 仍会留下可见密码框。
+    FORBID_TAGS: ['form', 'input', 'button', 'textarea', 'select', 'option'],
+    FORBID_ATTR: ['style']
+  })
 }
