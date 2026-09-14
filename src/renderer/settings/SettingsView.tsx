@@ -39,6 +39,7 @@ export default function SettingsView({ onBack }: Props) {
   } | null>(null)
 
   useEffect(() => {
+    mounted.current = true
     let cancelled = false
     void Promise.all([
       window.api.getSetting(SETTING_KEYS.endpoint),

@@ -193,6 +193,29 @@ describe('Task 12 设置与对话管理', () => {
     expect(host.querySelector<HTMLButtonElement>('[data-testid="settings-test"]')?.textContent).toContain('测试连接')
   })
 
+  it('StrictMode 双 effect 后仍可清除密钥并测试连接', async () => {
+    const api = settingsApi()
+    window.api = api as never
+    await act(async () => {
+      root = createRoot(host)
+      root.render(createElement(StrictMode, null, createElement(SettingsView, { onBack: vi.fn() })))
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="settings-endpoint"]')).not.toBeNull())
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="settings-clear"]')?.click()
+      await Promise.resolve()
+    })
+    expect(api.clearApiKey).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      fill('settings-endpoint', 'https://api.example/v1')
+      fill('settings-model', 'model')
+      host.querySelector<HTMLButtonElement>('[data-testid="settings-test"]')?.click()
+      await Promise.resolve()
+    })
+    expect(api.startChat).toHaveBeenCalledTimes(1)
+  })
+
   it('按书分组并批量删除时确认消息会说明连同消息删除', async () => {
     const rows: ConversationWithBook[] = [
       { id: 'a', bookId: 'book-a', bookTitle: '甲书', startCfi: 'a', endCfi: 'b', mergedEndCfi: null, chapterLabel: '第一章', excerpt: '开头', createdAt: Date.now(), messageCount: 2 },
