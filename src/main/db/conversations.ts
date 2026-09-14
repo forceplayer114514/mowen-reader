@@ -1,4 +1,5 @@
 import type {
+  ConversationWithBook,
   ConversationRecord,
   ConversationWithCount,
   MessageRecord,
@@ -93,6 +94,24 @@ export function listConversations(db: Db, bookId: string): ConversationWithCount
     )
     .all(bookId) as unknown as (ConvRow & { message_count: number })[]
   return rows.map((row) => ({ ...toConv(row), messageCount: row.message_count }))
+}
+
+export function listAllConversations(db: Db): ConversationWithBook[] {
+  const rows = db
+    .prepare(
+      `SELECT c.id, c.book_id, c.start_cfi, c.end_cfi, c.merged_end_cfi,
+              c.chapter_label, c.excerpt, c.created_at, b.title AS book_title,
+              (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count
+         FROM conversations c
+         JOIN books b ON b.id = c.book_id
+        ORDER BY b.title COLLATE NOCASE ASC, c.created_at ASC`
+    )
+    .all() as unknown as (ConvRow & { book_title: string; message_count: number })[]
+  return rows.map((row) => ({
+    ...toConv(row),
+    messageCount: row.message_count,
+    bookTitle: row.book_title
+  }))
 }
 
 export function countConversations(db: Db, bookId: string): number {

@@ -57,6 +57,128 @@ button:hover {
   margin-bottom: 20px;
 }
 
+.settings,
+.conversations {
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.settings__header,
+.conversations__header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 16px;
+}
+
+.settings__header h1,
+.conversations__header h1 {
+  font-size: 20px;
+  margin: 0;
+}
+
+.settings__form {
+  display: grid;
+  gap: 16px;
+  width: min(680px, 100%);
+  margin-top: 24px;
+}
+
+.settings__form label {
+  display: grid;
+  gap: 6px;
+}
+
+.settings__form input,
+.settings__form textarea {
+  width: 100%;
+  color: var(--fg);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px;
+  font: inherit;
+}
+
+.settings__form textarea {
+  resize: vertical;
+  user-select: text;
+}
+
+.settings__form small,
+.settings__hint {
+  color: var(--fg-muted);
+}
+
+.settings__form label > button {
+  justify-self: start;
+}
+
+.settings__actions {
+  display: flex;
+  gap: 10px;
+}
+
+.conversations__header {
+  margin-bottom: 16px;
+}
+
+.conversations__header button:last-child {
+  margin-left: auto;
+}
+
+.conversations__error {
+  color: var(--danger);
+}
+
+.conversations__select-all,
+.conversation-group__select,
+.conversation-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.conversations__select-all {
+  margin: 12px 0 20px;
+}
+
+.conversation-group {
+  max-width: 900px;
+  margin-bottom: 24px;
+}
+
+.conversation-group h2 {
+  font-size: 16px;
+  margin: 0 0 8px;
+}
+
+.conversation-group__select {
+  color: var(--fg-muted);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.conversation-row {
+  padding: 10px 8px;
+  border-top: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+}
+
+.conversation-row__text {
+  display: flex;
+  flex: 1;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.conversation-row small {
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
 .library__status {
   color: var(--fg-muted);
   font-size: 12px;

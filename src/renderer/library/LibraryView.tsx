@@ -4,11 +4,13 @@ import { extractMetadata } from '../reader/metadata'
 
 interface Props {
   onOpenBook: (book: BookRecord) => void
+  onOpenSettings?: () => void
+  onOpenConversations?: () => void
 }
 
 type Stager = (sourcePaths: string[]) => Promise<ImportedFile[]>
 
-export default function LibraryView({ onOpenBook }: Props) {
+export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversations }: Props) {
   const [books, setBooks] = useState<BookRecord[]>([])
   const [busy, setBusy] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
@@ -216,6 +218,12 @@ export default function LibraryView({ onOpenBook }: Props) {
         </button>
         <button onClick={onPickFolder} data-testid="pick-folder">
           扫描文件夹
+        </button>
+        <button type="button" data-testid="open-conversations" onClick={onOpenConversations}>
+          对话管理
+        </button>
+        <button type="button" data-testid="open-settings" onClick={onOpenSettings}>
+          设置
         </button>
         {busy && <span className="library__status">{busy}…</span>}
         {error && <span style={{ color: 'var(--danger)' }}>{error}</span>}

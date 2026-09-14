@@ -7,6 +7,7 @@ import {
   getConversation,
   insertConversation,
   insertMessage,
+  listAllConversations,
   listConversations,
   listMessages,
   updateConversationMerge
@@ -84,6 +85,20 @@ describe('对话表', () => {
     insertConversation(db, conv('本书'))
     insertConversation(db, conv('别的书', { bookId: '书2' }))
     expect(listConversations(db, '书1').map((c) => c.id)).toEqual(['本书'])
+    db.close()
+  })
+
+  it('全量列表带书名并按书分组所需字段返回', () => {
+    const db = openDatabase(':memory:')
+    seedBook(db, '书1')
+    seedBook(db, '书2')
+    insertConversation(db, conv('a', { createdAt: 20 }))
+    insertConversation(db, conv('b', { bookId: '书2', createdAt: 10 }))
+    const got = listAllConversations(db)
+    expect(got.map((item) => [item.bookId, item.bookTitle, item.id])).toEqual([
+      ['书1', '书-书1', 'a'],
+      ['书2', '书-书2', 'b']
+    ])
     db.close()
   })
 

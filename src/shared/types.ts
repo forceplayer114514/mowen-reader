@@ -56,6 +56,10 @@ export interface ConversationWithCount extends ConversationRecord {
   messageCount: number
 }
 
+export interface ConversationWithBook extends ConversationWithCount {
+  bookTitle: string
+}
+
 export interface CreateConversationInput {
   bookId: string
   startCfi: string

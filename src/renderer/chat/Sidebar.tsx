@@ -13,6 +13,7 @@ import ConversationView from './ConversationView'
 import HistoryList from './HistoryList'
 import MergeButton from './MergeButton'
 import { useChat } from './useChat'
+import { DEFAULT_CONTEXT_LIMIT, DEFAULT_SYSTEM_PROMPT } from '../settings/defaults'
 
 interface Props {
   book: BookRecord
@@ -24,8 +25,6 @@ interface Props {
   spread?: boolean
   onSetSpread?: (on: boolean) => Promise<void>
 }
-
-const DEFAULT_PROMPT = '请用简体中文回答，不剧透后文，回答简洁。'
 
 export function mergeLoadedMessages(
   loaded: MessageRecord[],
@@ -56,8 +55,8 @@ export default function Sidebar({
   const [conversations, setConversations] = useState<ConversationWithCount[]>([])
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [quotes, setQuotes] = useState<QuoteRecord[]>([])
-  const [systemPrompt, setSystemPrompt] = useState(DEFAULT_PROMPT)
-  const [contextLimit, setContextLimit] = useState(8000)
+  const [systemPrompt, setSystemPrompt] = useState(DEFAULT_SYSTEM_PROMPT)
+  const [contextLimit, setContextLimit] = useState(DEFAULT_CONTEXT_LIMIT)
   const [width, setWidth] = useState(340)
   const [collapsed, setCollapsed] = useState(false)
   const [conversationEndCfi, setConversationEndCfi] = useState<string | null>(null)

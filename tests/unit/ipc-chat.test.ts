@@ -151,6 +151,19 @@ describe('secrets:setApiKey 把密钥绑到当时的接口地址上', () => {
   })
 })
 
+describe('secrets:hasApiKey 只报告绑定到当前接口的密钥', () => {
+  it('当前接口地址未改变时为已设置', () => {
+    call('secrets:setApiKey', null, 'sk-当前接口')
+    expect(call('secrets:hasApiKey', null)).toBe(true)
+  })
+
+  it('接口地址改变后必须重新填写密钥', () => {
+    call('secrets:setApiKey', null, 'sk-当前接口')
+    call('settings:set', null, 'llmEndpoint', 'https://other.example/v1')
+    expect(call('secrets:hasApiKey', null)).toBe(false)
+  })
+})
+
 describe('chat:start 在取密钥之前先核对接口地址', () => {
   it('地址没变时正常发起请求,密钥进的是请求参数而不是返回值', async () => {
     call('secrets:setApiKey', null, 'sk-真的密钥')

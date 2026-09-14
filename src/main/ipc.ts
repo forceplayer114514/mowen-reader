@@ -32,6 +32,7 @@ import {
   deleteConversations,
   insertConversation,
   insertMessage,
+  listAllConversations,
   listConversations,
   listMessages,
   updateConversationMerge
@@ -45,7 +46,7 @@ import {
 import { streamChat } from './llm/client'
 import { bindSessionLifecycle, createSessionRegistry } from './llm/session'
 import { dbFile } from './paths'
-import { clearApiKey, hasApiKey, readApiKey, setApiKey } from './secrets'
+import { clearApiKey, readApiKey, setApiKey } from './secrets'
 
 let db: Db | null = null
 
@@ -221,9 +222,12 @@ export function registerIpc(): void {
     setSetting(database(), key, value)
   })
 
-  ipcMain.handle('chat:listConversations', (_e, bookId: string) =>
-    listConversations(database(), bookId)
-  )
+  ipcMain.handle('chat:listConversations', (_e, bookId: string) => {
+    if (typeof bookId !== 'string') throw new Error('书籍 id 无效')
+    return listConversations(database(), bookId)
+  })
+
+  ipcMain.handle('chat:listAllConversations', () => listAllConversations(database()))
 
   ipcMain.handle(
     'chat:createConversation',
@@ -249,6 +253,9 @@ export function registerIpc(): void {
   })
 
   ipcMain.handle('chat:deleteConversations', (_e, ids: string[]) => {
+    if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string')) {
+      throw new Error('对话 id 无效')
+    }
     deleteConversations(database(), ids)
   })
 
@@ -270,7 +277,17 @@ export function registerIpc(): void {
   })
 
   // 只回答有没有设过。任何返回密钥内容的通道都是违规的。
-  ipcMain.handle('secrets:hasApiKey', () => hasApiKey())
+  ipcMain.handle('secrets:hasApiKey', () => {
+    const endpoint = getSetting(database(), 'llmEndpoint') ?? ''
+    if (!endpoint) return false
+    try {
+      assertSafeLlmEndpoint(endpoint)
+      const stored = readApiKey()
+      return stored?.origin === llmEndpointOrigin(endpoint)
+    } catch {
+      return false
+    }
+  })
 
   // 存密钥时把"此刻设置里的接口地址"一起锁进同一份密文。用户实际的填写顺序
   // 就是先地址后密钥,所以这里要求地址必须已经填好——没有地址就没有可以

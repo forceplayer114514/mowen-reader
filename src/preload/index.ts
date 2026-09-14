@@ -4,6 +4,7 @@ import type {
   BookRecord,
   ChatDoneResult,
   ConversationRecord,
+  ConversationWithBook,
   ConversationWithCount,
   CreateConversationInput,
   FinishImportInput,
@@ -50,6 +51,8 @@ const api = {
 
   listConversations: (bookId: string): Promise<ConversationWithCount[]> =>
     ipcRenderer.invoke('chat:listConversations', bookId),
+  listAllConversations: (): Promise<ConversationWithBook[]> =>
+    ipcRenderer.invoke('chat:listAllConversations'),
   createConversation: (input: CreateConversationInput): Promise<ConversationRecord> =>
     ipcRenderer.invoke('chat:createConversation', input),
   setConversationMerge: (id: string, mergedEndCfi: string | null): Promise<void> =>
