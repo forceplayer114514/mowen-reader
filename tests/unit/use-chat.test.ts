@@ -28,8 +28,12 @@ function message(conversationId: string, role: 'user' | 'assistant', content: st
 function apiHarness() {
   let chunk: ((id: string, text: string) => void) | null = null
   let done: ((id: string, result: { status: 'finished' | 'error'; message?: string }) => void) | null = null
+  const startInputs: { messages: { role: string; content: string }[] }[] = []
   const abortChat = vi.fn(async () => {})
-  const startChat = vi.fn(async () => 'request-1')
+  const startChat = vi.fn(async (input: { messages: { role: string; content: string }[] }) => {
+    startInputs.push(input)
+    return `request-${startInputs.length}`
+  })
   const deleteConversations = vi.fn(async () => {})
   const listConversations = vi.fn(async () => [] as ConversationWithCount[])
   const listMessages = vi.fn(async () => [] as MessageRecord[])
@@ -52,7 +56,7 @@ function apiHarness() {
     onChatChunk: vi.fn((cb: typeof chunk) => { chunk = cb; return () => { chunk = null } }),
     onChatDone: vi.fn((cb: typeof done) => { done = cb; return () => { done = null } })
   }
-  return { api, createConversation, appendMessage, startChat, abortChat, deleteConversations, listConversations, listMessages, getSetting, emitChunk: (id: string, text: string) => chunk?.(id, text), emitDone: (id: string) => done?.(id, { status: 'finished' }) }
+  return { api, createConversation, appendMessage, startChat, startInputs, abortChat, deleteConversations, listConversations, listMessages, getSetting, emitChunk: (id: string, text: string) => chunk?.(id, text), emitDone: (id: string) => done?.(id, { status: 'finished' }) }
 }
 
 function args(over: Partial<UseChatArgs> = {}): UseChatArgs {
@@ -306,6 +310,39 @@ describe('useChat 生命周期', () => {
     expect(h.startChat).toHaveBeenCalledTimes(2)
   })
 
+  it('stop 后保留已收到的回答,后续请求上下文包含 partial', async () => {
+    const h = apiHarness()
+    window.api = h.api as never
+    currentArgs = args()
+    await act(async () => { root = createRoot(host); root.render(createElement(Harness)); await Promise.resolve() })
+    await act(async () => { void state.send('第一个问题'); await Promise.resolve() })
+    await act(async () => { h.emitChunk('request-1', '回答的一半'); state.stop(); await Promise.resolve() })
+    expect(state.streaming).toBeNull()
+    await act(async () => { h.emitDone('request-1'); await Promise.resolve() })
+    await vi.waitFor(() => expect(h.appendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      role: 'assistant', content: '回答的一半'
+    })))
+    await vi.waitFor(() => expect(state.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'assistant', content: '回答的一半' })
+    ])))
+
+    await act(async () => { await state.send('第二个问题') })
+    expect(h.startInputs.at(-1)?.messages).toEqual(expect.arrayContaining([
+      { role: 'assistant', content: '回答的一半' }
+    ]))
+  })
+
+  it('清理空对话失败时显示中文错误', async () => {
+    const h = apiHarness()
+    h.appendMessage.mockRejectedValueOnce(new Error('append failed'))
+    h.deleteConversations.mockRejectedValueOnce(new Error('delete failed'))
+    window.api = h.api as never
+    currentArgs = args({ conversationId: null })
+    await act(async () => { root = createRoot(host); root.render(createElement(Harness)); await Promise.resolve() })
+    await act(async () => { await state.send('问题') })
+    await vi.waitFor(() => expect(state.error).toContain('空对话删除失败'))
+  })
+
   it('切换会话后清掉旧失败,重试不会再次启动旧请求', async () => {
     const h = apiHarness()
     h.startChat.mockRejectedValueOnce(new Error('start failed'))
@@ -379,6 +416,73 @@ describe('useChat 生命周期', () => {
     await vi.waitFor(() => expect(h.appendMessage).toHaveBeenLastCalledWith(expect.objectContaining({ role: 'assistant' })))
     await act(async () => { resolveMessages([]); await Promise.resolve() })
     expect(host.querySelectorAll('[data-testid="message-assistant"]').length).toBe(1)
+  })
+
+  it('Sidebar 的旧对话列表响应不会覆盖新建后的列表或中止新请求', async () => {
+    const h = apiHarness()
+    let resolveInitial!: (items: ConversationWithCount[]) => void
+    let resolveRefresh!: (items: ConversationWithCount[]) => void
+    const oldConversation = {
+      id: 'conversation-old', bookId: 'book', startCfi: visible.startCfi, endCfi: visible.endCfi,
+      mergedEndCfi: null, chapterLabel: visible.chapterLabel, excerpt: '旧', createdAt: 1, messageCount: 1
+    }
+    const newConversation = {
+      id: 'conversation-new', bookId: 'book', startCfi: visible.startCfi, endCfi: visible.endCfi,
+      mergedEndCfi: null, chapterLabel: visible.chapterLabel, excerpt: '新', createdAt: 2, messageCount: 1
+    }
+    h.listConversations
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveInitial = resolve }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveRefresh = resolve }))
+    window.api = h.api as never
+    const book = args().book
+    await act(async () => {
+      root = createRoot(host)
+      root.render(createElement(Sidebar, { book, engine: null, visible, toc: [], selection: null }))
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(h.listConversations).toHaveBeenCalledTimes(1))
+
+    const input = host.querySelector('[data-testid="chat-input"]') as HTMLTextAreaElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(input, '问题')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      await Promise.resolve()
+      host.querySelector<HTMLButtonElement>('[data-testid="chat-send"]')?.click()
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(h.listConversations).toHaveBeenCalledTimes(2))
+    await act(async () => { resolveRefresh([newConversation]); await Promise.resolve() })
+    await act(async () => { resolveInitial([oldConversation]); await Promise.resolve() })
+
+    expect(h.abortChat).not.toHaveBeenCalled()
+    expect(host.querySelector('[data-testid="all-conversations"]')?.textContent).toContain('1 条')
+    expect(host.querySelector('[data-testid="all-conversations"]')?.textContent).not.toContain('2 条')
+    expect(host.querySelectorAll('[data-testid="history-entry"]').length).toBe(0)
+  })
+
+  it('新对话删除失败时在 Sidebar 显示中文错误', async () => {
+    const h = apiHarness()
+    const conversation = {
+      id: 'conversation-a', bookId: 'book', startCfi: visible.startCfi, endCfi: visible.endCfi,
+      mergedEndCfi: null, chapterLabel: visible.chapterLabel, excerpt: visible.text,
+      createdAt: Date.now(), messageCount: 1
+    }
+    h.listConversations.mockResolvedValueOnce([conversation])
+    h.listMessages.mockResolvedValueOnce([message('conversation-a', 'user', '旧问题')])
+    h.deleteConversations.mockRejectedValueOnce(new Error('delete failed'))
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    window.api = h.api as never
+    const book = args().book
+    await act(async () => {
+      root = createRoot(host)
+      root.render(createElement(Sidebar, { book, engine: null, visible, toc: [], selection: null }))
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="message-user"]')).not.toBeNull())
+    await act(async () => { host.querySelector<HTMLButtonElement>('[data-testid="new-conversation"]')?.click(); await Promise.resolve() })
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="sidebar-error"]')?.textContent).toContain('对话删除失败'))
+    expect(confirm).toHaveBeenCalled()
+    confirm.mockRestore()
   })
 
   it('加载到空结果时不覆盖已经写入的本地用户消息', () => {

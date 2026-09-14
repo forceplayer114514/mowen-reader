@@ -55,3 +55,17 @@ Verification: `npm run build` passed; `npm test` passed (27 files / 383 tests); 
 Mutation verification: replacing `stop()` with a no-op failed 3 tests; removing conversation/page reset guards failed the corresponding retry tests; replacing message merge with the old snapshot return failed 3 tests. Restoring each guard returned the targeted tests to green.
 
 Verification: `npm run build` passed; `npm test` passed (27 files / 389 tests); `npm run test:e2e` passed (20 tests, 35.3s).
+
+## Fourth independent review fix round (based on HEAD 6275389)
+
+- User stop now keeps the request eligible to commit its accumulated assistant text after `chat:done`, while late chunks and abort errors remain hidden. Switching conversation/page still marks the request non-current, so old output cannot enter the new UI. A subsequent send in the same conversation receives the stopped partial answer in its context.
+- Sidebar conversation loads use a monotonic request sequence and effect cleanup invalidation. Older deferred responses are ignored, so an initial snapshot cannot overwrite a post-create/post-delete refresh or clear the active conversation and abort its new request. Load failures retain the last usable list.
+- Empty-conversation cleanup and `newConversation` deletion now surface Chinese errors with an explicit manual-delete fallback; every rejection is handled. Cleanup errors are only surfaced for the current owner or an explicit user stop.
+- Added real React timing tests for stopped partial persistence/context, stale Sidebar list responses, hook cleanup rejection visibility, and `newConversation` deletion rejection visibility.
+
+Mutation verification:
+
+1. Temporarily made stop mark the request non-current; the partial persistence/context test failed (1 failure). Restored stop ownership; targeted suite passed (21/21).
+2. Temporarily removed the Sidebar request-sequence guard; the stale-response test failed because `abortChat('request-1')` was called. Restored the guard; targeted suite passed (21/21).
+
+Verification: `npm run build` passed; `npm test` passed (27 files / 393 tests); `npm run test:e2e` passed (20 tests, 35.3s).

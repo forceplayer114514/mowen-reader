@@ -28,6 +28,7 @@ export interface ChatState {
 interface Owner {
   token: symbol
   canceled: boolean
+  reportCleanupError: boolean
   createdConversationId: string | null
   userMessagePending: boolean
   userMessageSaved: boolean
@@ -82,7 +83,8 @@ export function useChat(args: UseChatArgs): ChatState {
     })
   }, [isOwner])
 
-  const cleanupCreatedConversation = useCallback((owner: Owner) => {
+  const cleanupCreatedConversation = useCallback((owner: Owner, reportError = false) => {
+    if (reportError) owner.reportCleanupError = true
     if (
       !owner.createdConversationId ||
       owner.userMessagePending ||
@@ -90,10 +92,14 @@ export function useChat(args: UseChatArgs): ChatState {
     ) return
     const id = owner.createdConversationId
     owner.createdConversationId = null
-    void window.api.deleteConversations([id]).catch(() => {})
-  }, [])
+    void window.api.deleteConversations([id]).catch(() => {
+      if (!disposedRef.current && (owner.reportCleanupError || isOwner(owner))) {
+        setError('空对话删除失败，可能仍会保留，请稍后手动删除')
+      }
+    })
+  }, [isOwner])
 
-  const cancelActive = useCallback(() => {
+  const cancelActive = useCallback((preservePartial = false) => {
     generationRef.current += 1
     const owner = ownerRef.current
     if (!owner) return
@@ -102,11 +108,11 @@ export function useChat(args: UseChatArgs): ChatState {
     if (pending?.owner === owner) pending.current = false
     const current = currentRef.current
     if (current?.owner === owner) {
-      current.current = false
+      if (!preservePartial) current.current = false
       abortRequest(current.id, owner)
       currentRef.current = null
     }
-    cleanupCreatedConversation(owner)
+    cleanupCreatedConversation(owner, preservePartial)
     setStreaming(null)
     setError(null)
     release(owner)
@@ -160,7 +166,7 @@ export function useChat(args: UseChatArgs): ChatState {
       const request = requestsRef.current.get(requestId)
       if (!request) return
       request.accumulated += text
-      if (request.current) setStreaming(request.accumulated)
+      if (request.current && !request.owner.canceled) setStreaming(request.accumulated)
     })
     const offDone = window.api.onChatDone((requestId, result) => {
       const request = requestsRef.current.get(requestId)
@@ -168,7 +174,7 @@ export function useChat(args: UseChatArgs): ChatState {
       requestsRef.current.delete(requestId)
       const wasCurrent = request.current
       if (request.current) {
-        if (result.status === 'error') setError(result.message)
+        if (result.status === 'error' && !request.owner.canceled) setError(result.message)
         currentRef.current = null
         setStreaming(null)
       }
@@ -234,6 +240,7 @@ export function useChat(args: UseChatArgs): ChatState {
     const owner: Owner = {
       token: Symbol('chat-run'),
       canceled: false,
+      reportCleanupError: false,
       createdConversationId: null,
       userMessagePending: false,
       userMessageSaved: false
@@ -318,9 +325,9 @@ export function useChat(args: UseChatArgs): ChatState {
       args.clearQuotes()
       await start(assembled.messages, conversationId, owner)
     } catch (error) {
-      owner.userMessagePending = false
-      if (createdConversationId && !userMessageSaved) cleanupCreatedConversation(owner)
       const current = isOwner(owner)
+      owner.userMessagePending = false
+      if (createdConversationId && !userMessageSaved) cleanupCreatedConversation(owner, current)
       release(owner)
       if (current) {
         setStreaming(null)
@@ -344,6 +351,7 @@ export function useChat(args: UseChatArgs): ChatState {
     const owner: Owner = {
       token: Symbol('chat-retry'),
       canceled: false,
+      reportCleanupError: false,
       createdConversationId: null,
       userMessagePending: false,
       userMessageSaved: true
@@ -381,7 +389,7 @@ export function useChat(args: UseChatArgs): ChatState {
   }, [args, isOwner, messages, release, start])
 
   const stop = useCallback(() => {
-    cancelActive()
+    cancelActive(true)
   }, [cancelActive])
 
   return { messages, streaming, error, send, stop, retry, setMessages }

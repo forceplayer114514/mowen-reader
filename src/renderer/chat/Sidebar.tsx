@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   BookRecord,
   ConversationWithCount,
@@ -48,13 +48,15 @@ export default function Sidebar({ book, engine: _engine, visible, toc, selection
   const [width, setWidth] = useState(340)
   const [collapsed, setCollapsed] = useState(false)
   const [showAll, setShowAll] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const conversationsRequestRef = useRef(0)
 
   const loadConversations = useCallback(async () => {
+    const request = ++conversationsRequestRef.current
     try {
-      setConversations(await window.api.listConversations(book.id))
-    } catch {
-      setConversations([])
-    }
+      const loaded = await window.api.listConversations(book.id)
+      if (request === conversationsRequestRef.current) setConversations(loaded)
+    } catch { /* keep the last usable list */ }
   }, [book.id])
 
   useEffect(() => {
@@ -72,6 +74,7 @@ export default function Sidebar({ book, engine: _engine, visible, toc, selection
         setWidth(parsedWidth)
       }
     }).catch(() => {})
+    return () => { conversationsRequestRef.current += 1 }
   }, [loadConversations])
 
   useEffect(() => {
@@ -156,11 +159,14 @@ export default function Sidebar({ book, engine: _engine, visible, toc, selection
   }
 
   function newConversation(): void {
+    setError(null)
     if (chat.messages.length > 0) {
       const keep = window.confirm('保留本页当前对话?')
       if (!keep) {
         if (conversationId) {
-          void window.api.deleteConversations([conversationId]).then(loadConversations).catch(() => {})
+          void window.api.deleteConversations([conversationId])
+            .then(loadConversations)
+            .catch(() => setError('对话删除失败，原对话仍会保留，请稍后重试'))
         }
       }
     }
@@ -207,6 +213,7 @@ export default function Sidebar({ book, engine: _engine, visible, toc, selection
         <div className="sidebar__current-label">
           ● {visible ? `第 ${visible.page} 页(当前)` : '正在加载…'}
         </div>
+        {error && <div className="chat-error" data-testid="sidebar-error">{error}</div>}
         <ConversationView
           chat={chat}
           quotes={quotes}
