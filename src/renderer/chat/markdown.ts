@@ -2,10 +2,15 @@ import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 
 DOMPurify.addHook('uponSanitizeAttribute', (node, data) => {
-  if (node.nodeName !== 'IMG' || data.attrName !== 'src') return
-  if (data.attrValue.startsWith('data:') || data.attrValue.startsWith('/')) return
+  if (node.nodeName !== 'IMG' || (data.attrName !== 'src' && data.attrName !== 'srcset')) return
+  if (data.attrName === 'srcset') {
+    data.keepAttr = false
+    return
+  }
   try {
-    if (new URL(data.attrValue, document.baseURI).origin === location.origin) return
+    const value = data.attrValue.trim()
+    if (value.startsWith('data:image/')) return
+    if (new URL(value, document.baseURI).origin === location.origin) return
   } catch {
     // Invalid URLs are not local resources.
   }

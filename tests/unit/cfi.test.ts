@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { compareCfi, compareCfiPositions, makeRangeCfi } from '../../src/renderer/reader/cfi'
+import { cfiChapterKey, compareCfi, compareCfiPositions, makeRangeCfi } from '../../src/renderer/reader/cfi'
 
 describe('范围 CFI 合成', () => {
+  it('章节身份来自 CFI 包路径而不是显示标题', () => {
+    expect(cfiChapterKey('epubcfi(/6/4!/4/2/2/1:0)')).toBe('6/4')
+    expect(cfiChapterKey('epubcfi(/6/6!/4/2/2/1:0)')).not.toBe('6/4')
+    expect(() => cfiChapterKey('epubcfi(/bad!/4/2/2/1:0)')).toThrow('章节路径无效')
+  })
   it('同一章内的两点合成带逗号的范围', () => {
     const r = makeRangeCfi('epubcfi(/6/4!/4/2/2/1:0)', 'epubcfi(/6/4!/4/2/8/1:12)')
     expect(r).toBe('epubcfi(/6/4!/4/2,/2/1:0,/8/1:12)')

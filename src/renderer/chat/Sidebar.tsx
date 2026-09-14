@@ -6,6 +6,7 @@ import type {
   QuoteRecord
 } from '@shared/types'
 import { conversationsOnPage } from '../reader/anchor'
+import { cfiChapterKey } from '../reader/cfi'
 import type { ReaderEngine, TocItem, VisibleRange } from '../reader/types'
 import type { SelectionStore } from '../reader/selection'
 import ConversationView from './ConversationView'
@@ -21,6 +22,10 @@ interface Props {
 }
 
 const DEFAULT_PROMPT = '请用简体中文回答，不剧透后文，回答简洁。'
+
+export function mergeLoadedMessages(loaded: MessageRecord[], local: MessageRecord[]): MessageRecord[] {
+  return loaded.length === 0 && local.length > 0 ? local : loaded
+}
 
 export default function Sidebar({ book, engine: _engine, visible, toc, selection }: Props) {
   const [conversations, setConversations] = useState<ConversationWithCount[]>([])
@@ -68,12 +73,21 @@ export default function Sidebar({ book, engine: _engine, visible, toc, selection
 
   const chapterConversations = useMemo(() => {
     if (!visible) return []
-    return conversations.filter((conversation) =>
-      visible.chapterLabel
-        ? conversation.chapterLabel === visible.chapterLabel
-        : conversation.chapterLabel === null
-    )
-  }, [conversations, visible])
+    let chapterKey: string
+    try {
+      chapterKey = cfiChapterKey(visible.startCfi)
+    } catch {
+      return []
+    }
+    return conversations.filter((conversation) => {
+      if (conversation.id === conversationId) return false
+      try {
+        return cfiChapterKey(conversation.startCfi) === chapterKey
+      } catch {
+        return false
+      }
+    })
+  }, [conversations, conversationId, visible])
 
   useEffect(() => {
     if (!visible) {
@@ -110,7 +124,9 @@ export default function Sidebar({ book, engine: _engine, visible, toc, selection
     }
     let cancelled = false
     void window.api.listMessages(conversationId).then((messages: MessageRecord[]) => {
-      if (!cancelled) chat.setMessages(messages)
+      // A newly created conversation notifies after its user message is stored, but
+      // keep a local message if an older/empty read races that notification.
+      if (!cancelled) chat.setMessages(mergeLoadedMessages(messages, chat.messages))
     }).catch(() => {
       if (!cancelled) chat.setMessages([])
     })
@@ -121,6 +137,7 @@ export default function Sidebar({ book, engine: _engine, visible, toc, selection
 
   function selectConversation(id: string): void {
     setConversationId(id)
+    chat.setMessages([])
     setShowAll(false)
   }
 
@@ -128,7 +145,9 @@ export default function Sidebar({ book, engine: _engine, visible, toc, selection
     if (chat.messages.length > 0) {
       const keep = window.confirm('保留本页当前对话?')
       if (!keep) {
-        if (conversationId) void window.api.deleteConversations([conversationId]).then(loadConversations)
+        if (conversationId) {
+          void window.api.deleteConversations([conversationId]).then(loadConversations).catch(() => {})
+        }
       }
     }
     setConversationId(null)
@@ -163,7 +182,7 @@ export default function Sidebar({ book, engine: _engine, visible, toc, selection
         data-testid="all-conversations"
         onClick={() => setShowAll(true)}
       >
-        全书对话 {conversations.reduce((sum, item) => sum + item.messageCount, 0)} 条 ▸
+        全书对话 {conversations.length} 条 ▸
       </button>
       <HistoryList
         conversations={chapterConversations}

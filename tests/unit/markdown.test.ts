@@ -85,8 +85,15 @@ describe('Markdown 渲染', () => {
     expect(html).not.toContain('https://tracker.invalid')
   })
 
+  it('协议相对图片和 srcset 都不放行', () => {
+    const html = renderMarkdown('![追踪](//attacker.invalid/pixel.png)\n\n<img src="/local.png" srcset="//attacker.invalid/a 1x">')
+    expect(html).not.toContain('attacker.invalid')
+    expect(html).toContain('src="/local.png"')
+    expect(html).not.toContain('srcset=')
+  })
+
   it('渲染窗口的 CSP 只允许本地和 data 图片', () => {
     const html = readFileSync(resolve(process.cwd(), 'src/renderer/index.html'), 'utf8')
-    expect(html).toContain("img-src 'self' data:")
+    expect(html).toContain("img-src 'self' data: blob:")
   })
 })

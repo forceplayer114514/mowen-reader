@@ -67,6 +67,13 @@ function split(cfi: string): { base: string; part: Part } {
   return { base: inner.slice(0, bang), part: parseSegment(inner.slice(bang + 1)) }
 }
 
+/** 返回 CFI 的章节包路径；不暴露章节标题这种可重复的展示字段。 */
+export function cfiChapterKey(cfi: string): string {
+  const steps = baseSteps(split(cfi).base)
+  if (steps.some((step) => !Number.isSafeInteger(step))) throw new Error(`CFI 章节路径无效:${cfi}`)
+  return steps.join('/')
+}
+
 /**
  * 比较两个 Part 的先后顺序:先按步骤序号逐级比较,序号全部相同时路径短的排在前面,
  * 路径也完全相同时按字符偏移比较。
