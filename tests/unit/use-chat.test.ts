@@ -332,6 +332,32 @@ describe('useChat 生命周期', () => {
     ]))
   })
 
+  it('stop 后翻页再收到 done 只落库旧会话,不进入新页 state', async () => {
+    const h = apiHarness()
+    window.api = h.api as never
+    currentArgs = args({ conversationId: 'conversation-a' })
+    await act(async () => { root = createRoot(host); root.render(createElement(Harness)); await Promise.resolve() })
+    await act(async () => { void state.send('旧页问题'); await Promise.resolve() })
+    await vi.waitFor(() => expect(h.startChat).toHaveBeenCalledWith(expect.anything()))
+    await act(async () => { h.emitChunk('request-1', '旧页回答'); state.stop(); await Promise.resolve() })
+
+    const nextVisible = {
+      ...visible,
+      startCfi: 'epubcfi(/6/6!/4/2/2/1:0)',
+      endCfi: 'epubcfi(/6/6!/4/2/8/1:0)'
+    }
+    currentArgs = args({ conversationId: 'conversation-a', visible: nextVisible })
+    await act(async () => { root.render(createElement(Harness)); await Promise.resolve() })
+    await act(async () => { h.emitDone('request-1'); await Promise.resolve() })
+
+    await vi.waitFor(() => expect(h.appendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      conversationId: 'conversation-a', role: 'assistant', content: '旧页回答'
+    })))
+    expect(state.messages).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'assistant', content: '旧页回答' })
+    ]))
+  })
+
   it('清理空对话失败时显示中文错误', async () => {
     const h = apiHarness()
     h.appendMessage.mockRejectedValueOnce(new Error('append failed'))

@@ -102,7 +102,14 @@ export function useChat(args: UseChatArgs): ChatState {
   const cancelActive = useCallback((preservePartial = false) => {
     generationRef.current += 1
     const owner = ownerRef.current
-    if (!owner) return
+    if (!owner) {
+      for (const request of requestsRef.current.values()) {
+        if (!request.current) continue
+        request.current = false
+        abortRequest(request.id, request.owner)
+      }
+      return
+    }
     owner.canceled = true
     const pending = pendingRef.current
     if (pending?.owner === owner) pending.current = false

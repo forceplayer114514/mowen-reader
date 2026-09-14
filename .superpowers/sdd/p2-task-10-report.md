@@ -69,3 +69,12 @@ Mutation verification:
 2. Temporarily removed the Sidebar request-sequence guard; the stale-response test failed because `abortChat('request-1')` was called. Restored the guard; targeted suite passed (21/21).
 
 Verification: `npm run build` passed; `npm test` passed (27 files / 393 tests); `npm run test:e2e` passed (20 tests, 35.3s).
+
+## Fifth independent review fix round (based on HEAD cddb90d)
+
+- When `stop()` preserves a partial response, it releases the owner while the request remains eligible to persist on `chat:done`. A subsequent conversation/page change with no owner now walks all remaining current requests, marks them non-current, and idempotently aborts them. The late assistant message is still saved to its original conversation but cannot enter the new page's message state.
+- Added a real React hook timing test for the strict `stop → visible change → done` sequence.
+
+Mutation verification: before the no-owner cleanup guard, the new timing test failed because the old assistant appeared in the new page state (1 failure). Restoring the guard returned the targeted suite to green (22/22).
+
+Verification: `npm run build` passed; `npm test` passed (27 files / 394 tests); `npm run test:e2e` passed (20 tests, 35.4s).
