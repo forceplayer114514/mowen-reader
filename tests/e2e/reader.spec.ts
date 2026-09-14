@@ -363,7 +363,8 @@ test('没有人消费划选时,拖选出来的文字不会被清掉', async () =
   await h.page.getByTestId('reader-page').waitFor()
   await waitForLocationsReady(h)
 
-  await slowDragSelectInChapter(h)
+  // 这条用例里没有任何人消费划选,画不出高亮,所以不要求补发的那一下落在高亮里。
+  await slowDragSelectInChapter(h, { clickLandsOnHighlight: false })
   // epub.js 那边的防抖是 250 毫秒,等得比它久,确保"到点之后会不会被清掉"已经发生过。
   await h.page.waitForTimeout(800)
 

@@ -326,13 +326,17 @@ async function dispatchChapterMouse(
  * 之所以只能这样:按下鼠标后指针还落在 sandbox 的 srcdoc iframe 上再 mouse.move,
  * Electron 的调试连接会当场断开、窗口跟着关掉(见上一段)。
  */
-export async function slowDragSelectInChapter(h: Harness): Promise<void> {
-  await dragSelectChapterRange(h, {
-    fromParagraph: 1,
-    fromOffset: 0,
-    toParagraph: 1,
-    toOffset: 24
-  })
+export async function slowDragSelectInChapter(h: Harness, opts: DragOptions = {}): Promise<void> {
+  await dragSelectChapterRange(
+    h,
+    {
+      fromParagraph: 1,
+      fromOffset: 0,
+      toParagraph: 1,
+      toOffset: 24
+    },
+    opts
+  )
 }
 
 /**
@@ -343,16 +347,93 @@ export async function slowDragSelectInChapter(h: Harness): Promise<void> {
  * 一整段六十来个字连一行都填不满,靠折行造不出多行高亮;跨段落是同一件事的另一种
  * 造法——两段之间隔着段间距,整块高亮的外接框中心正好落在那条缝里。
  */
-export async function dragSelectAcrossParagraphs(h: Harness): Promise<void> {
-  await dragSelectChapterRange(h, {
-    fromParagraph: 1,
-    fromOffset: 4,
-    toParagraph: 2,
-    toOffset: 20
-  })
+export async function dragSelectAcrossParagraphs(
+  h: Harness,
+  opts: DragOptions = {}
+): Promise<void> {
+  await dragSelectChapterRange(
+    h,
+    {
+      fromParagraph: 1,
+      fromOffset: 4,
+      toParagraph: 2,
+      toOffset: 20
+    },
+    opts
+  )
 }
 
-async function dragSelectChapterRange(h: Harness, at: ChapterRange): Promise<void> {
+export interface DragOptions {
+  /**
+   * 松手之后补发的那一下 click 必须真的落在刚画出来的高亮的某一行矩形里,默认要求。
+   * 页面上没有任何人消费划选(画不出高亮)的那条用例传 false。
+   */
+  clickLandsOnHighlight?: boolean
+}
+
+/**
+ * 断言这个点真的落在页面上某块高亮的某一行矩形里,不在就当场报错。
+ *
+ * 为什么非要断言:补发那一下 click 的全部意义在于"它要是没被吞掉,就会落进高亮里
+ * 把这次划选取消掉"。没有这一条,坐标算法哪天飘了——比如量到的是另一行、或者偏出
+ * 了矩形右边——这一下会静悄悄地打空,吞噬也就没有任何东西可证明,而整套用例照样
+ * 全绿:上一轮"十六条全绿、功能是坏的"就是这么来的。
+ *
+ * 判定照抄 marks-pane 自己的算法(node_modules/marks-pane/src/events.js 的 contains):
+ * 矩形的位置是外层页面的坐标,派发进去的点是章节文档自己的坐标,两者靠减掉 iframe
+ * 在外层页面里的位置对齐。逐行的矩形要各自比一遍,而不是比整块的外接框——marks-pane
+ * 两关都要过,只过外接框那一关的点它并不认。
+ *
+ * 允许重试几次:marks-pane 的矩形是按正文的 getClientRects() 现算现画的,刚画完那
+ * 一瞬间量到的位置不一定是最终位置。
+ */
+async function assertClickLandsOnHighlight(h: Harness, at: ChapterPoint): Promise<void> {
+  let seen: { top: number; left: number; width: number; height: number }[] = []
+  for (let i = 0; i < 10; i++) {
+    const measured = await h.page.evaluate(
+      ({ selector, at }) => {
+        const frame = document.querySelector<HTMLIFrameElement>(selector)
+        if (!frame) return { ok: false, rects: [] }
+        const offset = frame.getBoundingClientRect()
+        const rects = Array.from(
+          document.querySelectorAll('[data-testid="reader-page"] g.epubjs-hl rect')
+        ).map((r) => {
+          const b = r.getBoundingClientRect()
+          return {
+            top: Math.round(b.top - offset.top),
+            left: Math.round(b.left - offset.left),
+            width: Math.round(b.width),
+            height: Math.round(b.height)
+          }
+        })
+        const ok = rects.some(
+          (r) =>
+            r.top <= at.y &&
+            r.left <= at.x &&
+            r.top + r.height > at.y &&
+            r.left + r.width > at.x
+        )
+        return { ok, rects }
+      },
+      { selector: CHAPTER_FRAME, at }
+    )
+    if (measured.ok) return
+    seen = measured.rects
+    await h.page.waitForTimeout(100)
+  }
+  throw new Error(
+    `松手那个点 (${at.x}, ${at.y}) 没有落在任何一行高亮矩形里,` +
+      `量到的矩形是 ${JSON.stringify(seen)}。` +
+      '这一下 click 打空了:它本该正落在刚画出来的高亮上、不被吞掉就会把这次划选取消掉,' +
+      '打空之后吞噬没有任何东西可证明,用例却照样会绿。'
+  )
+}
+
+async function dragSelectChapterRange(
+  h: Harness,
+  at: ChapterRange,
+  opts: DragOptions = {}
+): Promise<void> {
   await h.page
     .frameLocator(CHAPTER_FRAME)
     .locator('p')
@@ -370,6 +451,8 @@ async function dragSelectChapterRange(h: Harness, at: ChapterRange): Promise<voi
   await selectChapterRange(h, at)
   await h.page.waitForTimeout(50)
   await dispatchChapterMouse(h, 'mouseup', end)
+  // 补发那一下之前先确认它真的落在刚画出来的高亮里,见 assertClickLandsOnHighlight()。
+  if (opts.clickLandsOnHighlight !== false) await assertClickLandsOnHighlight(h, end)
   // 真人拖完一段文字松开鼠标,浏览器紧接着还会在松手那个点上补发一次 click
   // (真机上量到的事件序列就是 mousedown → mouseup → click,三者同一个位置)。
   // 松手那一下已经把这段文字变成了引用、画上了高亮,而补发的这一下正落在这块新
