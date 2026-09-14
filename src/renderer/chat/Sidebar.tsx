@@ -60,6 +60,7 @@ export default function Sidebar({
   const [contextLimit, setContextLimit] = useState(8000)
   const [width, setWidth] = useState(340)
   const [collapsed, setCollapsed] = useState(false)
+  const [conversationEndCfi, setConversationEndCfi] = useState<string | null>(null)
   const [mergedEndCfi, setMergedEndCfi] = useState<string | null>(null)
   const [mergedVisible, setMergedVisible] = useState<VisibleRange | null>(null)
   const [showAll, setShowAll] = useState(false)
@@ -68,6 +69,7 @@ export default function Sidebar({
   const pageKeyRef = useRef(visible ? `${visible.startCfi}|${visible.endCfi}` : '')
   const chatRef = useRef<ReturnType<typeof useChat> | null>(null)
   const mergeInProgressRef = useRef(false)
+  const mergeStartEndRef = useRef<string | null>(null)
   const skipNextPageSelectionRef = useRef(false)
 
   const loadConversations = useCallback(async () => {
@@ -147,6 +149,7 @@ export default function Sidebar({
     systemPrompt,
     contextLimit,
     conversationId,
+    conversationEndCfi,
     mergedEndCfi,
     onConversationCreated: async (id, createdMergedEndCfi) => {
       setConversationId(id)
@@ -190,8 +193,10 @@ export default function Sidebar({
         skipNextPageSelectionRef.current = true
         setConversationId(null)
         chatRef.current?.setMessages([])
+        setConversationEndCfi(null)
         setMergedEndCfi(null)
         setMergedVisible(null)
+        mergeStartEndRef.current = null
         selection?.clear()
       }).catch(() => {})
     })
@@ -249,7 +254,11 @@ export default function Sidebar({
 
   async function mergeNextPage(): Promise<void> {
     if (!engine || spread || mergeInProgressRef.current) return
+    if (!visible) return
+    const originalPageKey = `${visible.startCfi}|${visible.endCfi}`
     mergeInProgressRef.current = true
+    mergeStartEndRef.current = visible.endCfi
+    setConversationEndCfi(visible.endCfi)
     try {
       if (onSetSpread) await onSetSpread(true)
       else await engine.setSpread(true)
@@ -263,11 +272,17 @@ export default function Sidebar({
       }
     } catch {
       setError('合并下一页失败，请稍后重试')
+      setMergedEndCfi(null)
+      setMergedVisible(null)
+      setConversationEndCfi(null)
+      mergeStartEndRef.current = null
       try {
         if (onSetSpread) await onSetSpread(false)
         else await engine.setSpread(false)
       } catch { /* keep the original error */ }
+      pageKeyRef.current = originalPageKey
     } finally {
+      mergeStartEndRef.current = null
       mergeInProgressRef.current = false
     }
   }

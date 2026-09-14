@@ -13,6 +13,31 @@ const MAX_POSITION_VERIFY_ATTEMPTS = 3
 /** 打开书之后一直拿不到一次成功的 getVisible(),等这么久就判定书是真的读不出来。 */
 const VISIBLE_STUCK_TIMEOUT_MS = 5000
 
+export interface RestoreRelocationGate {
+  readonly restoring: boolean
+  finishDisplay(): void
+  consumeRelocation(): boolean
+}
+
+/** Keep the UI in restore mode until epub.js emits the relocation caused by display(). */
+export function createRestoreRelocationGate(active: boolean): RestoreRelocationGate {
+  let restoring = active
+  let awaitingRelocation = false
+  return {
+    get restoring() { return restoring },
+    finishDisplay() {
+      if (!active) return
+      restoring = false
+      awaitingRelocation = true
+    },
+    consumeRelocation() {
+      if (!awaitingRelocation) return false
+      awaitingRelocation = false
+      return true
+    }
+  }
+}
+
 /** 等下一帧再继续——给 epub.js 一点时间把刚创建窗口时还没定型的排版尺寸重新测量一遍。 */
 function waitForFrame(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()))
@@ -128,10 +153,9 @@ export default function ReaderView({ book, onBack }: Props) {
     // 位置往往比 book.lastReadCfi 更靠前,如果照常保存,书签就会被这次没验证通过的
     // 落点悄悄往回带,下次打开再触发一次同样的偏差,一次比一次靠前。这个标记只在
     // 存在 book.lastReadCfi 时才需要置为 true(全新的书没有可恢复的位置,不存在
-    // 这个问题),并且用 try/finally 包住整段恢复流程,不管正常收尾、中途 cancelled
-    // 提前 return 还是抛出异常,都会在 finally 里被清掉,不会卡在 true 上永远
-    // 拒绝保存后续翻页产生的正常进度。
-    let restoringPosition = Boolean(book.lastReadCfi)
+    // 这个问题)。display() resolve 只代表渲染完成,最终 relocated 还在后面的队列里;
+    // restoreGate 会把恢复保护延续到那次通知,避免 Sidebar 在同一事件里误切换对话。
+    const restoreGate = createRestoreRelocationGate(Boolean(book.lastReadCfi))
 
     async function boot(): Promise<void> {
       if (!hostRef.current) return
@@ -173,6 +197,8 @@ export default function ReaderView({ book, onBack }: Props) {
         // 所以提前订阅是安全的。
         let locationsSaved = savedLocations !== null
         unsubscribeRelocated = engine.onRelocated(() => {
+          const completedRestore = restoreGate.consumeRelocation()
+          if (completedRestore) setRestoring(false)
           void engine!.getVisible().then((v) => {
             handleVisible(v)
           }).catch(() => {
@@ -181,10 +207,10 @@ export default function ReaderView({ book, onBack }: Props) {
             // 下面的 stuckTimer 兜底会在几秒后把这个情况变成界面上的错误提示。
           })
           const cfi = engine!.currentCfi()
-          if (cfi && !restoringPosition) {
+          if (cfi && !restoreGate.restoring && !completedRestore) {
             // 存阅读进度失败先静默处理:偶发失败不值得打断阅读体验,下次翻页/
             // relocate 触发时会用最新位置重试,不会残留未处理的 rejection。
-            // restoringPosition 为 true 时这次 relocate 是恢复流程内部的中间落点,
+            // restoreGate.restoring 为 true 时这次 relocate 是恢复流程内部的中间落点,
             // 不是用户翻页翻出来的,不能当成新的阅读位置写回去(见上面变量声明处
             // 的注释)。
             void window.api.saveProgress(book.id, cfi).catch(() => {})
@@ -257,14 +283,9 @@ export default function ReaderView({ book, onBack }: Props) {
             }
           }
         } finally {
-          // 不管上面这段是正常验证完(不管最后是对上了还是重试用完次数放弃)、
-          // 因为 cancelled 提前 return,还是抛出了异常,都要在这里把标记摘掉——
-          // 否则一旦卡在 true 上,后续用户翻页产生的正常阅读进度会被误当成
-          // "恢复中的中间落点"而永远不再保存。restoringPosition 本来就只在
-          // book.lastReadCfi 存在时才是 true,这里无条件清零对新书(本来就是
-          // false)也是安全的空操作。
-          restoringPosition = false
-          setRestoring(false)
+          // display() resolve 早于 epub.js 的最终 relocated。这里仅结束本地位置恢复
+          // 阶段并标记等待通知;UI 的 restoring 要由下一次 onRelocated 清掉。
+          restoreGate.finishDisplay()
         }
 
         // open()/display() 期间位置索引可能已经在 onRelocated 订阅注册之后、

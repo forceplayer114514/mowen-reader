@@ -10,6 +10,7 @@ export interface UseChatArgs {
   systemPrompt: string
   contextLimit: number
   conversationId: string | null
+  conversationEndCfi?: string | null
   mergedEndCfi?: string | null
   onConversationCreated: (id: string, mergedEndCfi?: string | null) => void | Promise<void>
   getQuotes: () => QuoteRecord[]
@@ -294,7 +295,7 @@ export function useChat(args: UseChatArgs): ChatState {
         const created = await window.api.createConversation({
           bookId: args.book.id,
           startCfi: visible.startCfi,
-          endCfi: visible.endCfi,
+          endCfi: args.conversationEndCfi ?? visible.endCfi,
           chapterLabel: visible.chapterLabel,
           excerpt: visible.text.slice(0, 20)
         })

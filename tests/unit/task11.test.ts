@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import { act, createElement } from 'react'
+import { act, createElement, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Sidebar from '../../src/renderer/chat/Sidebar'
 import ConversationView from '../../src/renderer/chat/ConversationView'
 import type { ChatState } from '../../src/renderer/chat/useChat'
+import { createRestoreRelocationGate } from '../../src/renderer/reader/ReaderView'
 import type { ConversationWithCount, MessageRecord } from '../../src/shared/types'
 import type { ReaderEngine, VisibleRange } from '../../src/renderer/reader/types'
 import type { SelectionStore } from '../../src/renderer/reader/selection'
@@ -26,9 +27,9 @@ function message(id: string): MessageRecord {
 }
 
 function makeHarness() {
-  let relocated: (() => void) | null = null
+  const relocated = new Set<() => void>()
   const engine = {
-    onRelocated: vi.fn((cb: () => void) => { relocated = cb; return () => { relocated = null } }),
+    onRelocated: vi.fn((cb: () => void) => { relocated.add(cb); return () => { relocated.delete(cb) } }),
     getVisible: vi.fn(async () => second),
     setSpread: vi.fn(async () => {}),
     onSelected: vi.fn(() => () => {}),
@@ -55,7 +56,15 @@ function makeHarness() {
     onChatChunk: vi.fn(() => () => {}),
     onChatDone: vi.fn(() => () => {})
   }
-  return { engine, api, trigger: () => relocated?.() }
+  return { engine, api, trigger: () => { for (const cb of [...relocated]) cb() } }
+}
+
+function SpreadHarness({ h }: { h: ReturnType<typeof makeHarness> }): React.ReactElement {
+  const [spread, setSpread] = useState(false)
+  return createElement(Sidebar, {
+    book, engine: h.engine, visible: first, toc: [], selection: null, spread,
+    onSetSpread: async (on) => { await h.engine.setSpread(on); setSpread(on) }
+  })
 }
 
 const book = { id: 'book', title: '书', author: null, coverPath: null, filePath: '', sourcePath: '', addedAt: 0, lastReadCfi: null, lastReadAt: null }
@@ -109,10 +118,11 @@ describe('Task 11 侧边栏接线', () => {
     window.api = h.api as never
     await act(async () => {
       root = createRoot(host)
-      root.render(createElement(Sidebar, { book, engine: h.engine, visible: first, toc: [], selection: null }))
+      root.render(createElement(SpreadHarness, { h }))
       await Promise.resolve()
     })
     await act(async () => { host.querySelector<HTMLButtonElement>('[data-testid="merge-next-page"]')?.click(); await Promise.resolve() })
+    await vi.waitFor(() => expect(h.engine.setSpread).toHaveBeenCalledWith(true))
     const input = host.querySelector<HTMLTextAreaElement>('[data-testid="chat-input"]')!
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(input, '问题')
@@ -124,22 +134,79 @@ describe('Task 11 侧边栏接线', () => {
     expect(h.api.setConversationMerge).toHaveBeenCalledWith('new', second.endCfi)
   })
 
+  it('合并写入失败回滚后,新会话不携带旧的合并终点', async () => {
+    const h = makeHarness()
+    h.api.setConversationMerge.mockRejectedValueOnce(new Error('merge failed'))
+    h.api.createConversation.mockResolvedValue({
+      id: 'new', bookId: 'book', startCfi: first.startCfi, endCfi: first.endCfi,
+      mergedEndCfi: null, chapterLabel: first.chapterLabel, excerpt: first.text, createdAt: 1
+    })
+    h.api.appendMessage.mockResolvedValue({ id: 'new-msg', conversationId: 'new', role: 'user', content: '新问题', quotes: [], createdAt: 1 })
+    h.api.startChat.mockResolvedValue('request-new')
+    window.api = h.api as never
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    await act(async () => {
+      root = createRoot(host)
+      root.render(createElement(SpreadHarness, { h }))
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="message-user"]')).not.toBeNull())
+    await act(async () => { host.querySelector<HTMLButtonElement>('[data-testid="merge-next-page"]')?.click(); await Promise.resolve() })
+    await vi.waitFor(() => expect(h.api.setConversationMerge).toHaveBeenCalledWith('old', second.endCfi))
+    await vi.waitFor(() => expect(h.engine.setSpread).toHaveBeenCalledWith(false))
+    await act(async () => { host.querySelector<HTMLButtonElement>('[data-testid="new-conversation"]')?.click(); await Promise.resolve() })
+    const input = host.querySelector<HTMLTextAreaElement>('[data-testid="chat-input"]')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(input, '新问题')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      host.querySelector<HTMLButtonElement>('[data-testid="chat-send"]')?.click()
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(h.api.createConversation).toHaveBeenCalled())
+    expect(h.api.setConversationMerge).toHaveBeenCalledTimes(1)
+    confirm.mockRestore()
+  })
+
   it('恢复 lastReadCfi 期间的 relocation 不切换对话也不清高亮', async () => {
     const h = makeHarness()
+    const gate = createRestoreRelocationGate(true)
     const selection = {
       list: vi.fn(() => []), subscribe: vi.fn(() => () => {}), clear: vi.fn(),
       toggle: vi.fn(), dispose: vi.fn()
     } as unknown as SelectionStore
     window.api = h.api as never
+    let restoring = true
+    const render = () => root.render(createElement(Sidebar, {
+      book, engine: h.engine, visible: first, toc: [], selection, restoring
+    }))
+    h.engine.onRelocated(() => {
+      if (gate.consumeRelocation()) {
+        restoring = false
+        render()
+      }
+    })
     await act(async () => {
       root = createRoot(host)
-      root.render(createElement(Sidebar, {
-        book, engine: h.engine, visible: first, toc: [], selection, restoring: true
-      }))
+      render()
       await Promise.resolve()
     })
     await act(async () => { h.trigger(); await Promise.resolve() })
     expect(selection.clear).not.toHaveBeenCalled()
+    gate.finishDisplay()
+    await act(async () => { h.trigger(); await Promise.resolve() })
+    expect(selection.clear).not.toHaveBeenCalled()
+    await act(async () => { h.trigger(); await Promise.resolve() })
+    await vi.waitFor(() => expect(selection.clear).toHaveBeenCalled())
+  })
+
+  it('恢复 display 完成后只在下一次 relocation 解除恢复保护', () => {
+    const gate = createRestoreRelocationGate(true)
+    expect(gate.restoring).toBe(true)
+    expect(gate.consumeRelocation()).toBe(false)
+    gate.finishDisplay()
+    expect(gate.restoring).toBe(false)
+    expect(gate.consumeRelocation()).toBe(true)
+    expect(gate.consumeRelocation()).toBe(false)
   })
 
   it('空会话点击新对话不弹确认也不删除', async () => {
