@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ConversationWithBook } from '@shared/types'
 
 interface Props {
@@ -19,17 +19,33 @@ export default function ConversationsView({ onBack }: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const requestSequence = useRef(0)
+  const mounted = useRef(true)
 
   const refresh = useCallback(async () => {
+    const request = ++requestSequence.current
     try {
-      setConversations(await window.api.listAllConversations())
+      const rows = await window.api.listAllConversations()
+      if (!mounted.current || request !== requestSequence.current) return
+      setConversations(rows)
+      setSelected((current) => {
+        const valid = new Set(rows.map((row) => row.id))
+        return new Set([...current].filter((id) => valid.has(id)))
+      })
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '对话读取失败')
+      if (mounted.current && request === requestSequence.current) {
+        setError(reason instanceof Error ? reason.message : '对话读取失败')
+      }
     }
-  }, [])
+  }, [mounted, requestSequence])
 
   useEffect(() => {
+    mounted.current = true
     void refresh()
+    return () => {
+      mounted.current = false
+      requestSequence.current += 1
+    }
   }, [refresh])
 
   const groups = useMemo(() => {
@@ -71,12 +87,13 @@ export default function ConversationsView({ onBack }: Props) {
     setError(null)
     try {
       await window.api.deleteConversations(ids)
+      if (!mounted.current) return
       setSelected(new Set())
       await refresh()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '对话删除失败')
+      if (mounted.current) setError(reason instanceof Error ? reason.message : '对话删除失败')
     } finally {
-      setBusy(false)
+      if (mounted.current) setBusy(false)
     }
   }
 
