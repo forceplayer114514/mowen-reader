@@ -283,6 +283,23 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     }
     const onClick = (e: Event): void => {
       disarm()
+      // 光 stopImmediatePropagation() 不够,必须连默认动作一起挡掉。
+      //
+      // 这一下 click 的目标是按下点和松开点的共同祖先。拖选的那段文字整个落在一个
+      // 书内链接里(书自带的目录页、脚注编号、交叉引用的小标题,全是这种形状),
+      // 这个共同祖先就是那个 <a> 本身。epub.js 拦截书内链接的办法是给链接元素挂一个
+      // onclick、在里面返回 false(node_modules/epubjs/src/utils/replacements.js 的
+      // replaceLinks):它是一个**监听器**,被 stopImmediatePropagation() 拦下了,
+      // 所以既不会走它的书内跳转,也不会由它去阻止默认动作;而浏览器自己"点链接就
+      // 跳过去"的默认动作**不是监听器**,停传播停不掉它。结果是章节 iframe 自己跳到
+      // 链接指向的那份原始文档——实测跳完落在一张浏览器错误页上,正文没了,epub.js
+      // 的视图状态还以为停在原处,界面上除了退回书架没有别的出路。
+      //
+      // 这里的语义本来就是"这一下已经被这次划选用掉了,它什么也不该发生",所以
+      // 连默认动作一起挡是这个语义的一部分,而不是额外补的一层。挡掉的只有紧挨着
+      // 松手的这一下:吞噬当场解除,用户过一会儿真去点这个链接,epub.js 那套拦截
+      // 原样还在,照旧走它的书内跳转。
+      e.preventDefault()
       e.stopImmediatePropagation()
     }
     doc.addEventListener('click', onClick, capture)

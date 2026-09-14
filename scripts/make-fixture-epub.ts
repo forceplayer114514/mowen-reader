@@ -448,6 +448,112 @@ export async function buildBareNavFixtureEpub(): Promise<Uint8Array> {
   return zip.generateAsync({ type: 'uint8array' })
 }
 
+// --- 第四个样本:正文段落里带一个指向另一章的链接 ---
+
+const LINK_TITLE = '正文带链接测试书'
+const LINK_AUTHOR = '链接测试作者'
+
+const LINK_CHAPTERS = [
+  { id: 'ch1', title: '第一章 交叉引用', seed: '交叉引用' },
+  { id: 'ch2', title: '第二章 被引到的那一章', seed: '被引到' }
+]
+
+/** 整段文字都躺在一个指向另一章的链接里,拖选它必然整段落在链接上。 */
+const LINK_PARAGRAPH =
+  '<p><a href="ch2.xhtml">这一整段字都在一个指向第二章的链接里面,随手拖选一句就整段落在链接上</a></p>'
+
+/**
+ * 第一章的正文第一段就是一个书内链接。真实的书里这种形状到处都是:书自带的目录页、
+ * 脚注编号、交叉引用的小标题,整段文字都包在一个 <a> 里,而用户照样会去划选它。
+ * 前三个样本的正文里一个链接都没有(只有导航文档里有),所以这种情形一条用例都
+ * 够不到——划选松手之后浏览器补发的那一下 click,目标正是这个 <a>。
+ */
+function linkedChapterXhtml(title: string, seed: string, withLink: boolean): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh-CN">
+<head><title>${title}</title></head>
+<body><h1>${title}</h1>
+${withLink ? `${LINK_PARAGRAPH}\n` : ''}${body(seed)}
+</body></html>`
+}
+
+/**
+ * 只保留验证这一件事所需的最小结构:两章、平铺在 OEBPS 下、一级目录,和最简单的
+ * 那个样本一样,唯一的区别是第一章正文里多了一个指向第二章的链接。和另外三个样本
+ * 一样靠固定时间戳保证字节确定性,互不影响、互不共用状态。
+ */
+export async function buildLinkedFixtureEpub(): Promise<Uint8Array> {
+  const zip = new JSZip()
+
+  zip.file('mimetype', 'application/epub+zip', {
+    compression: 'STORE',
+    date: ENTRY_DATE,
+    createFolders: false
+  })
+
+  zip.file(
+    'META-INF/container.xml',
+    `<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>`,
+    { date: ENTRY_DATE, createFolders: false }
+  )
+
+  const manifest = LINK_CHAPTERS.map(
+    (c) => `<item id="${c.id}" href="${c.id}.xhtml" media-type="application/xhtml+xml"/>`
+  ).join('\n    ')
+  const spine = LINK_CHAPTERS.map((c) => `<itemref idref="${c.id}"/>`).join('\n    ')
+
+  zip.file(
+    'OEBPS/content.opf',
+    `<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">urn:uuid:reader-fixture-linked-0001</dc:identifier>
+    <dc:title>${LINK_TITLE}</dc:title>
+    <dc:creator>${LINK_AUTHOR}</dc:creator>
+    <dc:language>zh-CN</dc:language>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    ${manifest}
+  </manifest>
+  <spine>
+    ${spine}
+  </spine>
+</package>`,
+    { date: ENTRY_DATE, createFolders: false }
+  )
+
+  zip.file(
+    'OEBPS/nav.xhtml',
+    `<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="zh-CN">
+<head><title>目录</title></head>
+<body>
+  <nav epub:type="toc" id="toc">
+    <h1>目录</h1>
+    <ol>
+${LINK_CHAPTERS.map((c) => `      <li><a href="${c.id}.xhtml">${c.title}</a></li>`).join('\n')}
+    </ol>
+  </nav>
+</body></html>`,
+    { date: ENTRY_DATE, createFolders: false }
+  )
+
+  for (const c of LINK_CHAPTERS) {
+    zip.file(`OEBPS/${c.id}.xhtml`, linkedChapterXhtml(c.title, c.seed, c.id === 'ch1'), {
+      date: ENTRY_DATE,
+      createFolders: false
+    })
+  }
+
+  return zip.generateAsync({ type: 'uint8array' })
+}
+
 const isMain = process.argv[1] && resolve(process.argv[1]).endsWith('make-fixture-epub.ts')
 if (isMain) {
   const out = resolve('tests/fixtures/sample.epub')
@@ -462,4 +568,8 @@ if (isMain) {
   const bareOut = resolve('tests/fixtures/sample-barenav.epub')
   writeFileSync(bareOut, await buildBareNavFixtureEpub())
   console.log(`已生成 ${bareOut}`)
+
+  const linkedOut = resolve('tests/fixtures/sample-linked.epub')
+  writeFileSync(linkedOut, await buildLinkedFixtureEpub())
+  console.log(`已生成 ${linkedOut}`)
 }

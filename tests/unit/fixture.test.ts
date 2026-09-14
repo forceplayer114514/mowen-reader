@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildBareNavFixtureEpub,
   buildFixtureEpub,
+  buildLinkedFixtureEpub,
   buildRealisticFixtureEpub
 } from '../../scripts/make-fixture-epub'
 
@@ -155,6 +156,38 @@ describe('导航文档和章节同目录、裸文件名的样本 EPUB', () => {
       const bytes1 = await buildBareNavFixtureEpub()
       await new Promise((r) => setTimeout(r, 2500))
       const bytes2 = await buildBareNavFixtureEpub()
+
+      expect(bytes1.length).toBe(bytes2.length)
+      expect(bytes1).toEqual(bytes2)
+    },
+    15000
+  )
+})
+
+describe('正文里带书内链接的样本 EPUB', () => {
+  it('第一章正文的第一段整段都是一个指向第二章的链接', async () => {
+    const zip = await JSZip.loadAsync(await buildLinkedFixtureEpub())
+    const ch1 = await zip.file('OEBPS/ch1.xhtml')!.async('string')
+    // 整段都在 <a> 里,拖选其中一句必然整段落在链接上——另外三个样本的正文里
+    // 一个链接都没有(只有导航文档里有),所以这种形状一条用例都够不到。
+    expect(ch1).toContain('<p><a href="ch2.xhtml">')
+    const zipped = Object.keys(zip.files)
+    expect(zipped).toContain('OEBPS/ch2.xhtml')
+  })
+
+  it('元数据写的是这个样本约定好的书名和作者', async () => {
+    const zip = await JSZip.loadAsync(await buildLinkedFixtureEpub())
+    const opf = await zip.file('OEBPS/content.opf')!.async('string')
+    expect(opf).toContain('<dc:title>正文带链接测试书</dc:title>')
+    expect(opf).toContain('<dc:creator>链接测试作者</dc:creator>')
+  })
+
+  it(
+    '生成的字节完全相同,确定性和另外三个样本一样成立',
+    async () => {
+      const bytes1 = await buildLinkedFixtureEpub()
+      await new Promise((r) => setTimeout(r, 2500))
+      const bytes2 = await buildLinkedFixtureEpub()
 
       expect(bytes1.length).toBe(bytes2.length)
       expect(bytes1).toEqual(bytes2)

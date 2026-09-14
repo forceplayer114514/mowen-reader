@@ -10,6 +10,7 @@ import {
 import {
   buildBareNavFixtureEpub,
   buildFixtureEpub,
+  buildLinkedFixtureEpub,
   buildRealisticFixtureEpub
 } from '../../scripts/make-fixture-epub'
 
@@ -22,6 +23,8 @@ export interface Harness {
   realisticFixturePath: string
   /** 导航文档和章节同目录、目录链接写裸文件名的样本(见 fix 1 第二种真实场景)。 */
   bareNavFixturePath: string
+  /** 第一章正文第一段整段都是一个指向第二章的链接的样本。 */
+  linkedFixturePath: string
 }
 
 // 记录本进程里所有 launch() 启动过、还没关掉的 Electron app,供 closeAllApps()
@@ -39,6 +42,8 @@ export async function launch(userData?: string): Promise<Harness> {
   writeFileSync(realisticFixturePath, await buildRealisticFixtureEpub())
   const bareNavFixturePath = join(workDir, '裸文件名目录测试书.epub')
   writeFileSync(bareNavFixturePath, await buildBareNavFixtureEpub())
+  const linkedFixturePath = join(workDir, '正文带链接测试书.epub')
+  writeFileSync(linkedFixturePath, await buildLinkedFixtureEpub())
 
   const app = await electron.launch({
     args: [resolve('out/main/index.js')],
@@ -47,7 +52,15 @@ export async function launch(userData?: string): Promise<Harness> {
   launchedApps.push(app)
   const page = await app.firstWindow()
   await page.waitForLoadState('domcontentloaded')
-  return { app, page, userData: dir, fixturePath, realisticFixturePath, bareNavFixturePath }
+  return {
+    app,
+    page,
+    userData: dir,
+    fixturePath,
+    realisticFixturePath,
+    bareNavFixturePath,
+    linkedFixturePath
+  }
 }
 
 /**
@@ -87,6 +100,15 @@ export async function importBareNavFixture(h: Harness): Promise<void> {
   await h.page.evaluate((p) => {
     ;(window as unknown as { __E2E_FILES__: string[] }).__E2E_FILES__ = [p]
   }, h.bareNavFixturePath)
+  await h.page.getByTestId('pick-files').click()
+  await h.page.getByTestId('book-card').first().waitFor({ timeout: 30_000 })
+}
+
+/** 和 importFixture 一样,但导入的是正文里带书内链接的样本(见 helpers.ts 顶部注释)。 */
+export async function importLinkedFixture(h: Harness): Promise<void> {
+  await h.page.evaluate((p) => {
+    ;(window as unknown as { __E2E_FILES__: string[] }).__E2E_FILES__ = [p]
+  }, h.linkedFixturePath)
   await h.page.getByTestId('pick-files').click()
   await h.page.getByTestId('book-card').first().waitFor({ timeout: 30_000 })
 }
@@ -196,10 +218,13 @@ export async function chapterSelectionText(h: Harness): Promise<string> {
 const CHAPTER_FRAME = '[data-testid="reader-page"] iframe'
 
 /**
- * 书内容里的一段选区:从第 fromParagraph 段的第 fromOffset 个字,到第 toParagraph
- * 段的第 toOffset 个字。跨段是为了造出一块占好几行的高亮,见 clickChapterHighlight()。
+ * 书内容里的一段选区:从第 fromParagraph 个节点的第 fromOffset 个字,到第
+ * toParagraph 个节点的第 toOffset 个字。跨节点是为了造出一块占好几行的高亮,
+ * 见 clickChapterHighlight()。
  */
 interface ChapterRange {
+  /** 拿哪一类节点来数,默认是段落;要选正文链接里的文字就传 'p a'。 */
+  selector?: string
   fromParagraph: number
   fromOffset: number
   toParagraph: number
@@ -212,8 +237,9 @@ async function selectChapterRange(h: Harness, at: ChapterRange): Promise<void> {
     ({ selector, at }) => {
       const frame = document.querySelector<HTMLIFrameElement>(selector)
       const doc = frame?.contentDocument
-      const from = doc?.querySelectorAll('p')[at.fromParagraph]?.firstChild
-      const to = doc?.querySelectorAll('p')[at.toParagraph]?.firstChild
+      const nodes = doc?.querySelectorAll(at.selector ?? 'p')
+      const from = nodes?.[at.fromParagraph]?.firstChild
+      const to = nodes?.[at.toParagraph]?.firstChild
       if (!doc || !from || !to) throw new Error('取不到书内容里的段落')
       frame?.contentWindow
         ?.getSelection()
@@ -244,8 +270,9 @@ async function chapterDragPoints(
   return h.page.evaluate(
     ({ selector, at }) => {
       const doc = document.querySelector<HTMLIFrameElement>(selector)?.contentDocument
-      const from = doc?.querySelectorAll('p')[at.fromParagraph]?.firstChild
-      const to = doc?.querySelectorAll('p')[at.toParagraph]?.firstChild
+      const nodes = doc?.querySelectorAll(at.selector ?? 'p')
+      const from = nodes?.[at.fromParagraph]?.firstChild
+      const to = nodes?.[at.toParagraph]?.firstChild
       if (!doc || !from || !to) throw new Error('取不到书内容里的段落')
       const range = doc.createRange()
       range.setStart(from, at.fromOffset)
@@ -363,6 +390,38 @@ export async function dragSelectAcrossParagraphs(
   )
 }
 
+/**
+ * 拖选一段**整个落在书内链接里**的文字(正文带链接样本的第一章第一段)。
+ *
+ * 真实的书里这种形状到处都是:书自带的目录页、脚注编号、交叉引用的小标题,整段
+ * 文字都包在一个 <a> 里。松手之后浏览器补发的那一下 click,目标会是按下点和松开
+ * 点的共同祖先——这里就是这个 <a> 本身。
+ */
+export async function dragSelectInsideChapterLink(
+  h: Harness,
+  opts: DragOptions = {}
+): Promise<void> {
+  await dragSelectChapterRange(
+    h,
+    {
+      selector: 'p a',
+      fromParagraph: 0,
+      fromOffset: 0,
+      toParagraph: 0,
+      toOffset: 12
+    },
+    opts
+  )
+}
+
+/** 书内容 iframe 里当前那份文档的全部文字;跳走或者文档没了就是空字符串。 */
+export async function chapterBodyText(h: Harness): Promise<string> {
+  return h.page.evaluate(() => {
+    const frame = document.querySelector<HTMLIFrameElement>('[data-testid="reader-page"] iframe')
+    return frame?.contentDocument?.body?.textContent ?? ''
+  })
+}
+
 export interface DragOptions {
   /**
    * 松手之后补发的那一下 click 必须真的落在刚画出来的高亮的某一行矩形里,默认要求。
@@ -436,7 +495,7 @@ async function dragSelectChapterRange(
 ): Promise<void> {
   await h.page
     .frameLocator(CHAPTER_FRAME)
-    .locator('p')
+    .locator(at.selector ?? 'p')
     .nth(at.toParagraph)
     .waitFor({ timeout: 20_000 })
   const { start, end } = await chapterDragPoints(h, at)

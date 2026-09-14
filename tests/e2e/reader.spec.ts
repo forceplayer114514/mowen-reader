@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
 import {
+  chapterBodyText,
   chapterHighlightLines,
   chapterHighlights,
   chapterQuotes,
@@ -9,9 +10,11 @@ import {
   enableSelectionStore,
   importBareNavFixture,
   importFixture,
+  importLinkedFixture,
   importRealisticFixture,
   launch,
   dragSelectAcrossParagraphs,
+  dragSelectInsideChapterLink,
   slowDragSelectInChapter,
   pressAndSettle,
   pressUntilPageChanges,
@@ -494,6 +497,35 @@ test('划选跨两段的一片文字,高亮画成好几块矩形,点其中一块
 
   await expect(chapterHighlights(h)).toHaveCount(0)
   expect(await chapterQuotes(h)).toHaveLength(0)
+})
+
+test('拖选一段整个落在书内链接里的文字,书不会跳走,那个链接本身照样还点得动', async () => {
+  const h = await launch()
+  await importLinkedFixture(h)
+  await enableSelectionStore(h)
+  await h.page.getByTestId('book-card').first().click()
+  await h.page.getByTestId('reader-page').waitFor()
+  await waitForLocationsReady(h)
+
+  await dragSelectInsideChapterLink(h)
+  // 留出足够的时间让"真跳走了"这件事有机会发生完,否则还没跳完就断言,红不了。
+  await h.page.waitForTimeout(800)
+
+  expect(
+    await chapterBodyText(h),
+    '这一下 click 的目标是按下点和松开点的共同祖先,也就是这个 <a> 本身。只 stopImmediatePropagation 挡得住 epub.js 挂在链接上的那个拦截(它是个监听器),挡不住浏览器自己的默认跳转(它不是监听器):章节 iframe 会自己跳到链接指向的原始文档,正文没了、epub.js 的视图状态和屏幕上的东西对不上,界面上除了退回书架没有别的出路'
+  ).toContain('交叉引用的第1段')
+  expect(await chapterQuotes(h)).toHaveLength(1)
+  await expect(chapterHighlights(h)).toHaveCount(1)
+  await expect(h.page.getByTestId('reader-foot')).toContainText('第一章 交叉引用')
+
+  // 吞掉的只有紧挨着松手的那一下。过一会儿真去点这个链接(高亮正盖在它上面,
+  // 点的就是同一片地方),epub.js 自己那套书内跳转必须还在:页脚章节名跟着变成
+  // 第二章,说明走的是它的 display(),而不是 iframe 自己跳到原始文档。
+  await clickChapterHighlight(h)
+  await expect(h.page.getByTestId('reader-foot')).toContainText('第二章 被引到的那一章', {
+    timeout: 20_000
+  })
 })
 
 test('换主题时高亮按新配色重画,既不消失也不会叠成两块,点一下照样取消得掉', async () => {
