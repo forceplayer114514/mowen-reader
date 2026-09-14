@@ -294,6 +294,38 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   }
 
   /**
+   * 丢掉那些文档已经不在页面上的吞噬记录。
+   *
+   * 一份吞噬只在三种时候解除:补发的那一下 click 真的来了、用户在同一份文档里开始
+   * 下一次交互、整本书 teardown。在章末选中一段话、不在这一章里点任何地方就直接
+   * 翻页,这三件事一件都不会发生——这一章的文档已经跟着视图销毁,记录连同对这份死
+   * 文档的引用却会一直留到合上这本书为止,这样翻一章就多攒一条。
+   *
+   * epub.js 这一版没有"视图被销毁了"这样的事件可以订:Rendition 的 removed 事件
+   * 要靠 manager 发 MANAGERS.REMOVED,而默认的 DefaultViewManager 从头到尾就没有
+   * 发过它(rendition.hooks.unloaded 挂在同一条死路上,同样永远不会触发)。所以
+   * 换个问法:还活着的文档就是 getContents() 还数得出来的那几份,不在里面的那份
+   * 已经销毁了。每有章节渲染出来就对一遍账,记录的寿命上限就压到"下一章渲染出来
+   * 为止",不再无限攒着。解除动作本身用的还是同一个 disarm:它既摘掉监听器,也把
+   * 这一条从表里删掉。
+   */
+  function pruneClickSwallows(): void {
+    if (!rendition || clickSwallows.size === 0) return
+    // getContents() 的类型声明在这版里被错标成单个 Contents(和 consumeSelection
+    // 里那处同因),运行时返回的是数组。
+    const live = new Set((rendition.getContents() as unknown as Contents[]).map((c) => c.document))
+    for (const [doc, disarm] of [...clickSwallows]) {
+      if (!live.has(doc)) disarm()
+    }
+  }
+
+  /** 章节渲染出来的那一刻要做的两件事,见各自的注释。 */
+  function handleRendered(): void {
+    pruneClickSwallows()
+    syncHighlights()
+  }
+
+  /**
    * 把书内容里当前选中的那段文字交给订阅者,并把选区收走。
    *
    * 为什么不直接用 epub.js 的 selected 事件:那个事件是从**最后一次选区变化**起算
@@ -476,7 +508,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     staleRendition.off('touchstart', handleContentPress)
     staleRendition.off('mouseup', handleContentRelease)
     staleRendition.off('touchend', handleContentRelease)
-    staleRendition.off('rendered', syncHighlights)
+    staleRendition.off('rendered', handleRendered)
     try {
       staleRendition.destroy()
     } catch {
@@ -510,7 +542,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     rendition?.off('touchstart', handleContentPress)
     rendition?.off('mouseup', handleContentRelease)
     rendition?.off('touchend', handleContentRelease)
-    rendition?.off('rendered', syncHighlights)
+    rendition?.off('rendered', handleRendered)
     // rendition.q 里可能还排着一个我们自己调用过、还没跑到的 display() 任务(见
     // ReaderView.boot() 里 `await engine.display(...)`):它是 epub.js 内部靠
     // requestAnimationFrame 驱动的队列,当前这一帧不一定跑得到它。如果不在这里
@@ -649,9 +681,10 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       nextRendition.on('touchstart', handleContentPress)
       nextRendition.on('mouseup', handleContentRelease)
       nextRendition.on('touchend', handleContentRelease)
-      // 章节渲染出来的那一刻把高亮和引擎这份账对齐一次,见 syncHighlights() 的注释。
+      // 章节渲染出来的那一刻把高亮和引擎这份账对齐一次、顺手清掉已经销毁的文档留下的
+      // click 吞噬,见 syncHighlights() 和 pruneClickSwallows() 的注释。
       // 和上面两行一样在两次批次号检查之后,被取代的那次 open() 走不到这里。
-      nextRendition.on('rendered', syncHighlights)
+      nextRendition.on('rendered', handleRendered)
     },
 
     async display(target?: string): Promise<void> {

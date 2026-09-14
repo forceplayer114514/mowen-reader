@@ -133,6 +133,11 @@ function createFakeEpub() {
     hasHandler(type: string): boolean {
       return (handlers.get(type)?.size ?? 0) > 0
     },
+    /** 这一章翻走了:视图被销毁,它那份文档从 getContents() 里消失。 */
+    removeContents(c: FakeContents): void {
+      const at = contents.indexOf(c)
+      if (at >= 0) contents.splice(at, 1)
+    },
     /** 给这本书加一份章节文档,里面有一段选中的文字。 */
     addContents(cfi: string, text: string): FakeContents {
       const c: FakeContents = {
@@ -437,6 +442,32 @@ describe('松手即划选', () => {
     // 吞掉的只有紧挨着的那一下:再点就该转发出去了。
     c.document.dispatchEvent(new Event('click'))
     expect(forwarded).toBe(1)
+  })
+
+  it('章节视图被销毁之后,它那份还挂着的 click 吞噬跟着一起解除', async () => {
+    const f = createFakeEpub()
+    const engine = await openEngine()
+    const gone = f.addContents('cfi-1', '他终于明白')
+    watch(engine)
+
+    f.emit('mouseup', mouseEvent('mouseup'))
+
+    // 在这一章末尾选中一段话,然后不在这一章里点任何地方、直接翻页:补发的那一下
+    // click 没来,下一次按下也不会来了,这一章的文档已经跟着视图一起销毁。
+    f.removeContents(gone)
+    f.addContents('cfi-2', '下一章的一句话')
+    f.emit('rendered')
+
+    let forwarded = 0
+    gone.document.addEventListener('click', () => {
+      forwarded++
+    })
+    gone.document.dispatchEvent(new Event('click'))
+
+    expect(
+      forwarded,
+      '吞噬只在「这一下 click 来了」「同一份文档里又按了一次」「整本书 teardown」三种时候才解除;章末选中一段话直接翻页,三件事一件都不会发生,这条记录连同对一份已经销毁的文档的引用会一直留到读完这本书'
+    ).toBe(1)
   })
 
   it('补发的那一下 click 没来,下一次按下也会把吞噬解除掉', async () => {
