@@ -2799,6 +2799,11 @@ git commit -m "feat: render assistant markdown safely"
 - 引用区显示当前所有高亮句子,每条带 `×` 可单独移除;发送后页面高亮全部清除,句子固化进那条消息。
 - 侧边栏可折叠收起,宽度状态存 `settings`。
 
+**必须一并收紧的消毒配置(Task 9 审查记的延后项,不能再拖):** `renderMarkdown` 输出即将第一次真正进入 `dangerouslySetInnerHTML`。Task 9 的消毒本身没有可执行的注入,但默认放行三类非脚本载荷,一旦渲染进正式界面就会成为真实风险——恶意 EPUB 正文提示注入的模型回复可以画出带密码框的钓鱼表单、盖满窗口的全屏遮罩、或用 `<img>`/`style="background:url(...)"` 打出追踪像素(实测两条路都会真的发出网络请求,不止 `<img>`)。这一步一起做:
+1. 给 `DOMPurify.sanitize` 加 `FORBID_TAGS: ['form']`、`FORBID_ATTR: ['style']`(或等价的收紧),把这两类挪出 HTML 白名单默认放行的范围。
+2. 给渲染这块内容的窗口/视图加内容安全策略,`img-src` 收紧到本地与内嵌 `data:`,阻断远程图片与远程背景图的请求路径。
+3. 补一条端到端或单元用例验证:一个带密码框表单 + 一个远程背景图的模型回复,渲染后既画不出表单也不会发出网络请求。
+
 **必须加的 test-id**(端到端要用):`sidebar`、`chat-input`、`chat-send`、`chat-stop`、`chat-retry`、`chat-error`、`message-user`、`message-assistant`、`quote-chip`、`new-conversation`、`history-entry`、`all-conversations`。
 
 - [ ] **Step 1: 实现聊天状态钩子**
