@@ -19,7 +19,9 @@
     "dist": "npm run build && electron-builder"
   },
   "dependencies": {
-    "epubjs": "^0.3.93"
+    "dompurify": "^3.4.15",
+    "epubjs": "^0.3.93",
+    "marked": "^18.0.13"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0",
@@ -30,6 +32,7 @@
     "electron": "^44.3.0",
     "electron-builder": "^26.15.3",
     "electron-vite": "^2.3.0",
+    "jsdom": "^30.0.1",
     "jszip": "^3.10.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
