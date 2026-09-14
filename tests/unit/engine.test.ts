@@ -49,6 +49,7 @@ interface FakeContents {
 
 function createFakeEpub() {
   const calls: AnnotationCall[] = []
+  const displayTargets: string[] = []
   const handlers = new Map<string, Set<(...args: unknown[]) => void>>()
   const contents: FakeContents[] = []
   let viewCount = 1
@@ -67,6 +68,12 @@ function createFakeEpub() {
   }
 
   const rendition = {
+    location: {
+      start: { cfi: 'epubcfi(/6/4!/4/2/2/1:0)' },
+      end: { cfi: 'epubcfi(/6/4!/4/2/10/1:0)' }
+    },
+    spread: vi.fn(),
+    next: vi.fn(async (): Promise<void> => {}),
     themes: { register: () => {}, select: () => {}, fontSize: () => {} },
     q: { stop: () => {} },
     annotations: {
@@ -98,7 +105,7 @@ function createFakeEpub() {
     off(type: string, cb: (...args: unknown[]) => void): void {
       handlers.get(type)?.delete(cb)
     },
-    display: async (): Promise<void> => {},
+    display: async (target?: string): Promise<void> => { if (target) displayTargets.push(target) },
     destroy: (): void => {}
   }
 
@@ -122,6 +129,8 @@ function createFakeEpub() {
     trace(): string[] {
       return calls.map((c) => `${c.op} ${c.cfiRange}`)
     },
+    displayTargets,
+    nextCalls: rendition.next,
     /** 现在渲染出来几个章节视图。0 表示一个都没有。 */
     setViewCount(n: number): void {
       viewCount = n
@@ -174,6 +183,18 @@ afterEach(() => {
 })
 
 describe('高亮与 epub.js 标注表', () => {
+  it('收回双页后内部前进一次,停在第二页而不是起始页', async () => {
+    const f = createFakeEpub()
+    const engine = await openEngine()
+    f.displayTargets.length = 0
+    await engine.setSpread(true)
+    f.displayTargets.length = 0
+    await engine.setSpread(false)
+    expect(f.displayTargets).toEqual(['epubcfi(/6/4!/4/2/2/1:0)'])
+    expect(f.nextCalls).toHaveBeenCalledTimes(1)
+    engine.destroy()
+  })
+
   it('有章节视图时加高亮,先抹掉同一段旧的那层,再按当前主题画一层', async () => {
     const f = createFakeEpub()
     const engine = await openEngine()

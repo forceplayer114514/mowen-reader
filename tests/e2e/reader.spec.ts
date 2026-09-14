@@ -78,6 +78,25 @@ test('目录列出三章,点第二章后底部章节名跟着变', async () => {
   })
 })
 
+test('合并下一页后第一次翻页收回双页并停在第二页', async () => {
+  const h = await launch()
+  await importFixture(h)
+  await h.page.getByTestId('book-card').first().click()
+  await h.page.getByTestId('reader-page').waitFor()
+  await waitForLocationsReady(h)
+
+  const label = h.page.locator('.sidebar__current-label')
+  await h.page.getByTestId('merge-next-page').click()
+  await expect(label).toContainText('(+2)', { timeout: 20_000 })
+
+  await h.page.keyboard.press('ArrowRight')
+  await expect(label).not.toContainText('(+2)', { timeout: 20_000 })
+  await expect(label).toContainText('第 2 页', { timeout: 20_000 })
+
+  await h.page.keyboard.press('ArrowRight')
+  await expect(label).toContainText('第 3 页', { timeout: 20_000 })
+})
+
 // --- 以下用更接近真实排版的样本(fix 1)覆盖简单样本测不到的场景 ---
 
 test('真实排版样本:目录链接带 ../ 前缀,页脚仍能显示章节名、目录跳转仍然生效', async () => {

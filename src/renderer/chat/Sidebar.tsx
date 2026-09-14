@@ -11,6 +11,7 @@ import type { ReaderEngine, TocItem, VisibleRange } from '../reader/types'
 import type { SelectionStore } from '../reader/selection'
 import ConversationView from './ConversationView'
 import HistoryList from './HistoryList'
+import MergeButton from './MergeButton'
 import { useChat } from './useChat'
 
 interface Props {
@@ -19,6 +20,9 @@ interface Props {
   visible: VisibleRange | null
   toc: TocItem[]
   selection: SelectionStore | null
+  restoring?: boolean
+  spread?: boolean
+  onSetSpread?: (on: boolean) => Promise<void>
 }
 
 const DEFAULT_PROMPT = '请用简体中文回答，不剧透后文，回答简洁。'
@@ -39,7 +43,16 @@ export function mergeLoadedMessages(
   ]
 }
 
-export default function Sidebar({ book, engine: _engine, visible, toc, selection }: Props) {
+export default function Sidebar({
+  book,
+  engine,
+  visible,
+  toc,
+  selection,
+  restoring = false,
+  spread = false,
+  onSetSpread
+}: Props) {
   const [conversations, setConversations] = useState<ConversationWithCount[]>([])
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [quotes, setQuotes] = useState<QuoteRecord[]>([])
@@ -47,9 +60,15 @@ export default function Sidebar({ book, engine: _engine, visible, toc, selection
   const [contextLimit, setContextLimit] = useState(8000)
   const [width, setWidth] = useState(340)
   const [collapsed, setCollapsed] = useState(false)
+  const [mergedEndCfi, setMergedEndCfi] = useState<string | null>(null)
+  const [mergedVisible, setMergedVisible] = useState<VisibleRange | null>(null)
   const [showAll, setShowAll] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const conversationsRequestRef = useRef(0)
+  const pageKeyRef = useRef(visible ? `${visible.startCfi}|${visible.endCfi}` : '')
+  const chatRef = useRef<ReturnType<typeof useChat> | null>(null)
+  const mergeInProgressRef = useRef(false)
+  const skipNextPageSelectionRef = useRef(false)
 
   const loadConversations = useCallback(async () => {
     const request = ++conversationsRequestRef.current
@@ -109,6 +128,10 @@ export default function Sidebar({ book, engine: _engine, visible, toc, selection
       setConversationId(null)
       return
     }
+    if (skipNextPageSelectionRef.current) {
+      skipNextPageSelectionRef.current = false
+      return
+    }
     const onPage = conversationsOnPage(conversations, visible.startCfi, visible.endCfi)
     setConversationId((current) =>
       current && onPage.some((conversation) => conversation.id === current)
@@ -119,18 +142,60 @@ export default function Sidebar({ book, engine: _engine, visible, toc, selection
 
   const chat = useChat({
     book,
-    visible,
+    visible: spread ? (mergedVisible ?? visible) : visible,
     toc,
     systemPrompt,
     contextLimit,
     conversationId,
-    onConversationCreated: (id) => {
+    mergedEndCfi,
+    onConversationCreated: async (id, createdMergedEndCfi) => {
       setConversationId(id)
+      if (createdMergedEndCfi) {
+        await window.api.setConversationMerge(id, createdMergedEndCfi)
+      }
       void loadConversations()
     },
     getQuotes: () => selection?.list() ?? quotes,
     clearQuotes: () => selection?.clear()
   })
+  chatRef.current = chat
+
+  useEffect(() => {
+    if (!pageKeyRef.current && visible) {
+      pageKeyRef.current = `${visible.startCfi}|${visible.endCfi}`
+    }
+  }, [visible])
+
+  useEffect(() => {
+    if (!engine) return
+    let cancelled = false
+    pageKeyRef.current = visible ? `${visible.startCfi}|${visible.endCfi}` : ''
+    const off = engine.onRelocated(() => {
+      if (cancelled || restoring) return
+      void engine.getVisible().then((next) => {
+        if (cancelled || restoring) return
+        const nextKey = `${next.startCfi}|${next.endCfi}`
+        const previousKey = pageKeyRef.current
+        pageKeyRef.current = nextKey
+        if (mergeInProgressRef.current) return
+        if (!previousKey || previousKey === nextKey) return
+        // Page changes own the current conversation lifecycle. stop() keeps a
+        // partial answer eligible for persistence; the id change then prevents
+        // it from entering the new page's UI.
+        chatRef.current?.stop()
+        skipNextPageSelectionRef.current = true
+        setConversationId(null)
+        chatRef.current?.setMessages([])
+        setMergedEndCfi(null)
+        setMergedVisible(null)
+        selection?.clear()
+      }).catch(() => {})
+    })
+    return () => {
+      cancelled = true
+      off()
+    }
+  }, [engine, restoring, selection])
 
   useEffect(() => {
     chat.setMessages((current) =>
@@ -159,12 +224,15 @@ export default function Sidebar({ book, engine: _engine, visible, toc, selection
   }
 
   function newConversation(): void {
+    if (chat.messages.length === 0) return
     setError(null)
+    chat.stop()
     if (chat.messages.length > 0) {
       const keep = window.confirm('保留本页当前对话?')
       if (!keep) {
-        if (conversationId) {
-          void window.api.deleteConversations([conversationId])
+        const id = conversationId ?? chat.messages[0]?.conversationId
+        if (id) {
+          void window.api.deleteConversations([id])
             .then(loadConversations)
             .catch(() => setError('对话删除失败，原对话仍会保留，请稍后重试'))
         }
@@ -173,6 +241,31 @@ export default function Sidebar({ book, engine: _engine, visible, toc, selection
     setConversationId(null)
     chat.setMessages([])
     selection?.clear()
+  }
+
+  async function mergeNextPage(): Promise<void> {
+    if (!engine || spread || mergeInProgressRef.current) return
+    mergeInProgressRef.current = true
+    try {
+      if (onSetSpread) await onSetSpread(true)
+      else await engine.setSpread(true)
+      const merged = await engine.getVisible()
+      pageKeyRef.current = `${merged.startCfi}|${merged.endCfi}`
+      setMergedEndCfi(merged.endCfi)
+      setMergedVisible(merged)
+      if (conversationId) {
+        await window.api.setConversationMerge(conversationId, merged.endCfi)
+        await loadConversations()
+      }
+    } catch {
+      setError('合并下一页失败，请稍后重试')
+      try {
+        if (onSetSpread) await onSetSpread(false)
+        else await engine.setSpread(false)
+      } catch { /* keep the original error */ }
+    } finally {
+      mergeInProgressRef.current = false
+    }
   }
 
   function toggleCollapsed(): void {
@@ -211,9 +304,14 @@ export default function Sidebar({ book, engine: _engine, visible, toc, selection
       />
       <div className="sidebar__current">
         <div className="sidebar__current-label">
-          ● {visible ? `第 ${visible.page} 页(当前)` : '正在加载…'}
+          ● {visible
+            ? `第 ${visible.page}${spread ? `(+${visible.page + 1})` : ''} 页(当前)`
+            : '正在加载…'}
         </div>
         {error && <div className="chat-error" data-testid="sidebar-error">{error}</div>}
+        {visible && engine && (
+          <MergeButton disabled={spread} onClick={() => void mergeNextPage()} />
+        )}
         <ConversationView
           chat={chat}
           quotes={quotes}

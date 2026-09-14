@@ -48,9 +48,46 @@ export default function ReaderView({ book, onBack }: Props) {
   const [theme, setTheme] = useState<ThemeName>('light')
   const [error, setError] = useState<string | null>(null)
   const [selectionStore, setSelectionStore] = useState<SelectionStore | null>(null)
+  const [readerEngine, setReaderEngine] = useState<ReaderEngine | null>(null)
+  const [spread, setSpread] = useState(false)
+  const [restoring, setRestoring] = useState(Boolean(book.lastReadCfi))
+  const spreadRef = useRef(false)
+
+  const setSpreadMode = useCallback(async (on: boolean): Promise<void> => {
+    const current = engineRef.current
+    if (!current) return
+    await current.setSpread(on)
+    spreadRef.current = on
+    setSpread(on)
+  }, [])
+
+  const next = useCallback(() => {
+    const current = engineRef.current
+    if (!current) return
+    if (spreadRef.current) {
+      spreadRef.current = false
+      setSpread(false)
+      void current.setSpread(false).catch(() => setError('收回双页失败，请稍后重试'))
+      return
+    }
+    void current.next()
+  }, [])
+
+  const prev = useCallback(() => {
+    const current = engineRef.current
+    if (!current) return
+    if (spreadRef.current) {
+      spreadRef.current = false
+      setSpread(false)
+      void current.setSpread(false).catch(() => setError('收回双页失败，请稍后重试'))
+      return
+    }
+    void current.prev()
+  }, [])
 
   // 开书:读设置 → 读文件 → 渲染 → 跳到上次位置
   useEffect(() => {
+    setRestoring(Boolean(book.lastReadCfi))
     let cancelled = false
     let engine: ReaderEngine | null = null
     let selectionStore: ReturnType<typeof createSelectionStore> | null = null
@@ -105,6 +142,7 @@ export default function ReaderView({ book, onBack }: Props) {
 
         engine = createEngine(hostRef.current)
         engineRef.current = engine
+        setReaderEngine(engine)
 
         // 侧边栏与正文共用一个临时选区 store。端到端测试额外通过同一 store
         // 暴露引用列表,不改变正常运行路径。
@@ -162,8 +200,8 @@ export default function ReaderView({ book, onBack }: Props) {
         })
 
         unsubscribeKey = engine.onKey((key) => {
-          if (key === 'ArrowRight' || key === 'PageDown') void engineRef.current?.next()
-          else if (key === 'ArrowLeft' || key === 'PageUp') void engineRef.current?.prev()
+          if (key === 'ArrowRight' || key === 'PageDown') next()
+          else if (key === 'ArrowLeft' || key === 'PageUp') prev()
         })
 
         await engine.open(data, {
@@ -224,6 +262,7 @@ export default function ReaderView({ book, onBack }: Props) {
           // book.lastReadCfi 存在时才是 true,这里无条件清零对新书(本来就是
           // false)也是安全的空操作。
           restoringPosition = false
+          setRestoring(false)
         }
 
         // open()/display() 期间位置索引可能已经在 onRelocated 订阅注册之后、
@@ -275,14 +314,14 @@ export default function ReaderView({ book, onBack }: Props) {
       // 放到 destroy() 之后就成了对着已经销毁的 rendition 做事。
       selectionStore?.dispose()
       setSelectionStore(null)
+      setReaderEngine(null)
+      spreadRef.current = false
+      setSpread(false)
       delete (window as unknown as SelectionTestHooks).__E2E_QUOTES__
       engine?.destroy()
       engineRef.current = null
     }
-  }, [book])
-
-  const next = useCallback(() => void engineRef.current?.next(), [])
-  const prev = useCallback(() => void engineRef.current?.prev(), [])
+  }, [book, next, prev])
 
   // 按键翻页现在完全由 engine.onKey 驱动(见上面 boot effect 里的订阅):它同时接住
   // 外层 window 和书内容 iframe 文档里的 keydown,这里不再需要自己挂 window 监听器。
@@ -378,12 +417,15 @@ export default function ReaderView({ book, onBack }: Props) {
         <button className="reader__nav reader__nav--next" onClick={next} aria-label="下一页">
           ›
         </button>
-        <Sidebar
+          <Sidebar
           book={book}
-          engine={engineRef.current}
+          engine={readerEngine}
           visible={visible}
           toc={toc}
           selection={selectionStore}
+          restoring={restoring}
+          spread={spread}
+          onSetSpread={setSpreadMode}
         />
       </div>
 

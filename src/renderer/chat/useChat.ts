@@ -10,7 +10,8 @@ export interface UseChatArgs {
   systemPrompt: string
   contextLimit: number
   conversationId: string | null
-  onConversationCreated: (id: string) => void
+  mergedEndCfi?: string | null
+  onConversationCreated: (id: string, mergedEndCfi?: string | null) => void | Promise<void>
   getQuotes: () => QuoteRecord[]
   clearQuotes: () => void
 }
@@ -328,7 +329,9 @@ export function useChat(args: UseChatArgs): ChatState {
       }
       conversationRef.current = conversationId
       setMessages((old) => [...old, savedUser])
-      if (!args.conversationId && conversationId) args.onConversationCreated(conversationId)
+      if (!args.conversationId && conversationId) {
+        await args.onConversationCreated(conversationId, args.mergedEndCfi)
+      }
       args.clearQuotes()
       await start(assembled.messages, conversationId, owner)
     } catch (error) {
