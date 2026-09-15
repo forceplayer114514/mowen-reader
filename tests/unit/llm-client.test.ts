@@ -135,6 +135,21 @@ describe('流式请求', () => {
     ).rejects.toThrow(/请求超时/)
   })
 
+  it('错误响应头已返回但正文挂起时仍按超时处理', async () => {
+    const fetchImpl = (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const signal = init?.signal
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          signal?.addEventListener('abort', () => controller.error(signal.reason), { once: true })
+        }
+      })
+      return Promise.resolve(new Response(body, { status: 401 }))
+    }
+    await expect(
+      streamChat(base({ fetchImpl: fetchImpl as typeof fetch, timeoutMs: 5 }))
+    ).rejects.toThrow(/请求超时/)
+  })
+
   it('用户中止时正常结束,不抛错', async () => {
     const ac = new AbortController()
     const err = Object.assign(new Error('aborted'), { name: 'AbortError' })

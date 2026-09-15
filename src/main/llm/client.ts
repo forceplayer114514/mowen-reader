@@ -90,7 +90,14 @@ export async function streamChat(options: StreamOptions): Promise<void> {
   }
 
   if (!response.ok) {
-    const body = await response.text().catch(() => '')
+    let body: string
+    try {
+      body = await response.text()
+    } catch (err) {
+      const message = networkMessage(err)
+      if (message === '') return
+      throw new Error(message)
+    }
     // classifyHttpError 传入 apiKey 后,内部已经在截断服务端说明之前打过码;
     // 这里再对拼好的完整消息整体打码一遍,是不依赖 errors.ts 内部顺序的最后
     // 一道保险——即便以后 errors.ts 的实现改了、打码和截断的顺序又被颠倒,
