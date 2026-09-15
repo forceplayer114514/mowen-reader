@@ -10,9 +10,12 @@ export interface StreamOptions {
   onChunk: (text: string) => void
   /** 仅测试注入;缺省用全局 fetch */
   fetchImpl?: typeof fetch
+  /** 仅测试缩短期限;生产请求最多等待一分钟。 */
+  timeoutMs?: number
 }
 
 const COMPLETIONS_PATH = '/chat/completions'
+const REQUEST_TIMEOUT_MS = 60_000
 
 /**
  * 拼出实际请求地址。
@@ -58,6 +61,12 @@ function describeUnknown(err: unknown): string {
 export async function streamChat(options: StreamOptions): Promise<void> {
   const doFetch = options.fetchImpl ?? fetch
   const parser = createSseParser()
+  const timeoutSignal = AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS)
+  const signal = AbortSignal.any([options.signal, timeoutSignal])
+  const networkMessage = (err: unknown): string =>
+    timeoutSignal.aborted && !options.signal.aborted
+      ? classifyNetworkError(timeoutSignal.reason)
+      : classifyNetworkError(err)
 
   let response: Response
   try {
@@ -72,10 +81,10 @@ export async function streamChat(options: StreamOptions): Promise<void> {
         messages: options.messages,
         stream: true
       }),
-      signal: options.signal
+      signal
     })
   } catch (err) {
-    const message = classifyNetworkError(err)
+    const message = networkMessage(err)
     if (message === '') return // 用户中止
     throw new Error(message)
   }
@@ -99,12 +108,12 @@ export async function streamChat(options: StreamOptions): Promise<void> {
   const decoder = new TextDecoder()
   try {
     for (;;) {
-      if (options.signal.aborted) break
+      if (signal.aborted) break
       const { done, value } = await reader.read()
       if (done) break
-      if (options.signal.aborted) break
+      if (signal.aborted) break
       for (const text of parser.push(decoder.decode(value, { stream: true }))) {
-        if (options.signal.aborted) break
+        if (signal.aborted) break
         try {
           options.onChunk(text)
         } catch (err) {
@@ -120,10 +129,13 @@ export async function streamChat(options: StreamOptions): Promise<void> {
         redactCredentials(`处理时出错(不是网络问题):${describeUnknown(err.cause)}`, options.apiKey)
       )
     }
-    const message = classifyNetworkError(err)
+    const message = networkMessage(err)
     if (message !== '') throw new Error(message)
   } finally {
     parser.done()
     await reader.cancel().catch(() => {})
+  }
+  if (timeoutSignal.aborted && !options.signal.aborted) {
+    throw new Error(classifyNetworkError(timeoutSignal.reason))
   }
 }

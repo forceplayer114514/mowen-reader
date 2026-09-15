@@ -60,10 +60,6 @@ export async function startFakeLlm(): Promise<FakeLlm> {
       }
     })
 
-    if (mode === 'refuse') {
-      req.socket.destroy()
-      return
-    }
     if (mode === '401') {
       json(res, 401, { error: { message: 'invalid api key' } })
       return
@@ -113,7 +109,13 @@ export async function startFakeLlm(): Promise<FakeLlm> {
   const fake: FakeLlm = {
     url: `http://127.0.0.1:${address.port}/v1`,
     requests,
-    setMode(next) { mode = next },
+    setMode(next) {
+      mode = next
+      if (next === 'refuse') {
+        server.close()
+        server.closeAllConnections()
+      }
+    },
     async close() {
       active.delete(fake)
       for (const timer of timers) clearTimeout(timer)

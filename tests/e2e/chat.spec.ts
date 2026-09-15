@@ -139,6 +139,22 @@ test('401 显示密钥相关中文提示,重试会再次发请求', async () => 
   await expect(h.page.getByTestId('message-assistant').last()).toContainText('这是假的回答。', { timeout: 20_000 })
 })
 
+test('429 和连接被拒绝都会显示可操作的中文提示', async () => {
+  const h = await launch()
+  const fake = await startFakeLlm()
+  await openBook(h, fake)
+  fake.setMode('429')
+  await h.page.getByTestId('chat-input').fill('触发限流')
+  await h.page.getByTestId('chat-send').click()
+  await expect(h.page.getByTestId('chat-error')).toContainText(/额度|频繁/)
+  await expect(h.page.getByTestId('chat-retry')).toBeVisible()
+
+  fake.setMode('refuse')
+  await h.page.getByTestId('chat-retry').click()
+  await expect(h.page.getByTestId('chat-error')).toContainText(/连不上|接口地址/)
+  expect(fake.requests).toHaveLength(1)
+})
+
 test('翻页后侧边栏是空白新对话,翻回去显示原对话', async () => {
   const h = await launch()
   const fake = await startFakeLlm()

@@ -124,6 +124,17 @@ describe('流式请求', () => {
     ).rejects.toThrow(/连不上|地址/)
   })
 
+  it('连接一直不回应时到期并显示中文超时提示', async () => {
+    const fetchImpl = (_url: string | URL | Request, init?: RequestInit): Promise<Response> =>
+      new Promise((_resolve, reject) => {
+        const signal = init?.signal
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+      })
+    await expect(
+      streamChat(base({ fetchImpl: fetchImpl as typeof fetch, timeoutMs: 5 }))
+    ).rejects.toThrow(/请求超时/)
+  })
+
   it('用户中止时正常结束,不抛错', async () => {
     const ac = new AbortController()
     const err = Object.assign(new Error('aborted'), { name: 'AbortError' })
