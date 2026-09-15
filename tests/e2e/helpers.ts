@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import {
   _electron as electron,
+  expect,
   type ElectronApplication,
   type Locator,
   type Page
@@ -25,6 +26,32 @@ export interface Harness {
   bareNavFixturePath: string
   /** 第一章正文第一段整段都是一个指向第二章的链接的样本。 */
   linkedFixturePath: string
+}
+
+export interface LlmConfig {
+  endpoint: string
+  model?: string
+  apiKey?: string
+}
+
+/** Configure through the visible settings form, then return to the library. */
+export async function configureLlm(
+  h: Harness,
+  { endpoint, model = 'e2e-model', apiKey = 'e2e-key' }: LlmConfig
+): Promise<void> {
+  if (await h.page.getByTestId('settings-view').count() === 0) {
+    if (await h.page.getByTestId('reader-page').count() > 0) {
+      await h.page.getByRole('button', { name: '← 书架' }).click()
+    }
+    await h.page.getByTestId('open-settings').click()
+  }
+  await h.page.getByTestId('settings-endpoint').fill(endpoint)
+  await h.page.getByTestId('settings-model').fill(model)
+  if (apiKey !== '') await h.page.getByTestId('settings-apikey').fill(apiKey)
+  await h.page.getByTestId('settings-save').click()
+  await expect(h.page.getByTestId('settings-status')).toContainText('设置已保存')
+  await h.page.getByRole('button', { name: '← 返回书架' }).click()
+  await expect(h.page.getByTestId('library')).toBeVisible()
 }
 
 // 记录本进程里所有 launch() 启动过、还没关掉的 Electron app,供 closeAllApps()

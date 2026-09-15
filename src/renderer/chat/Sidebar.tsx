@@ -69,7 +69,6 @@ export default function Sidebar({
   const chatRef = useRef<ReturnType<typeof useChat> | null>(null)
   const mergeInProgressRef = useRef(false)
   const mergeStartEndRef = useRef<string | null>(null)
-  const skipNextPageSelectionRef = useRef(false)
 
   const loadConversations = useCallback(async () => {
     const request = ++conversationsRequestRef.current
@@ -129,10 +128,6 @@ export default function Sidebar({
       setConversationId(null)
       return
     }
-    if (skipNextPageSelectionRef.current) {
-      skipNextPageSelectionRef.current = false
-      return
-    }
     const onPage = conversationsOnPage(conversations, visible.startCfi, visible.endCfi)
     setConversationId((current) =>
       current && onPage.some((conversation) => conversation.id === current)
@@ -189,7 +184,6 @@ export default function Sidebar({
         // partial answer eligible for persistence; the id change then prevents
         // it from entering the new page's UI.
         chatRef.current?.stop()
-        skipNextPageSelectionRef.current = true
         setConversationId(null)
         chatRef.current?.setMessages([])
         setConversationEndCfi(null)
