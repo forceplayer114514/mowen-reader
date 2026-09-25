@@ -4,6 +4,13 @@ import { abortAllChats, registerIpc } from './ipc'
 import { initDataDir } from './paths'
 import { initSecrets } from './secrets'
 
+// 改应用显示名不能顺带换掉用户数据目录，否则旧书库会像被清空一样。
+// 保留 v0.1 起一直使用的目录；品牌名仍由下面的 setName 控制。
+if (!process.env.READER_USER_DATA) {
+  app.setPath('userData', join(app.getPath('appData'), 'ai-reader'))
+}
+app.setName('墨问')
+
 function createWindow(): void {
   const win = new BrowserWindow({
     width: 1280,
@@ -11,7 +18,7 @@ function createWindow(): void {
     minWidth: 900,
     minHeight: 600,
     show: false,
-    title: 'AI 阅读器',
+    title: '墨问',
     webPreferences: {
       preload: join(import.meta.dirname, '../preload/index.cjs'),
       contextIsolation: true,
@@ -30,6 +37,9 @@ function createWindow(): void {
 }
 
 void app.whenReady().then(() => {
+  if (!app.isPackaged && process.platform === 'darwin') {
+    app.dock?.setIcon(join(process.cwd(), 'build/icon.png'))
+  }
   if (!process.env.READER_USER_DATA) {
     initDataDir(app.getPath('userData'))
   }

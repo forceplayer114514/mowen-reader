@@ -4,9 +4,11 @@ import { basename } from 'node:path'
 import { dialog, ipcMain } from 'electron'
 import type {
   AppendMessageInput,
+  BookmarkRecord,
   BookRecord,
   ChatDoneResult,
   ConversationRecord,
+  CreateBookmarkInput,
   CreateConversationInput,
   FinishImportInput,
   ImportedFile,
@@ -20,9 +22,12 @@ import { stageMany } from './books/stage'
 import { openDatabase, type Db } from './db'
 import {
   deleteBook,
+  deleteBookmark,
   getBook,
   getLocations,
   insertBook,
+  insertBookmark,
+  listBookmarks,
   listBooks,
   listSourcePaths,
   setLocations,
@@ -43,7 +48,7 @@ import {
   assertSafeLlmEndpoint,
   llmEndpointOrigin
 } from './llm/endpoint'
-import { streamChat } from './llm/client'
+import { listModels, streamChat } from './llm/client'
 import { bindSessionLifecycle, createSessionRegistry } from './llm/session'
 import { dbFile } from './paths'
 import { clearApiKey, readApiKey, setApiKey } from './secrets'
@@ -209,6 +214,34 @@ export function registerIpc(): void {
     setLocations(database(), id, json)
   })
 
+  ipcMain.handle('bookmarks:list', (_e, bookId: string): BookmarkRecord[] => {
+    if (typeof bookId !== 'string') throw new Error('书籍 id 无效')
+    return listBookmarks(database(), bookId)
+  })
+
+  ipcMain.handle('bookmarks:add', (_e, input: CreateBookmarkInput): BookmarkRecord => {
+    if (
+      !input || typeof input.bookId !== 'string' || typeof input.startCfi !== 'string' ||
+      (input.chapterLabel !== null && typeof input.chapterLabel !== 'string') ||
+      typeof input.excerpt !== 'string'
+    ) throw new Error('书签内容无效')
+    const bookmark: BookmarkRecord = {
+      id: randomUUID(),
+      bookId: input.bookId,
+      startCfi: input.startCfi,
+      chapterLabel: input.chapterLabel,
+      excerpt: input.excerpt.slice(0, 80),
+      createdAt: Date.now()
+    }
+    insertBookmark(database(), bookmark)
+    return bookmark
+  })
+
+  ipcMain.handle('bookmarks:delete', (_e, id: string): void => {
+    if (typeof id !== 'string') throw new Error('书签 id 无效')
+    deleteBookmark(database(), id)
+  })
+
   ipcMain.handle('settings:get', (_e, key: string): string | null =>
     getSetting(database(), key)
   )
@@ -312,6 +345,16 @@ export function registerIpc(): void {
     setApiKey(key, llmEndpointOrigin(endpoint))
   })
   ipcMain.handle('secrets:clearApiKey', () => clearApiKey())
+
+  ipcMain.handle('llm:listModels', async () => {
+    const endpoint = getSetting(database(), 'llmEndpoint') ?? ''
+    if (!endpoint) throw new Error('请先填写接口地址')
+    assertSafeLlmEndpoint(endpoint)
+    const stored = readApiKey()
+    if (!stored) throw new Error('请先填写 API 密钥')
+    assertKeyBoundToEndpoint(stored.origin, endpoint)
+    return listModels({ endpoint, apiKey: stored.key })
+  })
 
   ipcMain.handle('chat:start', async (event, input: StartChatInput): Promise<string> => {
     const db = database()

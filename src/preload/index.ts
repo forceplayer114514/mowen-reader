@@ -1,11 +1,13 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
   AppendMessageInput,
+  BookmarkRecord,
   BookRecord,
   ChatDoneResult,
   ConversationRecord,
   ConversationWithBook,
   ConversationWithCount,
+  CreateBookmarkInput,
   CreateConversationInput,
   FinishImportInput,
   ImportedFile,
@@ -42,6 +44,11 @@ const api = {
     ipcRenderer.invoke('books:getLocations', id),
   saveLocations: (id: string, json: string): Promise<void> =>
     ipcRenderer.invoke('books:saveLocations', id, json),
+  listBookmarks: (bookId: string): Promise<BookmarkRecord[]> =>
+    ipcRenderer.invoke('bookmarks:list', bookId),
+  addBookmark: (input: CreateBookmarkInput): Promise<BookmarkRecord> =>
+    ipcRenderer.invoke('bookmarks:add', input),
+  deleteBookmark: (id: string): Promise<void> => ipcRenderer.invoke('bookmarks:delete', id),
   getSetting: (key: string): Promise<string | null> => ipcRenderer.invoke('settings:get', key),
   setSetting: (key: string, value: string): Promise<void> =>
     ipcRenderer.invoke('settings:set', key, value),
@@ -70,6 +77,7 @@ const api = {
   hasApiKey: (): Promise<boolean> => ipcRenderer.invoke('secrets:hasApiKey'),
   setApiKey: (key: string): Promise<void> => ipcRenderer.invoke('secrets:setApiKey', key),
   clearApiKey: (): Promise<void> => ipcRenderer.invoke('secrets:clearApiKey'),
+  listModels: (): Promise<{ models: string[]; endpoint: string }> => ipcRenderer.invoke('llm:listModels'),
 
   startChat: (input: StartChatInput): Promise<string> => ipcRenderer.invoke('chat:start', input),
   abortChat: (requestId: string): Promise<void> => ipcRenderer.invoke('chat:abort', requestId),

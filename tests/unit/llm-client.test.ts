@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { streamChat } from '../../src/main/llm/client'
+import { listModels, streamChat } from '../../src/main/llm/client'
 
 function sseResponse(texts: string[], status = 200): Response {
   const body = new ReadableStream<Uint8Array>({
@@ -50,6 +50,19 @@ describe('流式请求', () => {
     const sent = JSON.parse(init.body as string) as { model: string; stream: boolean }
     expect(sent.model).toBe('test-model')
     expect(sent.stream).toBe(true)
+  })
+
+  it('控制台路径返回网页时自动改走同源 /v1 聊天接口', async () => {
+    const spy = vi.fn()
+      .mockResolvedValueOnce(new Response('<!doctype html>', { headers: { 'content-type': 'text/html' } }))
+      .mockResolvedValueOnce(sseResponse(['x']))
+    await streamChat(base({
+      endpoint: 'https://example.invalid/antigravity1',
+      fetchImpl: spy as unknown as typeof fetch
+    }))
+    expect((spy.mock.calls[1] as unknown as [string])[0]).toBe(
+      'https://example.invalid/v1/chat/completions'
+    )
   })
 
   it('endpoint 末尾有没有斜杠都不影响拼出的地址', async () => {
@@ -297,5 +310,33 @@ describe('流式请求', () => {
         })
       )
     ).rejects.toThrow(/没有返回/)
+  })
+})
+
+describe('模型列表', () => {
+  it('从 chat/completions 地址改取 models，并带密钥返回去重后的模型 id', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      data: [{ id: 'model-a' }, { id: 'model-b' }, { id: 'model-a' }]
+    })))
+    await expect(listModels({
+      endpoint: 'https://example.invalid/v1/chat/completions',
+      apiKey: 'sk-test',
+      fetchImpl: fetchImpl as unknown as typeof fetch
+    })).resolves.toEqual({ models: ['model-a', 'model-b'], endpoint: 'https://example.invalid/v1/chat/completions' })
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('https://example.invalid/v1/models')
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer sk-test')
+  })
+
+  it('控制台路径返回 HTML 时自动改走同源 /v1', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response('<!doctype html>', { headers: { 'content-type': 'text/html' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ id: 'model-a' }] })))
+    await expect(listModels({
+      endpoint: 'https://example.invalid/antigravity1',
+      apiKey: 'sk-test',
+      fetchImpl: fetchImpl as unknown as typeof fetch
+    })).resolves.toEqual({ models: ['model-a'], endpoint: 'https://example.invalid/v1' })
+    expect((fetchImpl.mock.calls[1] as unknown as [string])[0]).toBe('https://example.invalid/v1/models')
   })
 })

@@ -17,6 +17,7 @@ function settingsApi() {
     setSetting: vi.fn(async () => {}),
     setApiKey: vi.fn(async () => {}),
     clearApiKey: vi.fn(async () => {}),
+    listModels: vi.fn(async () => ({ models: ['model-a', 'model-b'], endpoint: 'https://api.example/v1' })),
     abortChat: vi.fn(async () => {}),
     startChat: vi.fn(async () => 'request-1'),
     onChatChunk: vi.fn(() => () => {}),
@@ -120,6 +121,31 @@ describe('Task 12 设置与对话管理', () => {
     expect(host.querySelector('[data-testid="settings-status"]')?.textContent).toContain('连接成功')
   })
 
+  it('填写接口和密钥后可获取并选择模型', async () => {
+    const api = settingsApi()
+    window.api = api as never
+    await act(async () => {
+      root = createRoot(host)
+      root.render(createElement(SettingsView, { onBack: vi.fn() }))
+      await Promise.resolve()
+    })
+    await act(async () => {
+      fill('settings-endpoint', 'https://api.example/v1')
+      fill('settings-apikey', 'fresh-key')
+      host.querySelector<HTMLButtonElement>('[data-testid="settings-fetch-models"]')?.click()
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(host.querySelectorAll('[data-testid="settings-model"] option')).toHaveLength(3))
+    expect(api.listModels).toHaveBeenCalledTimes(1)
+    expect(api.setApiKey).toHaveBeenCalledWith('fresh-key')
+    const select = host.querySelector<HTMLSelectElement>('[data-testid="settings-model"]')!
+    act(() => {
+      select.value = 'model-b'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(select.value).toBe('model-b')
+  })
+
   it('连接测试超时会中止请求并清理等待状态', async () => {
     const api = settingsApi()
     window.api = api as never
@@ -216,30 +242,36 @@ describe('Task 12 设置与对话管理', () => {
     expect(api.startChat).toHaveBeenCalledTimes(1)
   })
 
-  it('按书分组并批量删除时确认消息会说明连同消息删除', async () => {
+  it('按书分组并批量删除时确认框会说明连同消息删除', async () => {
+    const book = { id: 'book-a', title: '甲书', author: '作者', coverPath: null, filePath: '', sourcePath: '', addedAt: 1, lastReadCfi: null, lastReadAt: null }
     const rows: ConversationWithBook[] = [
       { id: 'a', bookId: 'book-a', bookTitle: '甲书', startCfi: 'a', endCfi: 'b', mergedEndCfi: null, chapterLabel: '第一章', excerpt: '开头', createdAt: Date.now(), messageCount: 2 },
       { id: 'b', bookId: 'book-a', bookTitle: '甲书', startCfi: 'c', endCfi: 'd', mergedEndCfi: 'd', chapterLabel: '第二章', excerpt: '后来', createdAt: Date.now(), messageCount: 3 }
     ]
-    const api = { listAllConversations: vi.fn().mockResolvedValueOnce(rows).mockResolvedValueOnce([]), deleteConversations: vi.fn().mockResolvedValue(undefined) }
+    const api = { listBooks: vi.fn().mockResolvedValue([book]), listAllConversations: vi.fn().mockResolvedValueOnce(rows).mockResolvedValueOnce([]), deleteConversations: vi.fn().mockResolvedValue(undefined) }
     window.api = api as never
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     await act(async () => {
       root = createRoot(host)
       root.render(createElement(ConversationsView, { onBack: vi.fn() }))
       await Promise.resolve()
     })
-    await vi.waitFor(() => expect(host.querySelectorAll('[data-testid="conversation-row"]')).toHaveLength(2))
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="conversation-book"]')).not.toBeNull())
+    await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="管理《甲书》的对话"]')?.click() })
+    expect(host.querySelectorAll('[data-testid="chapter-group"]')).toHaveLength(2)
+    expect(host.querySelectorAll('[data-testid="conversation-row"]')).toHaveLength(2)
     expect(host.textContent).toContain('甲书')
-    expect(host.textContent).toContain('（+下一页）')
+    expect(host.textContent).toContain('含下一屏')
     await act(async () => {
       for (const checkbox of host.querySelectorAll<HTMLInputElement>('.conversation-row input')) checkbox.click()
       host.querySelector<HTMLButtonElement>('[data-testid="conversation-delete"]')?.click()
       await Promise.resolve()
     })
-    expect(confirm.mock.calls[0]?.[0]).toMatch(/消息.*删除/)
+    expect(host.querySelector('[data-testid="confirm-conversations-delete"]')?.textContent).toMatch(/消息.*删除/)
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="confirm-conversations-delete-yes"]')?.click()
+      await Promise.resolve()
+    })
     expect(api.deleteConversations).toHaveBeenCalledWith(['a', 'b'])
-    confirm.mockRestore()
   })
 
   it('过期的旧列表响应不会覆盖最新列表响应', async () => {
@@ -247,7 +279,9 @@ describe('Task 12 设置与对话管理', () => {
     let resolveNew!: (rows: ConversationWithBook[]) => void
     const oldRow: ConversationWithBook = { id: 'old', bookId: 'old-book', bookTitle: '旧书', startCfi: 'a', endCfi: 'b', mergedEndCfi: null, chapterLabel: null, excerpt: '旧', createdAt: 1, messageCount: 1 }
     const newRow: ConversationWithBook = { ...oldRow, id: 'new', bookId: 'new-book', bookTitle: '新书', excerpt: '新' }
+    const book = { id: 'new-book', title: '新书', author: null, coverPath: null, filePath: '', sourcePath: '', addedAt: 1, lastReadCfi: null, lastReadAt: null }
     const api = {
+      listBooks: vi.fn().mockResolvedValue([book]),
       listAllConversations: vi.fn()
         .mockImplementationOnce(() => new Promise<ConversationWithBook[]>((resolve) => { resolveOld = resolve }))
         .mockImplementationOnce(() => new Promise<ConversationWithBook[]>((resolve) => { resolveNew = resolve })),
@@ -269,6 +303,7 @@ describe('Task 12 设置与对话管理', () => {
   it('卸载后迟到的列表响应不会写入状态', async () => {
     let resolveRows!: (rows: ConversationWithBook[]) => void
     const api = {
+      listBooks: vi.fn().mockResolvedValue([]),
       listAllConversations: vi.fn(() => new Promise<ConversationWithBook[]>((resolve) => { resolveRows = resolve })),
       deleteConversations: vi.fn()
     }

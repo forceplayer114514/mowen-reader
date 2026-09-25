@@ -14,8 +14,24 @@ export interface StreamOptions {
   timeoutMs?: number
 }
 
+export interface ListModelsOptions {
+  endpoint: string
+  apiKey: string
+  /** 仅测试注入;缺省用全局 fetch */
+  fetchImpl?: typeof fetch
+  /** 仅测试缩短期限;生产请求最多等待十五秒。 */
+  timeoutMs?: number
+}
+
+export interface ModelsResult {
+  models: string[]
+  /** 实际可用的 OpenAI 兼容基址；通常与用户填写的一致。 */
+  endpoint: string
+}
+
 const COMPLETIONS_PATH = '/chat/completions'
 const REQUEST_TIMEOUT_MS = 60_000
+const MODELS_TIMEOUT_MS = 15_000
 
 /**
  * 拼出实际请求地址。
@@ -40,12 +56,32 @@ function chatUrl(endpoint: string): string {
   }
 }
 
+function modelsUrl(endpoint: string): string {
+  try {
+    const url = new URL(endpoint)
+    if (url.pathname.endsWith(COMPLETIONS_PATH)) {
+      url.pathname = `${url.pathname.slice(0, -COMPLETIONS_PATH.length)}/models`
+    } else if (!url.pathname.endsWith('/models')) {
+      url.pathname = `${url.pathname.replace(/\/+$/, '')}/models`
+    }
+    return url.toString()
+  } catch {
+    const stripped = endpoint.replace(/\/+$/, '')
+    if (stripped.endsWith(COMPLETIONS_PATH)) {
+      return `${stripped.slice(0, -COMPLETIONS_PATH.length)}/models`
+    }
+    return stripped.endsWith('/models') ? stripped : `${stripped}/models`
+  }
+}
+
 /** 用 onChunk 自己的异常把网络异常路径区分开,不让两者混在一起被误判成网络问题。 */
 class CallbackError extends Error {
   constructor(public readonly cause: unknown) {
     super('回调出错')
   }
 }
+
+class HtmlModelsResponse extends Error {}
 
 function describeUnknown(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
@@ -68,21 +104,27 @@ export async function streamChat(options: StreamOptions): Promise<void> {
       ? classifyNetworkError(timeoutSignal.reason)
       : classifyNetworkError(err)
 
+  const request = (endpoint: string): Promise<Response> => doFetch(chatUrl(endpoint), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${options.apiKey}`
+    },
+    body: JSON.stringify({
+      model: options.model,
+      messages: options.messages,
+      stream: true
+    }),
+    signal
+  })
+
   let response: Response
   try {
-    response = await doFetch(chatUrl(options.endpoint), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${options.apiKey}`
-      },
-      body: JSON.stringify({
-        model: options.model,
-        messages: options.messages,
-        stream: true
-      }),
-      signal
-    })
+    response = await request(options.endpoint)
+    const fallback = rootV1Endpoint(options.endpoint)
+    if (fallback && response.headers.get('content-type')?.includes('text/html')) {
+      response = await request(fallback)
+    }
   } catch (err) {
     const message = networkMessage(err)
     if (message === '') return // 用户中止
@@ -144,5 +186,73 @@ export async function streamChat(options: StreamOptions): Promise<void> {
   }
   if (timeoutSignal.aborted && !options.signal.aborted) {
     throw new Error(classifyNetworkError(timeoutSignal.reason))
+  }
+}
+
+async function listModelsAt(options: ListModelsOptions, endpoint: string): Promise<string[]> {
+  const doFetch = options.fetchImpl ?? fetch
+  const signal = AbortSignal.timeout(options.timeoutMs ?? MODELS_TIMEOUT_MS)
+  const networkMessage = (error: unknown): string =>
+    classifyNetworkError(signal.aborted ? signal.reason : error)
+  let response: Response
+  try {
+    response = await doFetch(modelsUrl(endpoint), {
+      headers: { Authorization: `Bearer ${options.apiKey}` },
+      signal
+    })
+  } catch (error) {
+    throw new Error(networkMessage(error) || '获取模型已停止')
+  }
+
+  let body: string
+  try {
+    body = await response.text()
+  } catch (error) {
+    throw new Error(networkMessage(error) || '获取模型已停止')
+  }
+  if (!response.ok) {
+    throw new Error(
+      redactCredentials(classifyHttpError(response.status, body, options.apiKey), options.apiKey)
+    )
+  }
+
+  if (response.headers.get('content-type')?.includes('text/html') && /^\s*</.test(body)) {
+    throw new HtmlModelsResponse()
+  }
+
+  try {
+    const parsed = JSON.parse(body) as { data?: { id?: unknown }[] }
+    const models = [...new Set(
+      (Array.isArray(parsed.data) ? parsed.data : [])
+        .map((item) => item?.id)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0)
+    )]
+    if (models.length === 0) throw new Error()
+    return models
+  } catch {
+    throw new Error('接口返回的模型列表格式不正确')
+  }
+}
+
+function rootV1Endpoint(endpoint: string): string | null {
+  try {
+    const url = new URL(endpoint)
+    const current = url.pathname.replace(/\/+$/, '')
+    if (current === '/v1') return null
+    url.pathname = '/v1'
+    return url.toString().replace(/\/$/, '')
+  } catch {
+    return null
+  }
+}
+
+/** 从 OpenAI 兼容接口读取模型 id；密钥仍只存在于主进程。 */
+export async function listModels(options: ListModelsOptions): Promise<ModelsResult> {
+  try {
+    return { models: await listModelsAt(options, options.endpoint), endpoint: options.endpoint }
+  } catch (error) {
+    const fallback = rootV1Endpoint(options.endpoint)
+    if (!(error instanceof HtmlModelsResponse) || !fallback) throw error
+    return { models: await listModelsAt(options, fallback), endpoint: fallback }
   }
 }

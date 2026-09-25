@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { BookRecord, QuoteRecord } from '@shared/types'
+import type { BookmarkRecord, BookRecord, QuoteRecord } from '@shared/types'
 import TocPanel from './TocPanel'
+import { conversationsOnPage } from './anchor'
 import { createEngine } from './engine'
 import { createSelectionStore, type SelectionStore } from './selection'
 import type { ReaderEngine, ThemeName, TocItem, VisibleRange } from './types'
@@ -81,7 +82,27 @@ export default function ReaderView({ book, onBack }: Props) {
   const [readerEngine, setReaderEngine] = useState<ReaderEngine | null>(null)
   const [spread, setSpread] = useState(false)
   const [restoring, setRestoring] = useState(Boolean(book.lastReadCfi))
+  const [bookmarks, setBookmarks] = useState<BookmarkRecord[]>([])
+  const [bookmarkError, setBookmarkError] = useState<string | null>(null)
   const spreadRef = useRef(false)
+  const fontChainRef = useRef<Promise<void>>(Promise.resolve())
+  const anchorCfiRef = useRef<string | null>(null)
+  const targetFontRef = useRef<number>(18)
+  const appliedFontRef = useRef<number>(18)
+
+  useEffect(() => {
+    let cancelled = false
+    void window.api.listBookmarks(book.id).then((loaded) => {
+      if (!cancelled) setBookmarks(loaded)
+    }).catch(() => {
+      if (!cancelled) setBookmarkError('书签读取失败，请稍后重试')
+    })
+    return () => { cancelled = true }
+  }, [book.id])
+
+  const currentBookmark = visible
+    ? conversationsOnPage(bookmarks, visible.startCfi, visible.endCfi)[0]
+    : undefined
 
   const setSpreadMode = useCallback(async (on: boolean): Promise<void> => {
     const current = engineRef.current
@@ -101,7 +122,9 @@ export default function ReaderView({ book, onBack }: Props) {
       }).catch(() => setError('收回双页失败，请稍后重试'))
       return
     }
-    void current.next()
+    fontChainRef.current = fontChainRef.current.then(async () => {
+      await current.next()
+    }).catch(() => {})
   }, [])
 
   const prev = useCallback(() => {
@@ -114,7 +137,9 @@ export default function ReaderView({ book, onBack }: Props) {
       }).catch(() => setError('收回双页失败，请稍后重试'))
       return
     }
-    void current.prev()
+    fontChainRef.current = fontChainRef.current.then(async () => {
+      await current.prev()
+    }).catch(() => {})
   }, [])
 
   // 开书:读设置 → 读文件 → 渲染 → 跳到上次位置
@@ -141,9 +166,6 @@ export default function ReaderView({ book, onBack }: Props) {
       hasVisible = true
       clearStuckTimer()
       if (!cancelled) {
-        // 清掉卡住超时的错误,但保留设置保存失败的错误,避免用户改字号/主题后
-        // 翻页时丢掉还没处理完的设置错误提示。只清掉"书本内容长时间无法显示"
-        // 这个特定的超时错误。
         setError((prev) =>
           prev === '书本内容长时间无法显示,可能是文件已损坏' ? null : prev
         )
@@ -188,7 +210,10 @@ export default function ReaderView({ book, onBack }: Props) {
         if (store && hooks.__E2E_SELECTION__) {
           hooks.__E2E_QUOTES__ = () => store.list()
         }
-        setFontSize(Number.isFinite(savedFont) ? savedFont : 18)
+        const initialFont = Number.isFinite(savedFont) ? savedFont : 18
+        targetFontRef.current = initialFont
+        appliedFontRef.current = initialFont
+        setFontSize(initialFont)
         setTheme(savedTheme)
         document.documentElement.dataset.theme = savedTheme
 
@@ -340,6 +365,8 @@ export default function ReaderView({ book, onBack }: Props) {
     return () => {
       cancelled = true
       clearStuckTimer()
+      fontChainRef.current = Promise.resolve()
+      anchorCfiRef.current = null
       unsubscribeRelocated?.()
       unsubscribeKey?.()
       // 先退掉划选 store 再销毁引擎:store 自己会把页面上剩下的高亮抹掉,
@@ -361,7 +388,34 @@ export default function ReaderView({ book, onBack }: Props) {
   const changeFont = useCallback((delta: number) => {
     setFontSize((old) => {
       const size = Math.min(FONT_MAX, Math.max(FONT_MIN, old + delta))
-      engineRef.current?.setFontSize(size)
+      targetFontRef.current = size
+
+      // 锁定锚点 CFI: 若当前尚未锁定,从当前稳定的阅读位置锁定,
+      // 避免连续快速点击时因为排版临时滚动到 0 而把阅读位置重置回本章第 1 页。
+      if (!anchorCfiRef.current) {
+        anchorCfiRef.current = engineRef.current?.currentCfi() ?? null
+      }
+
+      // 将最新字号应用排进串行队列,合流连续点击,避免并发渲染与死锁
+      fontChainRef.current = fontChainRef.current.then(async () => {
+        const engine = engineRef.current
+        if (!engine) return
+        if (targetFontRef.current === appliedFontRef.current) return
+        const target = targetFontRef.current
+        const anchor = anchorCfiRef.current
+        try {
+          await engine.setFontSize(target, anchor ?? undefined)
+          appliedFontRef.current = target
+        } catch {
+          // 容错处理
+        } finally {
+          // 如果当前队列已追上最新目标字号,释放锚点锁
+          if (targetFontRef.current === appliedFontRef.current) {
+            anchorCfiRef.current = null
+          }
+        }
+      })
+
       // 乐观更新了字号状态,写盘失败要在页脚提示,否则界面和存储的值会不一致却毫无提示。
       setError(null)
       window.api.setSetting('fontSize', String(size)).catch(() => {
@@ -385,14 +439,29 @@ export default function ReaderView({ book, onBack }: Props) {
     })
   }, [])
 
+  const toggleBookmark = useCallback(async () => {
+    if (!visible) return
+    setBookmarkError(null)
+    try {
+      if (currentBookmark) {
+        await window.api.deleteBookmark(currentBookmark.id)
+        setBookmarks((items) => items.filter((item) => item.id !== currentBookmark.id))
+      } else {
+        const created = await window.api.addBookmark({
+          bookId: book.id,
+          startCfi: visible.startCfi,
+          chapterLabel: visible.chapterLabel,
+          excerpt: visible.text.replace(/\s+/g, ' ').trim().slice(0, 80)
+        })
+        setBookmarks((items) => [...items, created])
+      }
+    } catch {
+      setBookmarkError(currentBookmark ? '书签删除失败，请稍后重试' : '书签保存失败，请稍后重试')
+    }
+  }, [book.id, currentBookmark, visible])
+
   const jump = useCallback((href: string) => {
     setShowToc(false)
-    // display() 的目标解析不出章节时,epub.js 会用 "No Section Found" reject 这个
-    // promise(见 node_modules/epubjs/src/rendition.js 的 _display())。这里之前
-    // 没接住:调用方是事件回调而不是 async 函数,没人 await 这个 promise,拒绝会
-    // 变成未处理的 rejection,界面上则是点了目录条目却什么反应都没有,也不告诉
-    // 用户为什么。跳转失败不应该把已经在正常显示的阅读界面清空——只在页脚已有的
-    // 错误提示位置说一句,读到的内容照样留在原处。
     engineRef.current?.display(href).catch(() => {
       setError('跳转失败,目标章节可能已被移动')
     })
@@ -415,22 +484,34 @@ export default function ReaderView({ book, onBack }: Props) {
   return (
     <div className="reader">
       <header className="reader__bar">
-        <button onClick={onBack}>← 书架</button>
-        <button onClick={() => setShowToc((v) => !v)} data-testid="toggle-toc">
+        <button className="button--ghost" onClick={onBack}>← 书架</button>
+        <button className="button--ghost" onClick={() => setShowToc((v) => !v)} data-testid="toggle-toc">
           目录
+        </button>
+        <button
+          className={`button--ghost reader__bookmark${currentBookmark ? ' reader__bookmark--active' : ''}`}
+          type="button"
+          data-testid="bookmark-toggle"
+          aria-pressed={Boolean(currentBookmark)}
+          disabled={!visible}
+          onClick={() => void toggleBookmark()}
+        >
+          {currentBookmark ? '★ 已加书签' : '☆ 书签'}
         </button>
         <span className="reader__title">{book.title}</span>
         <span className="reader__spacer" />
-        <button onClick={() => changeFont(-2)} aria-label="缩小字号">
+        <div className="reader__controls" aria-label="阅读设置">
+        <button className="button--icon" onClick={() => changeFont(-2)} aria-label="缩小字号">
           A−
         </button>
         <span className="reader__fontsize" data-testid="font-size">
           {fontSize}
         </span>
-        <button onClick={() => changeFont(2)} aria-label="放大字号">
+        <button className="button--icon" onClick={() => changeFont(2)} aria-label="放大字号">
           A+
         </button>
-        <button onClick={toggleTheme}>{theme === 'light' ? '夜间' : '日间'}</button>
+        <button className="button--ghost" onClick={toggleTheme}>{theme === 'light' ? '夜间模式' : '日间模式'}</button>
+        </div>
       </header>
 
       <div className="reader__body">
@@ -438,18 +519,36 @@ export default function ReaderView({ book, onBack }: Props) {
           <TocPanel
             items={toc}
             currentHref={visible?.chapterHref ?? ''}
+            bookmarks={bookmarks}
             onJump={jump}
             onClose={() => setShowToc(false)}
           />
         )}
-        <button className="reader__nav reader__nav--prev" onClick={prev} aria-label="上一页">
-          ‹
-        </button>
-        <div className="reader__page" ref={hostRef} data-testid="reader-page" />
-        <button className="reader__nav reader__nav--next" onClick={next} aria-label="下一页">
-          ›
-        </button>
-          <Sidebar
+        <div className="reader__reading">
+          <div className="reader__stage">
+            <button className="reader__nav reader__nav--prev" onClick={prev} aria-label="上一页">
+              ‹
+            </button>
+            <div className="reader__page" ref={hostRef} data-testid="reader-page" />
+            <button className="reader__nav reader__nav--next" onClick={next} aria-label="下一页">
+              ›
+            </button>
+          </div>
+          <footer className="reader__foot" data-testid="reader-foot">
+            <span>{visible?.chapterLabel ?? ''}</span>
+            <span data-testid="page-indicator">
+              {visible && visible.totalPages > 0
+                ? `约第 ${visible.page} / ${visible.totalPages} 页`
+                : '正在计算页码…'}
+            </span>
+            {(error && visible) || bookmarkError ? (
+              <span className="reader__foot-error" data-testid="settings-error">
+                {error ?? bookmarkError}
+              </span>
+            ) : null}
+          </footer>
+        </div>
+        <Sidebar
           book={book}
           engine={readerEngine}
           visible={visible}
@@ -461,19 +560,6 @@ export default function ReaderView({ book, onBack }: Props) {
         />
       </div>
 
-      <footer className="reader__foot" data-testid="reader-foot">
-        <span>{visible?.chapterLabel ?? ''}</span>
-        <span data-testid="page-indicator">
-          {visible && visible.totalPages > 0
-            ? `第 ${visible.page} / ${visible.totalPages} 页`
-            : '正在计算页码…'}
-        </span>
-        {error && visible && (
-          <span className="reader__foot-error" data-testid="settings-error">
-            {error}
-          </span>
-        )}
-      </footer>
     </div>
   )
 }

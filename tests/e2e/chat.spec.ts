@@ -9,6 +9,7 @@ import {
   importFixture,
   launch,
   pressUntilPageChanges,
+  slowDragSelectInChapter,
   waitForLocationsReady,
   type Harness
 } from './helpers'
@@ -105,6 +106,32 @@ test('发送完成后页面高亮被清除', async () => {
   await expect(chapterHighlights(h)).toHaveCount(0)
 })
 
+test('翻译悬浮在对应引用上方，且不会改变阅读位置', async () => {
+  const h = await launch()
+  const fake = await startFakeLlm()
+  await openBook(h, fake, true)
+  const before = await h.page.getByTestId('page-indicator').textContent()
+  await slowDragSelectInChapter(h)
+  await dragSelectAcrossParagraphs(h)
+  const quotes = await chapterQuotes(h)
+  const chip = h.page.getByTestId('quote-chip').nth(1)
+  const translate = h.page.getByTestId('quote-translate').nth(1)
+  await expect(translate).toBeHidden()
+  await chip.hover()
+  await expect(translate).toBeVisible()
+  const chipBox = await chip.boundingBox()
+  const translateBox = await translate.boundingBox()
+  expect(translateBox!.y + translateBox!.height).toBeLessThanOrEqual(chipBox!.y + 3)
+  await translate.click()
+  await expect(h.page.getByTestId('message-assistant').last()).toContainText('这是假的回答。', {
+    timeout: 20_000
+  })
+  const sent = fake.requests[0]?.body.messages?.at(-1)?.content ?? ''
+  expect(sent).toContain(quotes[1].text)
+  expect(sent).not.toContain(quotes[0].text)
+  await expect(h.page.getByTestId('page-indicator')).toHaveText(before!)
+})
+
 test('停止慢速回答后保留已输出内容,重开仍可见', async () => {
   const h = await launch()
   const fake = await startFakeLlm()
@@ -155,13 +182,13 @@ test('429 和连接被拒绝都会显示可操作的中文提示', async () => {
   expect(fake.requests).toHaveLength(1)
 })
 
-test('翻页后侧边栏是空白新对话,翻回去显示原对话', async () => {
+test('移动阅读位置不会中断当前对话', async () => {
   const h = await launch()
   const fake = await startFakeLlm()
   await openBook(h, fake)
   await ask(h, '记住这一页')
   await pressUntilPageChanges(h, 'ArrowRight')
-  await expect(h.page.getByTestId('message-user')).toHaveCount(0)
+  await expect(h.page.getByTestId('message-user')).toContainText('记住这一页')
   await pressUntilPageChanges(h, 'ArrowLeft')
   await expect(h.page.getByTestId('message-assistant').last()).toContainText('这是假的回答。', { timeout: 20_000 })
 })
@@ -170,7 +197,7 @@ test('当前页没有消息就翻页,不会产生对话记录', async () => {
   const h = await launch()
   await openBook(h)
   await pressUntilPageChanges(h, 'ArrowRight')
-  await expect(h.page.getByTestId('all-conversations')).toContainText('0 条')
+  await expect(h.page.getByTestId('page-conversations-summary')).toContainText('0 个对话')
 })
 
 test('改字号并翻回原文位置后,CFI 锚定的对话仍出现', async () => {
@@ -185,7 +212,7 @@ test('改字号并翻回原文位置后,CFI 锚定的对话仍出现', async () 
   await expect(h.page.getByTestId('message-assistant').last()).toContainText('这是假的回答。', { timeout: 20_000 })
 })
 
-test('空当前对话点新对话不弹窗,有消息时不保留会删除', async () => {
+test('新建对话保留旧记录，空对话无需确认', async () => {
   const h = await launch()
   const fake = await startFakeLlm()
   await openBook(h, fake)
@@ -198,10 +225,37 @@ test('空当前对话点新对话不弹窗,有消息时不保留会删除', asyn
   h.page.off('dialog', countDialog)
 
   await ask(h, '准备删除的对话')
-  h.page.once('dialog', (dialog) => void dialog.dismiss())
   await h.page.getByTestId('new-conversation').click()
   await expect(h.page.getByTestId('message-user')).toHaveCount(0)
-  await expect.poll(() => h.page.getByTestId('all-conversations').textContent()).toContain('0 条')
+  await expect.poll(() => h.page.getByTestId('page-conversations-summary').textContent()).toContain('1 个对话')
+})
+
+test('侧栏显示本章对话,可定位、切换和删除', async () => {
+  const h = await launch()
+  const fake = await startFakeLlm()
+  await openBook(h, fake)
+  await ask(h, '第一页对话')
+  const sidebar = h.page.getByTestId('sidebar')
+  await expect(sidebar.getByText('当前位置')).toBeVisible()
+  await expect(sidebar.getByText('全书对话')).toHaveCount(0)
+  await expect(sidebar.getByText('《测试之书》')).toHaveCount(0)
+  await expect(h.page.getByTestId('page-conversations-summary')).toContainText('本章 1 个对话')
+
+  await pressUntilPageChanges(h, 'ArrowRight')
+  await h.page.getByTestId('new-conversation').click()
+  await ask(h, '第二页对话')
+  await expect(h.page.getByTestId('page-conversations-summary')).toContainText('本章 2 个对话')
+  await expect(h.page.getByTestId('history-entry')).toHaveCount(2)
+
+  await h.page.getByRole('button', { name: /定位对话/ }).first().click()
+  await h.page.getByTestId('history-entry').first().click()
+  await expect(h.page.getByTestId('message-user')).toContainText('第一页对话')
+
+  await h.page.getByTestId('history-entry').first().hover()
+  await h.page.getByTestId('history-delete').first().click()
+  await h.page.getByTestId('confirm-history-delete-yes').click()
+  await expect(h.page.getByTestId('page-conversations-summary')).toContainText('本章 1 个对话')
+  await expect(h.page.getByTestId('message-user')).toHaveCount(0)
 })
 
 test('对话管理页能看到全部对话并批量删除,侧边栏历史随之清空', async () => {
@@ -210,17 +264,47 @@ test('对话管理页能看到全部对话并批量删除,侧边栏历史随之�
   await openBook(h, fake)
   await ask(h, '第一段对话')
   await pressUntilPageChanges(h, 'ArrowRight')
+  await h.page.getByTestId('new-conversation').click()
   await ask(h, '第二段对话')
   await h.page.getByRole('button', { name: '← 书架' }).click()
   await h.page.getByTestId('open-conversations').click()
+  await expect(h.page.getByTestId('conversation-book')).toHaveCount(1)
+  await h.page.getByTestId('conversation-book').click()
   await expect(h.page.getByTestId('conversation-row')).toHaveCount(2)
   await h.page.locator('.conversations__select-all input').check()
-  h.page.once('dialog', (dialog) => void dialog.accept())
   await h.page.getByTestId('conversation-delete').click()
-  await expect(h.page.getByText('还没有对话。')).toBeVisible({ timeout: 20_000 })
+  await h.page.getByTestId('confirm-conversations-delete-yes').click()
+  await expect(h.page.getByText('这本书还没有对话。')).toBeVisible({ timeout: 20_000 })
+  await h.page.getByRole('button', { name: '← 对话书架' }).click()
   await h.page.getByRole('button', { name: '← 返回书架' }).click()
   await h.page.getByTestId('book-card').first().click()
-  await expect(h.page.getByTestId('all-conversations')).toContainText('0 条', { timeout: 20_000 })
+  await expect(h.page.getByTestId('page-conversations-summary')).toContainText('0 个对话', { timeout: 20_000 })
+})
+
+test('对话书架按书进入，章节可以展开和收起', async () => {
+  const h = await launch()
+  const fake = await startFakeLlm()
+  await openBook(h, fake)
+  await ask(h, '第一章的问题')
+  await h.page.getByTestId('toggle-toc').click()
+  await h.page.getByTestId('toc').getByText('第二章 那个夏天').click()
+  await expect(h.page.getByTestId('reader-foot')).toContainText('第二章 那个夏天')
+  await h.page.getByTestId('new-conversation').click()
+  await ask(h, '第二章的问题')
+  await h.page.getByRole('button', { name: '← 书架' }).click()
+  await h.page.getByTestId('open-conversations').click()
+  await expect(h.page.getByTestId('conversation-book')).toContainText('2 个对话')
+  await h.page.getByTestId('conversation-book').click()
+  const chapters = h.page.getByTestId('chapter-group')
+  await expect(chapters).toHaveCount(2)
+  await expect(chapters.nth(0)).toHaveAttribute('open', '')
+  await expect(chapters.nth(1)).not.toHaveAttribute('open')
+  await chapters.nth(1).getByTestId('chapter-toggle').click()
+  await expect(chapters.nth(1)).toHaveAttribute('open', '')
+  await chapters.nth(0).getByTestId('chapter-toggle').click()
+  await expect(chapters.nth(0)).not.toHaveAttribute('open')
+  await chapters.nth(1).locator('.conversation-row input').check()
+  await expect(chapters.nth(0)).not.toHaveAttribute('open')
 })
 
 test('删除一本书会级联删除它的全部对话', async () => {
@@ -233,5 +317,5 @@ test('删除一本书会级联删除它的全部对话', async () => {
   await h.page.getByTestId('confirm-delete-yes').click()
   await expect(h.page.getByTestId('book-card')).toHaveCount(0)
   await h.page.getByTestId('open-conversations').click()
-  await expect(h.page.getByText('还没有对话。')).toBeVisible({ timeout: 20_000 })
+  await expect(h.page.getByText('书架是空的，先添加一本书吧。')).toBeVisible({ timeout: 20_000 })
 })

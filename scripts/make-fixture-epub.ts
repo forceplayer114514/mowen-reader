@@ -303,7 +303,7 @@ function realisticContentOpf(): string {
 </package>`
 }
 
-const REAL_STYLESHEET = `body { font-family: serif; line-height: 1.6; }\nh1 { text-align: center; }\n`
+const REAL_STYLESHEET = `body { font-family: serif; line-height: 1.6; color: #111 !important; background-color: #fff !important; }\nh1 { text-align: center; }\n`
 
 /**
  * 更接近真实世界排版的样本:章节文件嵌套在 OEBPS/Text/ 下、有独立样式表、

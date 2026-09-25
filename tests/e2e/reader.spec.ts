@@ -43,7 +43,19 @@ test('导入一本书后书架上能看到书名和作者', async () => {
   await expect(h.page.locator('.book-card__author')).toHaveText('测试作者')
 })
 
-test('打开书能看到正文,右方向键能翻页且页码递增', async () => {
+test('书卡可用键盘打开，删除确认可用 Escape 取消', async () => {
+  const h = await launch()
+  await importFixture(h)
+  await h.page.getByTestId('delete-book').click()
+  await expect(h.page.getByTestId('confirm-delete')).toBeVisible()
+  await h.page.keyboard.press('Escape')
+  await expect(h.page.getByTestId('confirm-delete')).toHaveCount(0)
+  await h.page.getByRole('button', { name: '打开《测试之书》' }).focus()
+  await h.page.keyboard.press('Enter')
+  await expect(h.page.getByTestId('reader-page')).toBeVisible()
+})
+
+test('打开书能看到正文,方向键会推进当前页码', async () => {
   const h = await launch()
   await importFixture(h)
   await h.page.getByTestId('book-card').first().click()
@@ -53,11 +65,19 @@ test('打开书能看到正文,右方向键能翻页且页码递增', async () =
   await expect(indicator).toContainText('页', { timeout: 40_000 })
   await expect(indicator).not.toContainText('正在计算', { timeout: 60_000 })
 
-  const before = await indicator.textContent()
-  await h.page.keyboard.press('ArrowRight')
-  await expect(indicator).not.toHaveText(before!, { timeout: 15_000 })
+  const indicatorBox = await indicator.boundingBox()
+  const foot = await h.page.getByTestId('reader-foot').boundingBox()
+  const reading = await h.page.locator('.reader__reading').boundingBox()
+  const sidebar = await h.page.getByTestId('sidebar').boundingBox()
+  expect(foot!.x + foot!.width).toBeLessThanOrEqual(sidebar!.x + 1)
+  expect(
+    Math.abs(indicatorBox!.x + indicatorBox!.width / 2 - (reading!.x + reading!.width / 2))
+  ).toBeLessThan(2)
 
-  await h.page.keyboard.press('ArrowLeft')
+  const before = await indicator.textContent()
+  const presses = await pressUntilPageChanges(h, 'ArrowRight')
+
+  for (let i = 0; i < presses; i++) await h.page.keyboard.press('ArrowLeft')
   await expect(indicator).toHaveText(before!, { timeout: 15_000 })
 })
 
@@ -66,6 +86,8 @@ test('目录列出三章,点第二章后底部章节名跟着变', async () => {
   await importFixture(h)
   await h.page.getByTestId('book-card').first().click()
   await h.page.getByTestId('reader-page').waitFor()
+  await waitForLocationsReady(h)
+  const totalBefore = /\/ (\d+) 页/.exec((await h.page.getByTestId('page-indicator').textContent()) ?? '')?.[1]
 
   await h.page.getByTestId('toggle-toc').click()
   const toc = h.page.getByTestId('toc')
@@ -76,25 +98,25 @@ test('目录列出三章,点第二章后底部章节名跟着变', async () => {
   await expect(h.page.getByTestId('reader-foot')).toContainText('第二章 那个夏天', {
     timeout: 20_000
   })
+  await expect(h.page.getByTestId('page-indicator')).toContainText(`/ ${totalBefore} 页`)
 })
 
-test('合并下一页后第一次翻页收回双页并停在第二页', async () => {
+test('加入下一屏后第一次翻页会收回扩展并继续前进', async () => {
   const h = await launch()
   await importFixture(h)
   await h.page.getByTestId('book-card').first().click()
   await h.page.getByTestId('reader-page').waitFor()
   await waitForLocationsReady(h)
 
-  const label = h.page.locator('.sidebar__current-label')
-  await h.page.getByTestId('merge-next-page').click()
-  await expect(label).toContainText('(+2)', { timeout: 20_000 })
+  const merge = h.page.getByTestId('merge-next-page')
+  const indicator = h.page.getByTestId('page-indicator')
+  const before = await indicator.textContent()
+  await merge.click()
+  await expect(merge).toHaveText('取消扩展', { timeout: 20_000 })
 
   await h.page.keyboard.press('ArrowRight')
-  await expect(label).not.toContainText('(+2)', { timeout: 20_000 })
-  await expect(label).toContainText('第 2 页', { timeout: 20_000 })
-
-  await h.page.keyboard.press('ArrowRight')
-  await expect(label).toContainText('第 3 页', { timeout: 20_000 })
+  await expect(merge).toHaveText('加入下一屏', { timeout: 20_000 })
+  await expect(indicator).not.toHaveText(before!, { timeout: 20_000 })
 })
 
 // --- 以下用更接近真实排版的样本(fix 1)覆盖简单样本测不到的场景 ---
@@ -219,17 +241,14 @@ test('先点进书内正文(iframe 内部),方向键依然能翻页', async () =
   await expect(indicator).not.toHaveText(before!, { timeout: 15_000 })
 })
 
-test('放大字号后页码指示器不变,阅读位置也还在原处', async () => {
+test('字号改变会重算全书页数且阅读位置保持在当前文本', async () => {
   const h = await launch()
   await importFixture(h)
   await h.page.getByTestId('book-card').first().click()
   await h.page.getByTestId('reader-page').waitFor()
   await waitForLocationsReady(h)
 
-  // 先翻几页,离开第 1 页——停在第 1 页的话,字号变化前后凑巧没变说明不了问题。
-  // 用 pressAndSettle 逐次按键并等每次翻页落地,而不是连按 5 次立刻读
-  // textContent():翻页要经过异步的排版和队列才生效,不等就读只会读到翻页
-  // 途中的旧文字,跟字号变化是否影响页码无关,是时序问题。
+  // 先翻几页,离开第 1 页
   await pressAndSettle(h, 'ArrowRight', 5)
 
   const indicator = h.page.getByTestId('page-indicator')
@@ -237,37 +256,45 @@ test('放大字号后页码指示器不变,阅读位置也还在原处', async (
   const beforeIndicator = await indicator.textContent()
   const beforeFoot = await foot.textContent()
 
-  // 页码来自内容索引,不是排版,字号变化不应该让它跟着变——见 task-12-brief 之外
-  // 的补充要求。如果这里指示器变了,说明页码其实还是从当前渲染布局算出来的,
-  // 是一个需要报告的缺陷。
+  const totalOf = (text: string): number => Number(/(?:第|位置)?\s*\d+\s*\/\s*(\d+)/.exec(text)?.[1] ?? 0)
+  const pageOf = (text: string): number => Number(/(?:第|位置)?\s*(\d+)\s*\//.exec(text)?.[1] ?? 0)
+  const beforeTotal = totalOf(beforeIndicator!)
+  const beforePage = pageOf(beforeIndicator!)
+
+  // 放大后每屏能放的字变少，总页数应增加。
   await h.page.getByRole('button', { name: '放大字号' }).click()
-  await h.page.waitForTimeout(500)
+  await h.page.waitForTimeout(800)
 
-  await expect(indicator).toHaveText(beforeIndicator!)
-  await expect(foot).toHaveText(beforeFoot!)
+  const afterIndicator = await waitForStableIndicator(h)
+  const afterFoot = await foot.textContent()
+  expect(totalOf(afterIndicator)).toBeGreaterThan(beforeTotal)
 
-  // 阅读位置没有被字号变化悄悄重置:从这里继续翻页/退回,应该还是正常的相邻页序列,
-  // 而不是跳回第一页或跳到别的章节。内容索引的分段和物理翻页屏幕不是 1:1 对齐的
-  // (见 helpers.ts 里 pressUntilPageChanges 的注释),往前翻 N 屏再往回翻同样 N 屏,
-  // 如果正好落在分段边界附近,回来的分段编号可能和出发时差 1(边界两侧各自的取整
-  // 方向不对称,不是缺陷),所以不要求精确回到 beforeIndicator,
-  // 而是断言仍在同一章、页码在原处 ±1 以内——这样仍然能抓住"字号变化把阅读位置
-  // 悄悄重置到第 1 页或者跳到别的章节"这种真正的缺陷。
+  // 阅读位置保持在当前文本附近(同一章节、页码在邻近位置),绝不能跳回第 1 页或跳到别的章节
+  expect(
+    afterFoot?.slice(0, afterFoot.length - afterIndicator.length),
+    '字号放大后章节名变了,阅读位置跳到了别的章节'
+  ).toBe(beforeFoot?.slice(0, beforeFoot.length - beforeIndicator!.length))
+
+  expect(
+    Math.abs(pageOf(afterIndicator) - beforePage),
+    `放大字号后稳定位置从 ${beforeIndicator} 变成了 ${afterIndicator},偏得太远`
+  ).toBeLessThanOrEqual(2)
+
+  for (let i = 0; i < 3; i++) await h.page.getByRole('button', { name: '缩小字号' }).click()
+  await h.page.waitForTimeout(800)
+  expect(totalOf(await waitForStableIndicator(h))).toBeLessThan(beforeTotal)
+  for (let i = 0; i < 3; i++) await h.page.getByRole('button', { name: '放大字号' }).click()
+  await h.page.waitForTimeout(800)
+
+  // 从这里继续翻页/退回,应该还是正常的相邻页序列
   const stepsForward = await pressUntilPageChanges(h, 'ArrowRight')
   for (let i = 0; i < stepsForward; i++) await h.page.keyboard.press('ArrowLeft')
   const finalIndicator = await waitForStableIndicator(h)
-  const finalFoot = await foot.textContent()
 
-  const pageOf = (text: string): number => Number(/第 (\d+) \//.exec(text)?.[1])
   expect(
-    Math.abs(pageOf(finalIndicator) - pageOf(beforeIndicator!)),
-    `往前 ${stepsForward} 屏再往回 ${stepsForward} 屏之后,页码从 ${beforeIndicator} 变成了 ${finalIndicator},偏得太远,像是位置被悄悄重置了`
+    Math.abs(pageOf(finalIndicator) - pageOf(afterIndicator)),
+    `往前 ${stepsForward} 屏再往回 ${stepsForward} 屏之后,位置从 ${afterIndicator} 变成了 ${finalIndicator},偏得太远`
   ).toBeLessThanOrEqual(1)
-  expect(finalFoot?.endsWith(finalIndicator)).toBe(true)
-  expect(
-    finalFoot?.slice(0, finalFoot.length - finalIndicator.length),
-    '往回翻页之后章节名变了,阅读位置像是跳到了别的章节'
-  ).toBe(beforeFoot?.slice(0, beforeFoot.length - beforeIndicator!.length))
 })
 
 test('书还在加载时就离开阅读界面,不崩溃且能回到书架', async () => {
@@ -337,6 +364,89 @@ test('切换主题后重启应用,设置仍然是切换后的主题', async () =
     () => document.documentElement.dataset.theme
   )
   expect(shelfDataThemeAfterBack).toBe('dark')
+})
+
+test('夜间模式同时更新阅读外壳和书内正文', async () => {
+  const h = await launch()
+  await importRealisticFixture(h)
+  await h.page.getByTestId('book-card').first().click()
+  await h.page.getByTestId('reader-page').waitFor()
+
+  await h.page.getByRole('button', { name: '夜间' }).click()
+  await expect(h.page.getByRole('button', { name: '日间' })).toBeVisible()
+  await expect
+    .poll(() => h.page.locator('.reader__page').evaluate((node) => getComputedStyle(node).backgroundColor))
+    .toBe('rgb(27, 25, 22)')
+  await expect
+    .poll(() => {
+      const chapter = h.page.frames().find((frame) => frame !== h.page.mainFrame())
+      return chapter?.evaluate(() => getComputedStyle(document.body).backgroundColor)
+    })
+    .toBe('rgb(27, 25, 22)')
+
+  await h.page.getByRole('button', { name: '日间' }).click()
+  await expect
+    .poll(() => {
+      const chapter = h.page.frames().find((frame) => frame !== h.page.mainFrame())
+      return chapter?.evaluate(() => getComputedStyle(document.body).backgroundColor)
+    })
+    .toBe('rgb(255, 253, 249)')
+})
+
+test('书签会显示在目录中并跨重启保留,再次点击可删除', async () => {
+  const first = await launch()
+  await importFixture(first)
+  await first.page.getByTestId('book-card').first().click()
+  await expect(first.page.getByTestId('page-indicator')).not.toContainText('正在计算', {
+    timeout: 60_000
+  })
+
+  const toggle = first.page.getByTestId('bookmark-toggle')
+  await toggle.click()
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true')
+  await first.page.getByTestId('toggle-toc').click()
+  await expect(first.page.getByTestId('bookmark-entry')).toHaveCount(1)
+  await first.app.close()
+
+  const second = await launch(first.userData)
+  await second.page.getByTestId('book-card').first().click()
+  await expect(second.page.getByTestId('bookmark-toggle')).toHaveAttribute('aria-pressed', 'true', {
+    timeout: 30_000
+  })
+  await second.page.getByTestId('toggle-toc').click()
+  await expect(second.page.getByTestId('bookmark-entry')).toHaveCount(1)
+  await second.page.getByTestId('toggle-toc').click()
+  await second.page.getByTestId('bookmark-toggle').click()
+  await expect(second.page.getByTestId('bookmark-toggle')).toHaveAttribute('aria-pressed', 'false')
+})
+
+test('最小窗口收起对话栏会真正释放阅读空间并可再次展开', async () => {
+  const h = await launch()
+  await h.page.setViewportSize({ width: 900, height: 600 })
+  await importFixture(h)
+  await h.page.getByTestId('book-card').first().click()
+  await h.page.getByTestId('reader-page').waitFor()
+
+  const pageBefore = await h.page.getByTestId('reader-page').boundingBox()
+  const frameBefore = await h.page.locator('[data-testid="reader-page"] iframe').boundingBox()
+  const positionBefore = await waitForStableIndicator(h)
+  expect(positionBefore).toMatch(/约第 1 \/ \d+ 页/)
+  await h.page.getByRole('button', { name: '收起侧边栏' }).click()
+  const sidebarCollapsed = await h.page.getByTestId('sidebar').boundingBox()
+  const pageAfter = await h.page.getByTestId('reader-page').boundingBox()
+  expect(sidebarCollapsed?.width).toBeLessThanOrEqual(50)
+  expect(pageAfter!.width).toBeGreaterThan(pageBefore!.width + 200)
+  await expect.poll(async () => (
+    await h.page.locator('[data-testid="reader-page"] iframe').boundingBox()
+  )?.width ?? 0).toBeGreaterThan(frameBefore!.width + 200)
+  const positionAfter = await waitForStableIndicator(h)
+  const totalOf = (value: string): number => Number(/\/ (\d+) 页/.exec(value)?.[1] ?? 0)
+  expect(totalOf(positionAfter)).toBeLessThan(totalOf(positionBefore))
+
+  await h.page.getByRole('button', { name: '展开侧边栏' }).click()
+  await expect(h.page.getByRole('button', { name: '收起侧边栏' })).toBeVisible()
+  expect((await h.page.getByTestId('sidebar').boundingBox())!.width).toBeGreaterThanOrEqual(280)
+  await expect(h.page.getByTestId('page-indicator')).toHaveText(positionBefore)
 })
 
 test('删除书之后书架恢复空状态,重启也不会把它带回来', async () => {
@@ -414,6 +524,14 @@ test('一次拖选只留下一段引用和一块高亮——中途停住也不�
     '拖到一半停住会让 epub.js 在鼠标还按着的时候先发一次 selected,如果那一次就当成了一次划选,松手后的完整范围会再进来一段,两段文字一长一短、互相重叠'
   ).toHaveLength(1)
   await expect(chapterHighlights(h)).toHaveCount(1)
+  const chip = h.page.getByTestId('quote-chip')
+  const translate = h.page.getByTestId('quote-translate')
+  await expect(translate).toBeHidden()
+  await chip.hover()
+  await expect(translate).toBeVisible()
+  const chipBox = await chip.boundingBox()
+  const translateBox = await translate.boundingBox()
+  expect(translateBox!.y + translateBox!.height).toBeLessThanOrEqual(chipBox!.y + 3)
 })
 
 test('松手之后浏览器补发的那一下 click 不会把刚画出来的高亮连同引用一起抹掉', async () => {

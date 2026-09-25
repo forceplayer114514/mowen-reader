@@ -30,7 +30,7 @@ export interface ConversationRecord {
   bookId: string
   startCfi: string
   endCfi: string
-  /** 「合并下一页」时扩展到的终点;没合并过为 null */
+  /** 「加入下一屏」时扩展到的终点;没扩展过为 null */
   mergedEndCfi: string | null
   chapterLabel: string | null
   /** 该页开头 20 字,供对话管理页辨认 */
@@ -41,6 +41,24 @@ export interface ConversationRecord {
 export interface QuoteRecord {
   cfiRange: string
   text: string
+  /** 划选起点,用于把新对话锚定到原文；旧数据没有时回退到当前可见位置 */
+  startCfi?: string
+}
+
+export interface BookmarkRecord {
+  id: string
+  bookId: string
+  startCfi: string
+  chapterLabel: string | null
+  excerpt: string
+  createdAt: number
+}
+
+export interface CreateBookmarkInput {
+  bookId: string
+  startCfi: string
+  chapterLabel: string | null
+  excerpt: string
 }
 
 export interface MessageRecord {

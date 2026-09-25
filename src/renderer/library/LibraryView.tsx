@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { BookRecord, ImportedFile } from '@shared/types'
 import { extractMetadata } from '../reader/metadata'
+import appIcon from '../assets/mowen-icon.png'
+import ConfirmDialog from '../ConfirmDialog'
+import { useBookCovers } from './useBookCovers'
 
 interface Props {
   onOpenBook: (book: BookRecord) => void
@@ -15,7 +18,7 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
   const [busy, setBusy] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [coverUrls, setCoverUrls] = useState<Record<string, string>>({})
+  const coverUrls = useBookCovers(books)
   // 等待用户确认删除的那本书;非 null 时弹出确认框。删除会连带清掉用户复制
   // 进库的文件副本,不可撤销,所以必须先经过这一步确认,不能点了就删。
   const [pendingDelete, setPendingDelete] = useState<BookRecord | null>(null)
@@ -28,45 +31,6 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
   useEffect(() => {
     void refresh()
   }, [refresh])
-
-  // 封面字节经 IPC 读回来,包成 Blob 再转成 object URL 渲染——直接用
-  // file:// URL 在开发模式下(渲染层跑在 http://localhost:5173)会被
-  // Chromium 拒绝加载,导致封面区一直空白。object URL 会把封面数据
-  // 钉在内存里,书架列表变化或组件卸载时必须撤销,否则窗口整个生命
-  // 周期里泄漏的图片越攒越多。
-  useEffect(() => {
-    let cancelled = false
-    const createdUrls: string[] = []
-
-    void (async () => {
-      const withCovers = await Promise.all(
-        books.map(async (book): Promise<[string, string] | null> => {
-          if (!book.coverPath) return null
-          const bytes = await window.api.readCover(book.id)
-          if (!bytes) return null
-          return [book.id, URL.createObjectURL(new Blob([bytes]))]
-        })
-      )
-      if (cancelled) {
-        for (const entry of withCovers) {
-          if (entry) URL.revokeObjectURL(entry[1])
-        }
-        return
-      }
-      const next: Record<string, string> = {}
-      for (const entry of withCovers) {
-        if (!entry) continue
-        next[entry[0]] = entry[1]
-        createdUrls.push(entry[1])
-      }
-      setCoverUrls(next)
-    })()
-
-    return () => {
-      cancelled = true
-      for (const url of createdUrls) URL.revokeObjectURL(url)
-    }
-  }, [books])
 
   // 每本书独立完成"复制进库 -> 读元数据 -> 落库"这一整套动作,失败了
   // 只清理这一本自己复制出来的文件,不影响其它书——这样一批里有几本
@@ -202,7 +166,7 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
   )
 
   return (
-    <div
+    <main
       className={`library${dragging ? ' dropzone--active' : ''}`}
       onDragOver={(e) => {
         e.preventDefault()
@@ -212,25 +176,51 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
       onDrop={onDrop}
       data-testid="library"
     >
-      <div className="library__bar">
-        <button onClick={onPickFiles} data-testid="pick-files">
-          添加 EPUB
-        </button>
-        <button onClick={onPickFolder} data-testid="pick-folder">
-          扫描文件夹
-        </button>
-        <button type="button" data-testid="open-conversations" onClick={onOpenConversations}>
-          对话管理
-        </button>
-        <button type="button" data-testid="open-settings" onClick={onOpenSettings}>
-          设置
-        </button>
-        {busy && <span className="library__status">{busy}…</span>}
-        {error && <span style={{ color: 'var(--danger)' }}>{error}</span>}
-      </div>
+      <header className="library__bar">
+        <div className="brand">
+          <img className="brand__icon" src={appIcon} alt="" />
+          <div>
+            <div className="brand__name">墨问</div>
+            <div className="brand__tagline">读有所思，问有所答</div>
+          </div>
+        </div>
+        <nav className="library__nav" aria-label="书架操作">
+          <button type="button" className="button--ghost" data-testid="open-conversations" onClick={onOpenConversations}>
+            对话
+          </button>
+          <button type="button" className="button--ghost" data-testid="open-settings" onClick={onOpenSettings}>
+            设置
+          </button>
+          <button type="button" className="button--secondary" onClick={onPickFolder} data-testid="pick-folder">
+            扫描文件夹
+          </button>
+          <button type="button" className="button--primary" onClick={onPickFiles} data-testid="pick-files">
+            ＋ 添加 EPUB
+          </button>
+        </nav>
+      </header>
+
+      <section className="library__intro">
+        <div>
+          <p className="eyebrow">个人书库</p>
+          <h1>你的书架</h1>
+          <p>沉浸阅读，在需要时让 AI 帮你理解、翻译和梳理。</p>
+        </div>
+        <span className="library__count">{books.length} 本书</span>
+      </section>
+
+      {(busy || error) && (
+        <div className={`library__notice${error ? ' library__notice--error' : ''}`} role="status">
+          {error ?? `${busy}…`}
+        </div>
+      )}
 
       {books.length === 0 ? (
-        <p className="empty">书架是空的。把 EPUB 文件拖进这个窗口,或者点上面的按钮。</p>
+        <div className="empty">
+          <span className="empty__icon">＋</span>
+          <strong>书架是空的</strong>
+          <p>把第一本书拖进来，或点击右上角的「添加 EPUB」。</p>
+        </div>
       ) : (
         <div className="library__grid">
           {books.map((book) => (
@@ -238,7 +228,6 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
               key={book.id}
               className="book-card"
               data-testid="book-card"
-              onClick={() => onOpenBook(book)}
             >
               <button
                 type="button"
@@ -249,47 +238,30 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
               >
                 删除
               </button>
-              <div className="book-card__cover">
-                {coverUrls[book.id] ? (
-                  <img
-                    src={coverUrls[book.id]}
-                    alt={book.title}
-                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                  />
-                ) : (
-                  book.title
-                )}
-              </div>
-              <div className="book-card__title">{book.title}</div>
-              <div className="book-card__author">{book.author ?? '佚名'}</div>
+              <button type="button" className="book-card__open" aria-label={`打开《${book.title}》`} onClick={() => onOpenBook(book)}>
+                <div className="book-card__cover">
+                  {coverUrls[book.id] ? (
+                    <img src={coverUrls[book.id]} alt="" />
+                  ) : book.title}
+                </div>
+                <div className="book-card__title">{book.title}</div>
+                <div className="book-card__author">{book.author ?? '佚名'}</div>
+              </button>
             </div>
           ))}
         </div>
       )}
 
-      {pendingDelete && (
-        <div className="modal-overlay" data-testid="confirm-delete">
-          <div className="modal">
-            <p>
-              确定要删除《{pendingDelete.title}》吗?这会一并删除应用为它保存的本地文件副本,删除后无法恢复。
-            </p>
-            <div className="modal__actions">
-              <button type="button" onClick={cancelDelete} disabled={deleting}>
-                取消
-              </button>
-              <button
-                type="button"
-                className="modal__danger"
-                data-testid="confirm-delete-yes"
-                onClick={() => void confirmDelete()}
-                disabled={deleting}
-              >
-                {deleting ? '删除中…' : '确认删除'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
+      {pendingDelete && <ConfirmDialog
+        title="删除这本书？"
+        message={`确定要删除《${pendingDelete.title}》吗？这会一并删除应用保存的本地文件副本，删除后无法恢复。`}
+        confirmLabel="确认删除"
+        onCancel={cancelDelete}
+        onConfirm={() => void confirmDelete()}
+        busy={deleting}
+        testId="confirm-delete"
+        confirmTestId="confirm-delete-yes"
+      />}
+    </main>
   )
 }

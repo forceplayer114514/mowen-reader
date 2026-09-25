@@ -7,6 +7,7 @@ interface Props {
   chat: ChatState
   quotes: QuoteRecord[]
   onRemoveQuote: (cfiRange: string) => void
+  onTranslateQuote: (quote: QuoteRecord) => void
   onNewConversation: () => void
 }
 
@@ -14,6 +15,7 @@ export default function ConversationView({
   chat,
   quotes,
   onRemoveQuote,
+  onTranslateQuote,
   onNewConversation
 }: Props) {
   const [text, setText] = useState('')
@@ -29,6 +31,13 @@ export default function ConversationView({
   return (
     <section className="conversation" aria-label="当前对话">
       <div className="conversation__messages">
+        {chat.messages.length === 0 && chat.streaming === null && (
+          <div className="conversation__empty">
+            <span>✦</span>
+            <strong>从当前位置开始提问</strong>
+            <p>选中文字可引用或翻译，也可以直接询问当前内容。</p>
+          </div>
+        )}
         {chat.messages.map((message) => (
           <article
             key={message.id}
@@ -67,16 +76,27 @@ export default function ConversationView({
       {quotes.length > 0 && (
         <div className="conversation__quotes" aria-label="已选引用">
           {quotes.map((quote) => (
-            <button
-              type="button"
-              className="quote-chip"
-              data-testid="quote-chip"
-              key={quote.cfiRange}
-              title="移除引用"
-              onClick={() => onRemoveQuote(quote.cfiRange)}
-            >
-              「{quote.text}」 ×
-            </button>
+            <span className="quote-chip-wrap" key={quote.cfiRange}>
+              <button
+                type="button"
+                className="quote-chip"
+                data-testid="quote-chip"
+                aria-label={`移除引用「${quote.text}」`}
+                onClick={() => onRemoveQuote(quote.cfiRange)}
+              >
+                「{quote.text}」 ×
+              </button>
+              <button
+                type="button"
+                className="selection-translate button--primary"
+                data-testid="quote-translate"
+                aria-label={`翻译「${quote.text}」`}
+                disabled={busy}
+                onClick={() => onTranslateQuote(quote)}
+              >
+                翻译
+              </button>
+            </span>
           ))}
         </div>
       )}
@@ -97,12 +117,13 @@ export default function ConversationView({
           }}
         />
         {busy ? (
-          <button type="button" data-testid="chat-stop" onClick={chat.stop}>
+          <button type="button" className="button--secondary" data-testid="chat-stop" onClick={chat.stop}>
             停止
           </button>
         ) : (
           <button
             type="button"
+            className="button--primary"
             data-testid="chat-send"
             disabled={text.trim().length === 0}
             onClick={() => void submit()}
@@ -112,11 +133,14 @@ export default function ConversationView({
         )}
         <button
           type="button"
+          className="button--icon"
           data-testid="new-conversation"
           disabled={busy}
           onClick={onNewConversation}
+          aria-label="新建对话"
+          title="新建对话"
         >
-          +新对话
+          ＋
         </button>
       </div>
     </section>

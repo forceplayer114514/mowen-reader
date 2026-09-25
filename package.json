@@ -1,7 +1,7 @@
 {
-  "name": "ai-reader",
+  "name": "mowen-reader",
   "version": "0.2.0",
-  "description": "带 AI 对话功能的 EPUB 桌面阅读器",
+  "description": "墨问——带 AI 对话功能的 EPUB 桌面阅读器",
   "main": "./out/main/index.js",
   "type": "module",
   "license": "MIT",

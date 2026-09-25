@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest'
 import { openDatabase } from '../../src/main/db'
 import {
   deleteBook,
+  deleteBookmark,
   getBook,
   getLocations,
+  insertBookmark,
   insertBook,
+  listBookmarks,
   listBooks,
   listSourcePaths,
   setLocations,
@@ -98,6 +101,34 @@ describe('books 表', () => {
       '/Users/me/Downloads/a.epub',
       '/Users/me/Downloads/b.epub'
     ])
+    db.close()
+  })
+
+  it('书签可存取删除,删书时一并清理', () => {
+    const db = openDatabase(':memory:')
+    insertBook(db, make('a'))
+    insertBookmark(db, {
+      id: 'mark-1',
+      bookId: 'a',
+      startCfi: 'epubcfi(/6/4!/4/2/2)',
+      chapterLabel: '第一章',
+      excerpt: '这一页的开头',
+      createdAt: 1000
+    })
+    expect(listBookmarks(db, 'a')).toHaveLength(1)
+    deleteBookmark(db, 'mark-1')
+    expect(listBookmarks(db, 'a')).toEqual([])
+
+    insertBookmark(db, {
+      id: 'mark-2',
+      bookId: 'a',
+      startCfi: 'epubcfi(/6/4!/4/2/4)',
+      chapterLabel: null,
+      excerpt: '',
+      createdAt: 2000
+    })
+    deleteBook(db, 'a')
+    expect(listBookmarks(db, 'a')).toEqual([])
     db.close()
   })
 })

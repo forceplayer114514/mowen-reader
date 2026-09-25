@@ -67,6 +67,7 @@ describe('数据库版本标记', () => {
     expect(row.title).toBe('旧书')
     // 新表可用
     expect(() => db.prepare('SELECT COUNT(*) FROM conversations').get()).not.toThrow()
+    expect(() => db.prepare('SELECT COUNT(*) FROM bookmarks').get()).not.toThrow()
     db.close()
   })
 })

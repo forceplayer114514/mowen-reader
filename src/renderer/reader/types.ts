@@ -29,8 +29,9 @@ export interface VisibleRange {
   chapterHref: string
   /** 当前章节标题,目录里查不到时为 null */
   chapterLabel: string | null
-  /** 页码 = 位置索引 + 1,不随字号变化 */
+  /** 当前排版下估算的全书页码，字号和阅读区域变化时重新计算 */
   page: number
+  /** 当前排版下估算的全书总页数 */
   totalPages: number
 }
 
@@ -41,13 +42,18 @@ export interface OpenOptions {
   savedLocations: string | null
 }
 
+export interface SelectionPoint {
+  x: number
+  y: number
+}
+
 export interface ReaderEngine {
   open(data: ArrayBuffer, opts: OpenOptions): Promise<void>
   display(target?: string): Promise<void>
   next(): Promise<void>
   prev(): Promise<void>
   setSpread(on: boolean): Promise<void>
-  setFontSize(px: number): void
+  setFontSize(px: number, anchorCfi?: string): void | Promise<void>
   setTheme(name: ThemeName): void
   getVisible(): Promise<VisibleRange>
   toc(): TocItem[]
@@ -65,7 +71,14 @@ export interface ReaderEngine {
    * 选区的话,一个订阅者炸了,后面的订阅者收不到通知、选区也没了,用户刚拖出来的
    * 那段话连复制都做不到。所以订阅者别假设选区已经空了。
    */
-  onSelected(cb: (cfiRange: string, text: string) => void): () => void
+  onSelected(
+    cb: (
+      cfiRange: string,
+      text: string,
+      point: SelectionPoint | null,
+      startCfi: string
+    ) => void
+  ): () => void
   /** 给一段范围加高亮;点击该高亮时调用 onClick。同一段范围重复加会先抹掉旧的那层。 */
   addHighlight(cfiRange: string, onClick: () => void): void
   /** 抹掉一段范围的高亮;这段范围本来就没高亮时什么也不做。 */

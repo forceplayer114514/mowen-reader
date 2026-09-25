@@ -1,5 +1,5 @@
 appId: com.github.aireader
-productName: AI 阅读器
+productName: 墨问
 directories:
   output: release
   buildResources: build
@@ -7,6 +7,7 @@ files:
   - out/**/*
   - package.json
 mac:
+  icon: build/icon.png
   category: public.app-category.book
   target:
     - target: dmg
@@ -16,6 +17,7 @@ mac:
   hardenedRuntime: false
   entitlements: build/entitlements.mac.plist
 win:
+  icon: build/icon.png
   target:
     - target: nsis
       arch: [x64]

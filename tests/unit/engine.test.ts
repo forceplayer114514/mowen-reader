@@ -50,6 +50,7 @@ interface FakeContents {
 function createFakeEpub() {
   const calls: AnnotationCall[] = []
   const displayTargets: string[] = []
+  const fontSizeCalls: string[] = []
   const handlers = new Map<string, Set<(...args: unknown[]) => void>>()
   const contents: FakeContents[] = []
   let viewCount = 1
@@ -69,12 +70,16 @@ function createFakeEpub() {
 
   const rendition = {
     location: {
-      start: { cfi: 'epubcfi(/6/4!/4/2/2/1:0)' },
+      start: { cfi: 'epubcfi(/6/4!/4/2/2/1:0)', displayed: { page: 2, total: 8 } },
       end: { cfi: 'epubcfi(/6/4!/4/2/10/1:0)' }
     },
     spread: vi.fn(),
     next: vi.fn(async (): Promise<void> => {}),
-    themes: { register: () => {}, select: () => {}, fontSize: () => {} },
+    themes: {
+      register: () => {},
+      select: () => {},
+      fontSize: (size: string) => { fontSizeCalls.push(size) }
+    },
     q: { stop: () => {} },
     annotations: {
       highlight(
@@ -114,7 +119,14 @@ function createFakeEpub() {
     loaded: { navigation: Promise.resolve({ toc: [] }) },
     packaging: { navPath: '', ncxPath: '' },
     spine: { each: (): void => {} },
-    locations: { load: (): void => {} },
+    locations: {
+      load: (): void => {},
+      save: (): string => '[]',
+      total: 9,
+      length: () => 10,
+      locationFromCfi: () => 9
+    },
+    getRange: async () => ({ toString: () => '正文内容' }),
     renderTo: () => rendition,
     destroy: (): void => {}
   }
@@ -130,7 +142,11 @@ function createFakeEpub() {
       return calls.map((c) => `${c.op} ${c.cfiRange}`)
     },
     displayTargets,
+    fontSizeCalls,
     nextCalls: rendition.next,
+    setDisplayed(page: number, total: number): void {
+      rendition.location.start.displayed = { page, total }
+    },
     /** 现在渲染出来几个章节视图。0 表示一个都没有。 */
     setViewCount(n: number): void {
       viewCount = n
@@ -192,6 +208,33 @@ describe('高亮与 epub.js 标注表', () => {
     await engine.setSpread(false)
     expect(f.displayTargets).toEqual(['epubcfi(/6/4!/4/2/2/1:0)'])
     expect(f.nextCalls).not.toHaveBeenCalled()
+    engine.destroy()
+  })
+
+  it('setFontSize 会更新主题字号并以当前 CFI 重新落位', async () => {
+    const f = createFakeEpub()
+    const engine = await openEngine()
+    f.displayTargets.length = 0
+    f.fontSizeCalls.length = 0
+    await engine.setFontSize(24)
+    expect(f.fontSizeCalls).toEqual(['24px'])
+    expect(f.displayTargets).toEqual(['epubcfi(/6/4!/4/2/2/1:0)'])
+    engine.destroy()
+  })
+
+  it('字号改变会重算总页数，章节排版通知不会改写总数', async () => {
+    const f = createFakeEpub()
+    const engine = await openEngine()
+    const v = await engine.getVisible()
+    expect(v.totalPages).toBe(10)
+    expect(v.page).toBe(10)
+    expect(v.page).toBeLessThanOrEqual(v.totalPages)
+    f.setDisplayed(1, 100)
+    expect(await engine.getVisible()).toMatchObject({ page: 10, totalPages: 10 })
+    await engine.setFontSize(16)
+    expect(await engine.getVisible()).toMatchObject({ page: 8, totalPages: 8 })
+    await engine.setFontSize(20)
+    expect(await engine.getVisible()).toMatchObject({ page: 12, totalPages: 12 })
     engine.destroy()
   })
 

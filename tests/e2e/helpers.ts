@@ -140,7 +140,7 @@ export async function importLinkedFixture(h: Harness): Promise<void> {
   await h.page.getByTestId('book-card').first().waitFor({ timeout: 30_000 })
 }
 
-/** 等页码索引算完:「正在计算页码…」消失、指示器里出现「页」字。 */
+/** 等内容索引算完、页码出现。 */
 export async function waitForLocationsReady(h: Harness): Promise<void> {
   const indicator = h.page.getByTestId('page-indicator')
   await indicator.waitFor()
@@ -190,10 +190,7 @@ export async function waitForStableIndicator(h: Harness): Promise<string> {
  * 一次一次按 `key`,直到页码指示器的文字真的变了(每按一次都等到稳定再看有没有
  * 变),最多按 `maxPresses` 次。返回让文字真正变化所用的按键次数。
  *
- * 内容索引的分段粒度和物理翻页的屏幕粒度不是 1:1 对齐的(见下面 pressAndSettle
- * 的注释),所以不能假设"按一下方向键,页码指示器就一定跟着变"——同一个索引分段
- * 里可能要翻好几屏才会跨到下一段。这里用来验证"往前翻迟早会离开当前页码"这个
- * 更宽松、但更符合实际实现的说法,而不是"按一下必须变"。
+ * epub.js 的翻页和页码上报是异步的；这里逐次等待，直到显示的页码变化。
  */
 export async function pressUntilPageChanges(
   h: Harness,
@@ -213,13 +210,7 @@ export async function pressUntilPageChanges(
 /**
  * 连续按 `times` 次方向键翻页,再等页码指示器稳定下来,返回最终稳定的文字。
  *
- * 页码来自内容索引(每 1000 字符一个分段,见 engine.ts 的 LOCATION_CHUNK),
- * 但每次方向键翻的是排版意义上的一屏——两者的粒度并不对齐:一屏的字数不一定
- * 刚好等于一个分段,所以连续按方向键时,并不能假设「每按一下,索引页码就一定
- * 跟着变一次」——有时候两屏内容才跨过一个分段边界,页码要等第二次翻页才会变。
- * 之前的实现每按一下就断言页码必须变,恰好在这本测试用的样例书里,第 3 段和第 4
- * 段索引之间需要翻两屏才跨过去,断言撞上了这个正常的粒度不对齐,不是应用的缺陷。
- * 这里改成按完所有次数、等指示器不再变化再读值,不对每一次按键单独做假设。
+ * 多次翻页之间仍会有异步排版，按完后等指示器稳定再取最终页码。
  */
 export async function pressAndSettle(
   h: Harness,
@@ -229,6 +220,7 @@ export async function pressAndSettle(
   const indicator = h.page.getByTestId('page-indicator')
   for (let i = 0; i < times; i++) {
     await h.page.keyboard.press(key)
+    await h.page.waitForTimeout(300)
   }
   return waitForStableText(indicator)
 }
@@ -380,8 +372,8 @@ async function dispatchChapterMouse(
  * 之所以只能这样:按下鼠标后指针还落在 sandbox 的 srcdoc iframe 上再 mouse.move,
  * Electron 的调试连接会当场断开、窗口跟着关掉(见上一段)。
  */
-export async function slowDragSelectInChapter(h: Harness, opts: DragOptions = {}): Promise<void> {
-  await dragSelectChapterRange(
+export async function slowDragSelectInChapter(h: Harness, opts: DragOptions = {}): Promise<ChapterPoint> {
+  return dragSelectChapterRange(
     h,
     {
       fromParagraph: 1,
@@ -519,7 +511,7 @@ async function dragSelectChapterRange(
   h: Harness,
   at: ChapterRange,
   opts: DragOptions = {}
-): Promise<void> {
+): Promise<ChapterPoint> {
   await h.page
     .frameLocator(CHAPTER_FRAME)
     .locator(at.selector ?? 'p')
@@ -545,6 +537,7 @@ async function dragSelectChapterRange(
   // 高亮里面——少派发它,"松开即高亮"看起来一切正常,真人用鼠标拖一次却什么都
   // 留不下。这一行就是这个辅助函数里最要紧的一行。
   await dispatchChapterMouse(h, 'click', end)
+  return end
 }
 
 /** 页面上当前画着的划选高亮(marks-pane 盖在正文上的那层 SVG)。 */

@@ -76,7 +76,7 @@ describe('Task 11 侧边栏接线', () => {
   beforeEach(() => { host = document.createElement('div'); document.body.append(host) })
   afterEach(() => { act(() => root?.unmount()); host.remove() })
 
-  it('relocation 清掉旧会话消息和所有高亮,底部回到空对话', async () => {
+  it('relocation 保留当前会话消息和高亮', async () => {
     const h = makeHarness()
     const selection = {
       list: vi.fn(() => [{ cfiRange: 'r', text: '引用' }]),
@@ -89,8 +89,9 @@ describe('Task 11 侧边栏接线', () => {
     await vi.waitFor(() => expect(h.api.listMessages).toHaveBeenCalled())
     await vi.waitFor(() => expect(host.querySelector('[data-testid="message-user"]')).not.toBeNull())
 
-    await act(async () => { h.trigger(); await vi.waitFor(() => expect(selection.clear).toHaveBeenCalled()) })
-    expect(host.querySelector('[data-testid="message-user"]')).toBeNull()
+    await act(async () => { h.trigger(); await Promise.resolve() })
+    expect(selection.clear).not.toHaveBeenCalled()
+    expect(host.querySelector('[data-testid="message-user"]')).not.toBeNull()
     expect(host.querySelector('[data-testid="chat-input"]')).not.toBeNull()
   })
 
@@ -104,6 +105,30 @@ describe('Task 11 侧边栏接线', () => {
     await act(async () => { host.querySelector<HTMLButtonElement>('[data-testid="merge-next-page"]')?.click(); await Promise.resolve() })
     expect(h.engine.setSpread).toHaveBeenCalledWith(true)
     expect(h.api.setConversationMerge).toHaveBeenCalledWith('old', second.endCfi)
+  })
+
+  it('合并后按钮变为取消合并，再点恢复单页并清除数据库合并终点', async () => {
+    const h = makeHarness()
+    window.api = h.api as never
+    await act(async () => {
+      root = createRoot(host)
+      root.render(createElement(SpreadHarness, { h }))
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="message-user"]')).not.toBeNull())
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="merge-next-page"]')?.click()
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="merge-next-page"]')?.textContent).toContain('取消扩展'))
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="merge-next-page"]')?.click()
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(h.api.setConversationMerge).toHaveBeenCalledWith('old', null))
+    expect(h.engine.setSpread).toHaveBeenNthCalledWith(1, true)
+    expect(h.engine.setSpread).toHaveBeenNthCalledWith(2, false)
+    expect(host.querySelector('[data-testid="merge-next-page"]')?.textContent).toContain('加入下一屏')
   })
 
   it('尚未创建会话时,首次发送使用合并后的终点 CFI', async () => {
@@ -144,7 +169,6 @@ describe('Task 11 侧边栏接线', () => {
     h.api.appendMessage.mockResolvedValue({ id: 'new-msg', conversationId: 'new', role: 'user', content: '新问题', quotes: [], createdAt: 1 })
     h.api.startChat.mockResolvedValue('request-new')
     window.api = h.api as never
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     await act(async () => {
       root = createRoot(host)
       root.render(createElement(SpreadHarness, { h }))
@@ -164,7 +188,6 @@ describe('Task 11 侧边栏接线', () => {
     })
     await vi.waitFor(() => expect(h.api.createConversation).toHaveBeenCalled())
     expect(h.api.setConversationMerge).toHaveBeenCalledTimes(1)
-    confirm.mockRestore()
   })
 
   it('恢复 lastReadCfi 期间的 relocation 不切换对话也不清高亮', async () => {
@@ -196,7 +219,7 @@ describe('Task 11 侧边栏接线', () => {
     await act(async () => { h.trigger(); await Promise.resolve() })
     expect(selection.clear).not.toHaveBeenCalled()
     await act(async () => { h.trigger(); await Promise.resolve() })
-    await vi.waitFor(() => expect(selection.clear).toHaveBeenCalled())
+    expect(selection.clear).not.toHaveBeenCalled()
   })
 
   it('恢复 display 完成后只在下一次 relocation 解除恢复保护', () => {
@@ -233,9 +256,8 @@ describe('Task 11 侧边栏接线', () => {
     confirm.mockRestore()
   })
 
-  it('保留本页当前对话时不删除旧会话,并回到底部空对话', async () => {
+  it('保留当前对话时不删除旧会话,并回到底部空对话', async () => {
     const h = makeHarness()
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     window.api = h.api as never
     await act(async () => {
       root = createRoot(host)
@@ -244,10 +266,8 @@ describe('Task 11 侧边栏接线', () => {
     })
     await vi.waitFor(() => expect(host.querySelector('[data-testid="message-user"]')).not.toBeNull())
     await act(async () => { host.querySelector<HTMLButtonElement>('[data-testid="new-conversation"]')?.click(); await Promise.resolve() })
-    expect(confirm).toHaveBeenCalledWith('保留本页当前对话?')
     expect(h.api.deleteConversations).not.toHaveBeenCalled()
     expect(host.querySelector('[data-testid="message-user"]')).toBeNull()
-    confirm.mockRestore()
   })
 
   it('新会话的合并写入失败只提示,不阻断模型请求', async () => {
@@ -278,7 +298,7 @@ describe('Task 11 侧边栏接线', () => {
     expect(host.querySelector('[data-testid="sidebar-error"]')?.textContent).toContain('合并范围保存失败')
   })
 
-  it('最后一页禁用合并按钮', async () => {
+  it('最后一个稳定位置仍可加入下一屏', async () => {
     const h = makeHarness()
     window.api = h.api as never
     const last = { ...first, page: 100, totalPages: 100 }
@@ -287,7 +307,7 @@ describe('Task 11 侧边栏接线', () => {
       root.render(createElement(Sidebar, { book, engine: h.engine, visible: last, toc: [], selection: null }))
       await Promise.resolve()
     })
-    expect(host.querySelector<HTMLButtonElement>('[data-testid="merge-next-page"]')?.disabled).toBe(true)
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="merge-next-page"]')?.disabled).toBe(false)
   })
 
   it('模型响应进行中禁用新对话按钮,不触发确认或删除', () => {
@@ -298,7 +318,7 @@ describe('Task 11 侧边栏接线', () => {
     } as unknown as ChatState
     act(() => {
       root = createRoot(host)
-      root.render(createElement(ConversationView, { chat, quotes: [], onRemoveQuote: vi.fn(), onNewConversation }))
+      root.render(createElement(ConversationView, { chat, quotes: [], onRemoveQuote: vi.fn(), onTranslateQuote: vi.fn(), onNewConversation }))
     })
     const button = host.querySelector<HTMLButtonElement>('[data-testid="new-conversation"]')!
     expect(button.disabled).toBe(true)

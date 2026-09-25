@@ -1,16 +1,23 @@
-import ePub, { type Book, type Contents, type NavItem, type Rendition } from 'epubjs'
+import ePub, { EpubCFI, type Book, type Contents, type NavItem, type Rendition } from 'epubjs'
 import { makeRangeCfi } from './cfi'
 import { normalizeChapterHref, resolveNavigationHref } from './href'
-import type { OpenOptions, ReaderEngine, ThemeName, TocItem, VisibleRange } from './types'
+import type {
+  OpenOptions,
+  ReaderEngine,
+  SelectionPoint,
+  ThemeName,
+  TocItem,
+  VisibleRange
+} from './types'
 
 const THEMES: Record<ThemeName, Record<string, Record<string, string>>> = {
   light: {
-    body: { color: '#1a1a1a', background: '#faf8f5' },
-    a: { color: '#1a5fb4' }
+    'html, body': { color: '#29231e !important', 'background-color': '#fffdf9 !important' },
+    a: { color: '#b64c2e !important' }
   },
   dark: {
-    body: { color: '#d6d3cd', background: '#1c1b19' },
-    a: { color: '#7aa2f7' }
+    'html, body': { color: '#f2ebe1 !important', 'background-color': '#1b1916 !important' },
+    a: { color: '#df7958 !important' }
   }
 }
 
@@ -26,7 +33,7 @@ const HIGHLIGHT_STYLES: Record<ThemeName, Record<string, string>> = {
   dark: { fill: '#7aa2f7', 'fill-opacity': '0.38', 'mix-blend-mode': 'screen' }
 }
 
-/** 位置索引的切分粒度。数字越小页数越多、生成越慢。1000 字符约等于一屏中文。 */
+/** 固定 CFI 索引的切分粒度；页数另按当前排版尺寸计算。 */
 const LOCATION_CHUNK = 1000
 
 /**
@@ -37,6 +44,7 @@ const LOCATION_CHUNK = 1000
  */
 interface LocationsWithTotal {
   total: number
+  length?(): number
   locationFromCfi(cfi: string): number
 }
 
@@ -50,7 +58,9 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   let spineHrefs: string[] = []
   let listeners: (() => void)[] = []
   let keyListeners: ((key: string) => void)[] = []
-  let selectionListeners: ((cfiRange: string, text: string) => void)[] = []
+  let selectionListeners: (
+    (cfiRange: string, text: string, point: SelectionPoint | null, startCfi: string) => void
+  )[] = []
   // 当前这本书上加过的高亮:范围 -> 点击它时要回调的函数。自己记一份,是因为
   // clearHighlights() 和换主题重画都要逐个范围操作,而 epub.js 的 Annotations
   // 只把它们塞在 _annotations 这类私有字段里(见 node_modules/epubjs/src/annotations.js),
@@ -65,10 +75,45 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   // 当前主题。加高亮时要按它取配色,所以不能只交给 rendition.themes 自己记。
   let theme: ThemeName = 'light'
   let locationsReady = false
+  let currentFontSize = 18
+  let sectionLocationCounts: number[] = []
+
+  function countSectionLocations(source: Book): void {
+    const counts = Array<number>(spineHrefs.length).fill(0)
+    for (const cfi of JSON.parse(source.locations.save()) as string[]) {
+      const index = new EpubCFI(cfi).spinePos
+      if (index >= 0 && index < counts.length) counts[index]++
+    }
+    sectionLocationCounts = counts
+  }
+
   // 每次 open()/destroy() 自增一次,给这次调用发出的所有异步延续盖一个“批次号”。
   // 延续恢复执行时先比对批次号,号不一样说明这次 open 已经被下一次 open 或 destroy 取代,
   // 直接放弃、不再碰任何闭包变量——用来防止过期的 open() 续写覆盖新书的状态。
   let generation = 0
+  let resizeFrame: number | null = null
+  let pendingSize = { width: 0, height: 0 }
+  let targetLocation: string | null = null
+  let targetLocationTimeout: ReturnType<typeof setTimeout> | null = null
+  const resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(([entry]) => {
+    pendingSize = {
+      width: Math.round(entry.contentRect.width),
+      height: Math.round(entry.contentRect.height)
+    }
+    if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
+    resizeFrame = requestAnimationFrame(() => {
+      resizeFrame = null
+      if (targetLocation !== null) return
+      const cfi = rendition?.location?.start?.cfi
+      if (!rendition || !cfi || pendingSize.width <= 0 || pendingSize.height <= 0) return
+      ;(rendition.resize as (width: number, height: number, cfi: string) => void)(
+        pendingSize.width,
+        pendingSize.height,
+        cfi
+      )
+    })
+  })
+  resizeObserver?.observe(container)
 
   /**
    * navDocPath 是导航文档自己相对 OPF 目录的路径(book.packaging.navPath,没有
@@ -196,6 +241,22 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     for (const cb of round) {
       if (listeners.includes(cb)) cb()
     }
+  }
+
+  function handleRelocated(loc: { start?: { href?: string; cfi?: string }; end?: { cfi?: string } }): void {
+    const href = loc?.start?.href
+    if (
+      !targetLocation ||
+      (href && normalizeChapterHref(href) === normalizeChapterHref(targetLocation)) ||
+      (targetLocation.startsWith('epubcfi(') && (loc?.start?.cfi === targetLocation || loc?.end?.cfi === targetLocation))
+    ) {
+      if (targetLocationTimeout !== null) {
+        clearTimeout(targetLocationTimeout)
+        targetLocationTimeout = null
+      }
+      targetLocation = null
+    }
+    notify()
   }
 
   /** 见 notify() 的注释。 */
@@ -375,7 +436,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
    * 那段选区会一直留在那儿,等用户下一次在别处松手才被翻出来,变成一段莫名其妙
    * 冒出来的引用。
    */
-  function consumeSelection(press: PressKind): void {
+  function consumeSelection(press: PressKind, event: Event, fromContent: boolean): void {
     if (selectionListeners.length === 0) return
     if (!rendition) return
     // getContents() 在这版 epub.js 的类型声明里被错标成单个 Contents,运行时实际
@@ -390,6 +451,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       if (text.trim().length === 0) continue
 
       let cfiRange: string
+      let startCfi: string
       try {
         cfiRange = contents.cfiFromRange(range)
       } catch {
@@ -397,6 +459,28 @@ export function createEngine(container: HTMLElement): ReaderEngine {
         // 调用栈接得住,会变成未捕获的全局异常,只能放弃这一次划选。
         continue
       }
+      // 正常浏览器 Range 都支持 cloneRange；测试替身或异常文档缺失时仍保留引用，
+      // 新对话会回退到当前可见位置。
+      try {
+        const start = range.cloneRange()
+        start.collapse(true)
+        startCfi = contents.cfiFromRange(start)
+      } catch {
+        startCfi = cfiRange
+      }
+
+      const touch = (event as TouchEvent).changedTouches?.[0]
+      const clientX = touch?.clientX ?? (event as MouseEvent).clientX
+      const clientY = touch?.clientY ?? (event as MouseEvent).clientY
+      const frameRect = fromContent
+        ? contents.document.defaultView?.frameElement?.getBoundingClientRect()
+        : null
+      const point = Number.isFinite(clientX) && Number.isFinite(clientY)
+        ? {
+            x: clientX + (frameRect?.left ?? 0),
+            y: clientY + (frameRect?.top ?? 0)
+          }
+        : null
 
       // 这段选区马上就会变成一块盖在同一片文字上的高亮,而松手之后浏览器还会在
       // 松手那个点上补一次 click——正落在这块新高亮里。先把那一下挡下来,
@@ -405,7 +489,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       // 快照一份再逐个确认还在不在名单里,理由见 notify() 的注释。
       const round = [...selectionListeners]
       for (const cb of round) {
-        if (selectionListeners.includes(cb)) cb(cfiRange, text)
+        if (selectionListeners.includes(cb)) cb(cfiRange, text, point, startCfi)
       }
       // 通知完了才收选区,顺序不能倒过来。这是鼠标事件的回调,没有任何调用栈接得住
       // 订阅者抛出来的异常:先收选区的话,一个订阅者炸了,后面的订阅者收不到通知,
@@ -442,7 +526,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   function handleContentRelease(e: Event): void {
     pressedInContent = false
     if (!isSelectionRelease(e)) return
-    consumeSelection(pressKindOf(e))
+    consumeSelection(pressKindOf(e), e, true)
   }
 
   /**
@@ -459,7 +543,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     // 右键松开会把"这次按下落在书内容里"这个状态留给下一次左键松开。
     pressedInContent = false
     if (!startedInContent || !isSelectionRelease(e)) return
-    consumeSelection(pressKindOf(e))
+    consumeSelection(pressKindOf(e), e, false)
   }
 
   /**
@@ -556,7 +640,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     // 位置变化的订阅和下面几个一样要还回去:这是本文件自己立的规矩——订上去的
     // 每一个都在 teardown() 里退掉。这一条以前漏了,只是因为紧接着 rendition
     // 就被销毁、引用也被置空才没出事,那是碰巧,不是规矩。
-    rendition?.off('relocated', notify)
+    rendition?.off('relocated', handleRelocated)
     rendition?.off('keydown', handleContentKeydown)
     rendition?.off('mousedown', handleContentPress)
     rendition?.off('touchstart', handleContentPress)
@@ -609,6 +693,16 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     // 只会对着不存在的范围做删除。
     pendingRemovals.clear()
     locationsReady = false
+    sectionLocationCounts = []
+    if (resizeFrame !== null) {
+      cancelAnimationFrame(resizeFrame)
+      resizeFrame = null
+    }
+    if (targetLocationTimeout !== null) {
+      clearTimeout(targetLocationTimeout)
+      targetLocationTimeout = null
+    }
+    targetLocation = null
   }
 
   return {
@@ -629,6 +723,24 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       nextRendition.themes.select(opts.theme)
       theme = opts.theme
       nextRendition.themes.fontSize(`${opts.fontSize}px`)
+      currentFontSize = opts.fontSize
+
+      // 防死锁保护: epub.js 的 Queue.prototype.run 内部调用 this.dequeue().then(...)
+      // 时没有 .catch() 异常处理,若队列任务抛错,this.running 会永久停留在 true,
+      // 导致后续所有翻页、跳转和位置上报全部卡死。
+      // 这里包装 dequeue,确保当排队任务 reject 时能够正常 resolve,使 run() 能够继续推进
+      // 并把 running 状态复位,彻底杜绝阅读器死锁。
+      const q = (nextRendition as unknown as { q?: { dequeue?: () => Promise<unknown> } }).q
+      if (q && typeof q.dequeue === 'function') {
+        const origDequeue = q.dequeue.bind(q)
+        q.dequeue = function () {
+          const res = origDequeue()
+          if (res && typeof res.then === 'function') {
+            return res.catch(() => Promise.resolve())
+          }
+          return res
+        }
+      }
 
       await nextBook.ready
       // destroy() 或另一次 open() 可能在 await 期间抢先执行,批次号已经变了就不再往下走,
@@ -655,22 +767,23 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       const items: TocItem[] = []
       flatToc(nav.toc, 0, navDocPath, items)
 
-      // epub.js 的类型声明里 Spine.each() 只标成 (...args: any[]) => any,没有把
-      // 回调参数标成 Section——这里只声明用得到的 href 字段,断言过去。
       const hrefs: string[] = []
-      nextBook.spine.each((section: { href: string }) => {
+      nextBook.spine.each((section: { href: string; url?: string }) => {
         hrefs.push(section.href)
       })
 
       // 到这里两次 epoch 检查都通过,这次 open() 没有被取代,才正式发布到闭包变量。
       book = nextBook
       rendition = nextRendition
+      ;(window as any).__readerRendition = nextRendition
+      ;(window as any).__readerBook = nextBook
       toc = items
       spineHrefs = hrefs
 
       if (opts.savedLocations) {
         nextBook.locations.load(opts.savedLocations)
         locationsReady = true
+        countSectionLocations(nextBook)
       } else {
         void nextBook.locations.generate(LOCATION_CHUNK).then(() => {
           // 同一本书可能因为 open() 被再次调用而在 generate() 完成前就已经过期,
@@ -685,11 +798,12 @@ export function createEngine(container: HTMLElement): ReaderEngine {
             return
           }
           locationsReady = true
+          countSectionLocations(nextBook)
           notify()
         })
       }
 
-      nextRendition.on('relocated', notify)
+      nextRendition.on('relocated', handleRelocated)
       // 见上面 handleContentKeydown 的注释:这一行订阅之后,书内容 iframe 里发生的
       // keydown 会被 epub.js 自己转发到这里,不需要我们逐个文档去挂监听器。
       nextRendition.on('keydown', handleContentKeydown)
@@ -709,7 +823,40 @@ export function createEngine(container: HTMLElement): ReaderEngine {
 
     async display(target?: string): Promise<void> {
       if (!rendition) throw new Error('书还没打开')
-      await rendition.display(resolveDisplayTarget(target))
+      if (resizeFrame !== null) {
+        cancelAnimationFrame(resizeFrame)
+        resizeFrame = null
+      }
+      const res = resolveDisplayTarget(target)
+      targetLocation = res ?? null
+      if (targetLocationTimeout !== null) {
+        clearTimeout(targetLocationTimeout)
+      }
+      targetLocationTimeout = setTimeout(() => {
+        targetLocation = null
+        targetLocationTimeout = null
+      }, 1500)
+      try {
+        if (pendingSize.width > 0 && pendingSize.height > 0) {
+          const mgr = (rendition as unknown as { manager?: any }).manager
+          if (mgr?.stage?.size) {
+            mgr.stage.size(pendingSize.width, pendingSize.height)
+            if (mgr.viewSettings) {
+              mgr.viewSettings.width = pendingSize.width
+              mgr.viewSettings.height = pendingSize.height
+            }
+            mgr.updateLayout?.()
+          }
+        }
+        await rendition.display(res)
+      } catch (err) {
+        if (targetLocationTimeout !== null) {
+          clearTimeout(targetLocationTimeout)
+          targetLocationTimeout = null
+        }
+        targetLocation = null
+        throw err
+      }
     },
 
     async next(): Promise<void> {
@@ -728,8 +875,33 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       if (cfi) await rendition.display(cfi)
     },
 
-    setFontSize(px: number): void {
-      rendition?.themes.fontSize(`${px}px`)
+    async setFontSize(px: number, anchorCfi?: string): Promise<void> {
+      if (!rendition) return
+      currentFontSize = px
+      // 优先使用调用方锁定的锚点 CFI,避免并发调整或排版滚动到 0 时抓到本章第 1 页的 CFI。
+      // 若无显式锚点,从当前渲染位置回退获取。
+      const cfi =
+        anchorCfi ??
+        rendition.location?.start?.cfi ??
+        (rendition.currentLocation() as { start?: { cfi?: string } } | undefined)?.start?.cfi
+      rendition.themes.fontSize(`${px}px`)
+      const viewsObj = rendition.views()
+      const viewList = Array.isArray(viewsObj)
+        ? viewsObj
+        : typeof (viewsObj as { all?: () => unknown[] })?.all === 'function'
+          ? (viewsObj as { all: () => unknown[] }).all()
+          : []
+      viewList.forEach((v: unknown) => {
+        ;(v as { expand?: () => void }).expand?.()
+      })
+      if (cfi) {
+        await rendition.display(cfi)
+      }
+      if (typeof requestAnimationFrame === 'function') {
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+      }
+      syncHighlights()
+      notify()
     },
 
     setTheme(name: ThemeName): void {
@@ -772,9 +944,44 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       // 不能直接比较原始字符串:目录里的链接和 spine 报告的路径即使指向同一份文档,
       // 写法也可能不同(比如目录带 ../ 前缀、或者带 #锚点),按归一化后的路径比较。
       const entry = toc.find((t) => normalizeChapterHref(t.href) === normalizeChapterHref(href))
+
+      // epub.js 只报告当前章节的实际排版页数。全书页数统一按固定内容索引、
+      // 当前字号和阅读区域估算；不混入逐章实测值，避免翻页时改写总数。
       const locations = book.locations as unknown as LocationsWithTotal
-      const page = locationsReady ? locations.locationFromCfi(start.cfi) + 1 : 0
-      const totalPages = locationsReady ? locations.total : 0
+      const locationCount = locationsReady
+        ? typeof locations.length === 'function'
+          ? locations.length()
+          : locations.total >= 0
+            ? locations.total + 1
+            : 0
+        : 0
+      const width = pendingSize.width || container.clientWidth || 700
+      const height = pendingSize.height || container.clientHeight || 600
+      const charsPerPage = Math.max(1,
+        Math.floor((Math.max(1, width - 96) / (currentFontSize * 0.58)) *
+          (Math.max(1, height - 96) / (currentFontSize * 1.55)))
+      )
+      const sectionPages = sectionLocationCounts.map((count) =>
+        count > 0 ? Math.max(1, Math.ceil(count * LOCATION_CHUNK / charsPerPage)) : 0
+      )
+      const totalPages = locationCount > 0
+        ? sectionPages.length > 0 && sectionPages.some(Boolean)
+          ? sectionPages.reduce((sum, count) => sum + count, 0)
+          : Math.max(1, Math.ceil(locationCount * LOCATION_CHUNK / charsPerPage))
+        : 0
+      const loc = locationCount > 0 ? locations.locationFromCfi(start.cfi) : -1
+      const sectionIndex = (start as { index?: number }).index
+      const displayedPage = (start as { displayed?: { page?: number } }).displayed?.page
+      const page = totalPages > 0
+        ? typeof sectionIndex === 'number' && sectionPages[sectionIndex] > 0 &&
+          typeof displayedPage === 'number'
+          ? Math.min(totalPages,
+              sectionPages.slice(0, sectionIndex).reduce((sum, count) => sum + count, 0) +
+              Math.min(sectionPages[sectionIndex], Math.max(1, displayedPage)))
+          : loc >= 0
+            ? Math.min(totalPages, 1 + Math.floor((loc / Math.max(1, locationCount - 1)) * (totalPages - 1)))
+            : 1
+        : 0
 
       return {
         text,
@@ -816,7 +1023,14 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       }
     },
 
-    onSelected(cb: (cfiRange: string, text: string) => void): () => void {
+    onSelected(
+      cb: (
+        cfiRange: string,
+        text: string,
+        point: SelectionPoint | null,
+        startCfi: string
+      ) => void
+    ): () => void {
       selectionListeners.push(cb)
       return () => {
         selectionListeners = selectionListeners.filter((x) => x !== cb)
@@ -852,6 +1066,8 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       // 不再触碰马上要被 teardown 的 book/rendition。
       generation++
       teardown()
+      resizeObserver?.disconnect()
+      if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
       listeners = []
       keyListeners = []
       selectionListeners = []

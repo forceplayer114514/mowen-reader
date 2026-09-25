@@ -42,8 +42,10 @@ function apiHarness() {
     id: 'conversation-new', bookId: 'book', startCfi: visible.startCfi, endCfi: visible.endCfi,
     mergedEndCfi: null, chapterLabel: visible.chapterLabel, excerpt: visible.text, createdAt: Date.now()
   }))
-  const appendMessage = vi.fn(async (input: { conversationId: string; role: 'user' | 'assistant'; content: string }) =>
-    message(input.conversationId, input.role, input.content))
+  const appendMessage = vi.fn(async (input: { conversationId: string; role: 'user' | 'assistant'; content: string; quotes?: MessageRecord['quotes'] }) => ({
+    ...message(input.conversationId, input.role, input.content),
+    quotes: input.quotes ?? []
+  }))
   const api = {
     createConversation,
     deleteConversations,
@@ -114,6 +116,37 @@ describe('useChat 生命周期', () => {
     await act(async () => { void state.send('一'); void state.send('二'); await Promise.resolve() })
     expect(h.appendMessage).toHaveBeenCalledTimes(1)
     expect(h.startChat).toHaveBeenCalledTimes(1)
+  })
+
+  it('翻译只发送指令和选文，结果落库后进入下一轮正常聊天上下文', async () => {
+    const h = apiHarness()
+    window.api = h.api as never
+    currentArgs = args({ conversationId: null })
+    await act(async () => { root = createRoot(host); root.render(createElement(Harness)); await Promise.resolve() })
+    const quote = {
+      cfiRange: 'quote-cfi',
+      text: 'Millennium',
+      startCfi: 'epubcfi(/6/4!/4/2/4/1:3)'
+    }
+    await act(async () => { await state.translate([quote]); await Promise.resolve() })
+    expect(h.createConversation).toHaveBeenCalledWith(expect.objectContaining({
+      startCfi: quote.startCfi
+    }))
+    expect(h.startInputs[0]?.messages).toEqual([
+      { role: 'user', content: '翻译：\nMillennium' }
+    ])
+    await act(async () => {
+      h.emitChunk('request-1', '千禧年')
+      h.emitDone('request-1')
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(state.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'assistant', content: '千禧年' })
+    ])))
+    await act(async () => { await state.send('它在这里是什么意思？'); await Promise.resolve() })
+    const next = h.startInputs[1]?.messages.map((item) => item.content).join('\n') ?? ''
+    expect(next).toContain('Millennium')
+    expect(next).toContain('千禧年')
   })
 
   it('startChat 尚未返回时卸载,返回后立即 abort', async () => {
@@ -332,7 +365,7 @@ describe('useChat 生命周期', () => {
     ]))
   })
 
-  it('stop 后翻页再收到 done 只落库旧会话,不进入新页 state', async () => {
+  it('stop 后移动阅读位置再收到 done 仍进入当前会话', async () => {
     const h = apiHarness()
     window.api = h.api as never
     currentArgs = args({ conversationId: 'conversation-a' })
@@ -353,7 +386,7 @@ describe('useChat 生命周期', () => {
     await vi.waitFor(() => expect(h.appendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
       conversationId: 'conversation-a', role: 'assistant', content: '旧页回答'
     })))
-    expect(state.messages).not.toEqual(expect.arrayContaining([
+    expect(state.messages).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: 'assistant', content: '旧页回答' })
     ]))
   })
@@ -386,7 +419,7 @@ describe('useChat 生命周期', () => {
     expect(h.startChat).toHaveBeenCalledTimes(starts)
   })
 
-  it('切换页面后清掉旧失败,重试不会再次启动旧请求', async () => {
+  it('移动阅读位置不清掉当前会话失败,仍可重试', async () => {
     const h = apiHarness()
     h.startChat.mockRejectedValueOnce(new Error('start failed'))
     window.api = h.api as never
@@ -399,9 +432,9 @@ describe('useChat 生命周期', () => {
     const nextVisible = { ...visible, startCfi: 'epubcfi(/6/6!/4/2/2/1:0)', endCfi: 'epubcfi(/6/6!/4/2/8/1:0)' }
     currentArgs = args({ visible: nextVisible })
     await act(async () => { root.render(createElement(Harness)); await Promise.resolve() })
-    expect(state.error).toBeNull()
+    expect(state.error).toContain('请求发不出去')
     await act(async () => { await state.retry(); await Promise.resolve() })
-    expect(h.startChat).toHaveBeenCalledTimes(starts)
+    expect(h.startChat).toHaveBeenCalledTimes(starts + 1)
   })
 
   it('Sidebar 的迟到空加载基于最新 state,不会覆盖刚落库的 assistant', async () => {
@@ -481,12 +514,12 @@ describe('useChat 生命周期', () => {
     await act(async () => { resolveInitial([oldConversation]); await Promise.resolve() })
 
     expect(h.abortChat).not.toHaveBeenCalled()
-    expect(host.querySelector('[data-testid="all-conversations"]')?.textContent).toContain('1 条')
-    expect(host.querySelector('[data-testid="all-conversations"]')?.textContent).not.toContain('2 条')
-    expect(host.querySelectorAll('[data-testid="history-entry"]').length).toBe(0)
+    expect(host.querySelector('[data-testid="page-conversations-summary"]')?.textContent).toContain('1 个对话')
+    expect(host.querySelector('[data-testid="page-conversations-summary"]')?.textContent).not.toContain('2 个对话')
+    expect(host.querySelectorAll('[data-testid="history-entry"]').length).toBe(1)
   })
 
-  it('新对话删除失败时在 Sidebar 显示中文错误', async () => {
+  it('历史对话删除失败时在 Sidebar 显示中文错误', async () => {
     const h = apiHarness()
     const conversation = {
       id: 'conversation-a', bookId: 'book', startCfi: visible.startCfi, endCfi: visible.endCfi,
@@ -496,7 +529,6 @@ describe('useChat 生命周期', () => {
     h.listConversations.mockResolvedValueOnce([conversation])
     h.listMessages.mockResolvedValueOnce([message('conversation-a', 'user', '旧问题')])
     h.deleteConversations.mockRejectedValueOnce(new Error('delete failed'))
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     window.api = h.api as never
     const book = args().book
     await act(async () => {
@@ -505,10 +537,9 @@ describe('useChat 生命周期', () => {
       await Promise.resolve()
     })
     await vi.waitFor(() => expect(host.querySelector('[data-testid="message-user"]')).not.toBeNull())
-    await act(async () => { host.querySelector<HTMLButtonElement>('[data-testid="new-conversation"]')?.click(); await Promise.resolve() })
+    await act(async () => { host.querySelector<HTMLButtonElement>('[data-testid="history-delete"]')?.click(); await Promise.resolve() })
+    await act(async () => { host.querySelector<HTMLButtonElement>('[data-testid="confirm-history-delete-yes"]')?.click(); await Promise.resolve() })
     await vi.waitFor(() => expect(host.querySelector('[data-testid="sidebar-error"]')?.textContent).toContain('对话删除失败'))
-    expect(confirm).toHaveBeenCalled()
-    confirm.mockRestore()
   })
 
   it('加载到空结果时不覆盖已经写入的本地用户消息', () => {

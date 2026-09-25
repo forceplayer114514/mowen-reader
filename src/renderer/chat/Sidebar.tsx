@@ -14,6 +14,7 @@ import HistoryList from './HistoryList'
 import MergeButton from './MergeButton'
 import { useChat } from './useChat'
 import { DEFAULT_CONTEXT_LIMIT, DEFAULT_SYSTEM_PROMPT } from '../settings/defaults'
+import ConfirmDialog from '../ConfirmDialog'
 
 interface Props {
   book: BookRecord
@@ -48,7 +49,6 @@ export default function Sidebar({
   visible,
   toc,
   selection,
-  restoring = false,
   spread = false,
   onSetSpread
 }: Props) {
@@ -62,13 +62,12 @@ export default function Sidebar({
   const [conversationEndCfi, setConversationEndCfi] = useState<string | null>(null)
   const [mergedEndCfi, setMergedEndCfi] = useState<string | null>(null)
   const [mergedVisible, setMergedVisible] = useState<VisibleRange | null>(null)
-  const [showAll, setShowAll] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState(false)
   const conversationsRequestRef = useRef(0)
-  const pageKeyRef = useRef(visible ? `${visible.startCfi}|${visible.endCfi}` : '')
-  const chatRef = useRef<ReturnType<typeof useChat> | null>(null)
+  const conversationChosenRef = useRef(false)
   const mergeInProgressRef = useRef(false)
-  const mergeStartEndRef = useRef<string | null>(null)
 
   const loadConversations = useCallback(async () => {
     const request = ++conversationsRequestRef.current
@@ -105,36 +104,35 @@ export default function Sidebar({
     return selection.subscribe(setQuotes)
   }, [selection])
 
-  const chapterConversations = useMemo(() => {
+  const nearbyConversations = useMemo(() => {
     if (!visible) return []
-    let chapterKey: string
     try {
-      chapterKey = cfiChapterKey(visible.startCfi)
+      const range = spread ? (mergedVisible ?? visible) : visible
+      return conversationsOnPage(conversations, range.startCfi, range.endCfi)
     } catch {
       return []
     }
-    return conversations.filter((conversation) => {
-      if (conversation.id === conversationId) return false
-      try {
-        return cfiChapterKey(conversation.startCfi) === chapterKey
-      } catch {
-        return false
-      }
-    })
-  }, [conversations, conversationId, visible])
+  }, [conversations, mergedVisible, spread, visible])
+
+  const chapterConversations = useMemo(() => {
+    if (!visible) return []
+    try {
+      const chapter = cfiChapterKey(visible.startCfi)
+      return conversations.filter((conversation) => cfiChapterKey(conversation.startCfi) === chapter)
+    } catch {
+      return []
+    }
+  }, [conversations, visible])
 
   useEffect(() => {
-    if (!visible) {
-      setConversationId(null)
-      return
-    }
-    const onPage = conversationsOnPage(conversations, visible.startCfi, visible.endCfi)
-    setConversationId((current) =>
-      current && onPage.some((conversation) => conversation.id === current)
-        ? current
-        : onPage.at(-1)?.id ?? null
-    )
-  }, [conversations, visible])
+    setConversationId((current) => {
+      if (current && conversations.some((conversation) => conversation.id === current)) return current
+      if (conversationChosenRef.current) return null
+      const nearby = nearbyConversations.at(-1)
+      if (nearby) conversationChosenRef.current = true
+      return nearby?.id ?? null
+    })
+  }, [conversations, nearbyConversations])
 
   const chat = useChat({
     book,
@@ -146,6 +144,7 @@ export default function Sidebar({
     conversationEndCfi,
     mergedEndCfi,
     onConversationCreated: async (id, createdMergedEndCfi) => {
+      conversationChosenRef.current = true
       setConversationId(id)
       if (createdMergedEndCfi) {
         try {
@@ -159,45 +158,6 @@ export default function Sidebar({
     getQuotes: () => selection?.list() ?? quotes,
     clearQuotes: () => selection?.clear()
   })
-  chatRef.current = chat
-
-  useEffect(() => {
-    if (!pageKeyRef.current && visible) {
-      pageKeyRef.current = `${visible.startCfi}|${visible.endCfi}`
-    }
-  }, [visible])
-
-  useEffect(() => {
-    if (!engine) return
-    let cancelled = false
-    pageKeyRef.current = visible ? `${visible.startCfi}|${visible.endCfi}` : ''
-    const off = engine.onRelocated(() => {
-      if (cancelled || restoring) return
-      void engine.getVisible().then((next) => {
-        if (cancelled || restoring) return
-        const nextKey = `${next.startCfi}|${next.endCfi}`
-        const previousKey = pageKeyRef.current
-        pageKeyRef.current = nextKey
-        if (mergeInProgressRef.current) return
-        if (!previousKey || previousKey === nextKey) return
-        // Page changes own the current conversation lifecycle. stop() keeps a
-        // partial answer eligible for persistence; the id change then prevents
-        // it from entering the new page's UI.
-        chatRef.current?.stop()
-        setConversationId(null)
-        chatRef.current?.setMessages([])
-        setConversationEndCfi(null)
-        setMergedEndCfi(null)
-        setMergedVisible(null)
-        mergeStartEndRef.current = null
-        selection?.clear()
-      }).catch(() => {})
-    })
-    return () => {
-      cancelled = true
-      off()
-    }
-  }, [engine, restoring, selection])
 
   useEffect(() => {
     chat.setMessages((current) =>
@@ -220,26 +180,38 @@ export default function Sidebar({
   }, [conversationId])
 
   function selectConversation(id: string): void {
+    conversationChosenRef.current = true
     setConversationId(id)
     chat.setMessages([])
-    setShowAll(false)
+  }
+
+  async function deleteConversation(id: string): Promise<void> {
+    setDeleting(true)
+    setError(null)
+    if (id === conversationId) chat.stop()
+    try {
+      await window.api.deleteConversations([id])
+      if (id === conversationId) {
+        conversationChosenRef.current = true
+        setConversationId(null)
+        chat.setMessages([])
+        selection?.clear()
+      }
+      await loadConversations()
+      setPendingDeleteId(null)
+    } catch {
+      setPendingDeleteId(null)
+      setError('对话删除失败，请稍后重试')
+    } finally {
+      setDeleting(false)
+    }
   }
 
   function newConversation(): void {
     if (chat.messages.length === 0) return
     setError(null)
     chat.stop()
-    if (chat.messages.length > 0) {
-      const keep = window.confirm('保留本页当前对话?')
-      if (!keep) {
-        const id = conversationId ?? chat.messages[0]?.conversationId
-        if (id) {
-          void window.api.deleteConversations([id])
-            .then(loadConversations)
-            .catch(() => setError('对话删除失败，原对话仍会保留，请稍后重试'))
-        }
-      }
-    }
+    conversationChosenRef.current = true
     setConversationId(null)
     chat.setMessages([])
     selection?.clear()
@@ -248,15 +220,12 @@ export default function Sidebar({
   async function mergeNextPage(): Promise<void> {
     if (!engine || spread || mergeInProgressRef.current) return
     if (!visible) return
-    const originalPageKey = `${visible.startCfi}|${visible.endCfi}`
     mergeInProgressRef.current = true
-    mergeStartEndRef.current = visible.endCfi
     setConversationEndCfi(visible.endCfi)
     try {
       if (onSetSpread) await onSetSpread(true)
       else await engine.setSpread(true)
       const merged = await engine.getVisible()
-      pageKeyRef.current = `${merged.startCfi}|${merged.endCfi}`
       setMergedEndCfi(merged.endCfi)
       setMergedVisible(merged)
       if (conversationId) {
@@ -264,18 +233,37 @@ export default function Sidebar({
         await loadConversations()
       }
     } catch {
-      setError('合并下一页失败，请稍后重试')
+      setError('加入下一屏失败，请稍后重试')
       setMergedEndCfi(null)
       setMergedVisible(null)
       setConversationEndCfi(null)
-      mergeStartEndRef.current = null
       try {
         if (onSetSpread) await onSetSpread(false)
         else await engine.setSpread(false)
       } catch { /* keep the original error */ }
-      pageKeyRef.current = originalPageKey
     } finally {
-      mergeStartEndRef.current = null
+      mergeInProgressRef.current = false
+    }
+  }
+
+  async function cancelMerge(): Promise<void> {
+    if (!engine || !visible || !spread || mergeInProgressRef.current) return
+    mergeInProgressRef.current = true
+    setError(null)
+    try {
+      if (onSetSpread) await onSetSpread(false)
+      else await engine.setSpread(false)
+      await engine.getVisible().catch(() => visible)
+      setConversationEndCfi(null)
+      setMergedEndCfi(null)
+      setMergedVisible(null)
+      if (conversationId) {
+        await window.api.setConversationMerge(conversationId, null)
+        await loadConversations()
+      }
+    } catch {
+      setError('取消扩展失败，请稍后重试')
+    } finally {
       mergeInProgressRef.current = false
     }
   }
@@ -288,7 +276,7 @@ export default function Sidebar({
   if (collapsed) {
     return (
       <aside className="sidebar sidebar--collapsed" data-testid="sidebar">
-        <button type="button" aria-label="展开侧边栏" onClick={toggleCollapsed}>
+        <button type="button" className="button--icon" aria-label="展开侧边栏" onClick={toggleCollapsed}>
           ‹
         </button>
       </aside>
@@ -296,59 +284,54 @@ export default function Sidebar({
   }
 
   return (
+    <>
     <aside className="sidebar" data-testid="sidebar" style={{ width }}>
       <header className="sidebar__header">
-        <div className="sidebar__title">《{book.title}》</div>
-        <button type="button" aria-label="收起侧边栏" onClick={toggleCollapsed}>›</button>
+        <div>
+          <span className="sidebar__eyebrow">墨问助手</span>
+          <div className="sidebar__title">当前位置</div>
+          <div className="sidebar__current-label" data-testid="page-conversations-summary">
+            {visible
+              ? `附近 ${nearbyConversations.length} · 本章 ${chapterConversations.length} 个对话`
+              : '正在加载…'}
+          </div>
+        </div>
+        <button type="button" className="button--icon" aria-label="收起侧边栏" onClick={toggleCollapsed}>›</button>
       </header>
-      <button
-        type="button"
-        className="sidebar__all"
-        data-testid="all-conversations"
-        onClick={() => setShowAll(true)}
-      >
-        全书对话 {conversations.length} 条 ▸
-      </button>
       <HistoryList
         conversations={chapterConversations}
         activeId={conversationId}
         onSelect={selectConversation}
+        onLocate={(startCfi) => void engine?.display(startCfi)}
+        onDelete={setPendingDeleteId}
       />
       <div className="sidebar__current">
-        <div className="sidebar__current-label">
-          ● {visible
-            ? `第 ${visible.page}${spread ? `(+${visible.page + 1})` : ''} 页(当前)`
-            : '正在加载…'}
-        </div>
         {error && <div className="chat-error" data-testid="sidebar-error">{error}</div>}
         {visible && engine && (
           <MergeButton
-            disabled={spread || (visible.totalPages > 0 && visible.page >= visible.totalPages)}
-            onClick={() => void mergeNextPage()}
+            merged={spread}
+            onClick={() => void (spread ? cancelMerge() : mergeNextPage())}
           />
         )}
         <ConversationView
           chat={chat}
           quotes={quotes}
           onRemoveQuote={(cfiRange) => selection?.toggle(cfiRange, quotes.find((q) => q.cfiRange === cfiRange)?.text ?? '')}
+          onTranslateQuote={(quote) => void chat.translate([quote])}
           onNewConversation={newConversation}
         />
       </div>
-      {showAll && (
-        <div className="modal-overlay" role="dialog" aria-label="全书对话">
-          <div className="modal sidebar__all-dialog">
-            <h2>全书对话</h2>
-            {conversations.length === 0 ? <p>还没有对话</p> : conversations.map((item) => (
-              <button type="button" key={item.id} className="history__entry" onClick={() => selectConversation(item.id)}>
-                {item.chapterLabel ?? '未命名章节'} · 「{item.excerpt}」
-              </button>
-            ))}
-            <div className="modal__actions">
-              <button type="button" onClick={() => setShowAll(false)}>关闭</button>
-            </div>
-          </div>
-        </div>
-      )}
     </aside>
+    {pendingDeleteId && <ConfirmDialog
+      title="删除这个对话？"
+      message="对话中的消息也会一并删除，删除后无法恢复。"
+      confirmLabel="确认删除"
+      onCancel={() => setPendingDeleteId(null)}
+      onConfirm={() => void deleteConversation(pendingDeleteId)}
+      busy={deleting}
+      testId="confirm-history-delete"
+      confirmTestId="confirm-history-delete-yes"
+    />}
+    </>
   )
 }

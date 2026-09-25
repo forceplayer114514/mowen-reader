@@ -16,7 +16,8 @@ process.env.READER_USER_DATA = mkdtempSync(join(tmpdir(), 'reader-ipc-'))
  */
 const mocks = vi.hoisted(() => ({
   handlers: new Map<string, (event: unknown, ...args: never[]) => unknown>(),
-  streamChat: vi.fn()
+  streamChat: vi.fn(),
+  listModels: vi.fn()
 }))
 
 vi.mock('electron', () => ({
@@ -29,7 +30,8 @@ vi.mock('electron', () => ({
 }))
 
 vi.mock('../../src/main/llm/client', () => ({
-  streamChat: (options: unknown) => mocks.streamChat(options)
+  streamChat: (options: unknown) => mocks.streamChat(options),
+  listModels: (options: unknown) => mocks.listModels(options)
 }))
 
 import { registerIpc } from '../../src/main/ipc'
@@ -107,6 +109,8 @@ beforeEach(() => {
   clearApiKey()
   mocks.streamChat.mockReset()
   mocks.streamChat.mockResolvedValue(undefined)
+  mocks.listModels.mockReset()
+  mocks.listModels.mockResolvedValue({ models: ['gpt-test'], endpoint: 'https://api.openai.com/v1' })
   call('settings:set', null, 'llmEndpoint', 'https://api.openai.com/v1')
   call('settings:set', null, 'llmModel', 'gpt-4o-mini')
 })
@@ -209,6 +213,17 @@ describe('chat:start 在取密钥之前先核对接口地址', () => {
     ).rejects.toThrow(/重新填写/)
     await flush()
     expect(mocks.streamChat).not.toHaveBeenCalled()
+  })
+})
+
+describe('llm:listModels 复用密钥地址绑定', () => {
+  it('只把绑定到当前接口的密钥交给模型列表请求', async () => {
+    call('secrets:setApiKey', null, 'sk-真的密钥')
+    await expect(call('llm:listModels', null)).resolves.toEqual({ models: ['gpt-test'], endpoint: 'https://api.openai.com/v1' })
+    expect(mocks.listModels).toHaveBeenCalledWith({
+      endpoint: 'https://api.openai.com/v1',
+      apiKey: 'sk-真的密钥'
+    })
   })
 })
 

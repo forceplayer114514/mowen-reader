@@ -49,6 +49,18 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, created_at);
+
+CREATE TABLE IF NOT EXISTS bookmarks (
+  id            TEXT PRIMARY KEY,
+  book_id       TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  start_cfi     TEXT NOT NULL,
+  chapter_label TEXT,
+  excerpt       TEXT NOT NULL DEFAULT '',
+  created_at    INTEGER NOT NULL,
+  UNIQUE(book_id, start_cfi)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bookmarks_book ON bookmarks(book_id, created_at);
 `
 
 export type Db = DatabaseSync
@@ -60,7 +72,7 @@ export type Db = DatabaseSync
  * 迁移的库",而不是靠猜表结构。schema 目前从未迁移过,这里先只留一个整数
  * 版本和下面 openDatabase() 里写好的插槽,不为此建一整套迁移框架。
  */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 /** 打开数据库并确保表结构存在。传 ':memory:' 得到一个测试用的临时库。 */
 export function openDatabase(file: string): Db {
@@ -82,6 +94,8 @@ export function openDatabase(file: string): Db {
       // CREATE TABLE IF NOT EXISTS,已经把它们建好了,这里只需把版本号推上去。
       db.exec('PRAGMA user_version = 2')
     }
+    // bookmarks 表已由上面的幂等 schema 补齐。
+    db.exec('PRAGMA user_version = 3')
   }
 
   return db

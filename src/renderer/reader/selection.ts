@@ -10,7 +10,7 @@ import type { ReaderEngine } from './types'
 export function createSelectionStore(engine: ReaderEngine): {
   subscribe(cb: (quotes: QuoteRecord[]) => void): () => void
   list(): QuoteRecord[]
-  toggle(cfiRange: string, text: string): void
+  toggle(cfiRange: string, text: string, startCfi?: string): void
   clear(): void
   dispose(): void
 } {
@@ -30,7 +30,7 @@ export function createSelectionStore(engine: ReaderEngine): {
     }
   }
 
-  function toggle(cfiRange: string, text: string): void {
+  function toggle(cfiRange: string, text: string, startCfi?: string): void {
     const trimmed = text.trim()
     if (trimmed.length === 0) return
     const at = quotes.findIndex((q) => q.cfiRange === cfiRange)
@@ -38,13 +38,15 @@ export function createSelectionStore(engine: ReaderEngine): {
       quotes = quotes.filter((q) => q.cfiRange !== cfiRange)
       engine.removeHighlight(cfiRange)
     } else {
-      quotes = [...quotes, { cfiRange, text: trimmed }]
+      quotes = [...quotes, { cfiRange, text: trimmed, startCfi }]
       engine.addHighlight(cfiRange, () => toggle(cfiRange, trimmed))
     }
     notify()
   }
 
-  const offSelected = engine.onSelected(toggle)
+  const offSelected = engine.onSelected((cfiRange, text, _point, startCfi) => {
+    toggle(cfiRange, text, startCfi)
+  })
 
   return {
     subscribe(cb): () => void {

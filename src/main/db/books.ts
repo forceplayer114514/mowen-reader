@@ -1,4 +1,4 @@
-import type { BookRecord } from '../../shared/types'
+import type { BookmarkRecord, BookRecord } from '../../shared/types'
 import type { Db } from './index'
 
 interface Row {
@@ -90,4 +90,50 @@ export function setLocations(db: Db, id: string, json: string): void {
 export function listSourcePaths(db: Db): string[] {
   const rows = db.prepare('SELECT source_path FROM books').all() as { source_path: string }[]
   return rows.map((r) => r.source_path).filter((p) => p.length > 0)
+}
+
+interface BookmarkRow {
+  id: string
+  book_id: string
+  start_cfi: string
+  chapter_label: string | null
+  excerpt: string
+  created_at: number
+}
+
+function toBookmark(row: BookmarkRow): BookmarkRecord {
+  return {
+    id: row.id,
+    bookId: row.book_id,
+    startCfi: row.start_cfi,
+    chapterLabel: row.chapter_label,
+    excerpt: row.excerpt,
+    createdAt: row.created_at
+  }
+}
+
+export function listBookmarks(db: Db, bookId: string): BookmarkRecord[] {
+  const rows = db.prepare(
+    `SELECT id, book_id, start_cfi, chapter_label, excerpt, created_at
+       FROM bookmarks WHERE book_id = ? ORDER BY created_at ASC`
+  ).all(bookId) as unknown as BookmarkRow[]
+  return rows.map(toBookmark)
+}
+
+export function insertBookmark(db: Db, bookmark: BookmarkRecord): void {
+  db.prepare(
+    `INSERT INTO bookmarks (id, book_id, start_cfi, chapter_label, excerpt, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(
+    bookmark.id,
+    bookmark.bookId,
+    bookmark.startCfi,
+    bookmark.chapterLabel,
+    bookmark.excerpt,
+    bookmark.createdAt
+  )
+}
+
+export function deleteBookmark(db: Db, id: string): void {
+  db.prepare('DELETE FROM bookmarks WHERE id = ?').run(id)
 }

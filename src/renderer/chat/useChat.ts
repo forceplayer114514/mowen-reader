@@ -22,9 +22,16 @@ export interface ChatState {
   streaming: string | null
   error: string | null
   send: (text: string) => Promise<void>
+  translate: (quotes: QuoteRecord[]) => Promise<void>
   stop: () => void
   retry: () => Promise<void>
   setMessages: (m: SetStateAction<MessageRecord[]>) => void
+}
+
+interface Attempt {
+  text: string
+  quotes: QuoteRecord[]
+  messages?: ChatMessage[]
 }
 
 interface Owner {
@@ -60,14 +67,13 @@ export function useChat(args: UseChatArgs): ChatState {
   const [streaming, setStreaming] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const conversationRef = useRef<string | null>(args.conversationId)
-  const lastAttemptRef = useRef<{ text: string; quotes: QuoteRecord[] } | null>(null)
+  const lastAttemptRef = useRef<Attempt | null>(null)
   const disposedRef = useRef(false)
   const busyRef = useRef(false)
   const ownerRef = useRef<Owner | null>(null)
   const pendingRef = useRef<PendingStart | null>(null)
   const currentRef = useRef<RequestState | null>(null)
   const requestsRef = useRef(new Map<string, RequestState>())
-  const pageKeyRef = useRef('')
   const generationRef = useRef(0)
 
   const isOwner = useCallback((owner: Owner) => ownerRef.current === owner, [])
@@ -134,16 +140,6 @@ export function useChat(args: UseChatArgs): ChatState {
     setError(null)
     conversationRef.current = args.conversationId
   }, [args.conversationId, cancelActive])
-
-  useEffect(() => {
-    const key = args.visible ? `${args.visible.startCfi}|${args.visible.endCfi}` : ''
-    if (pageKeyRef.current && pageKeyRef.current !== key) {
-      cancelActive()
-      lastAttemptRef.current = null
-      setError(null)
-    }
-    pageKeyRef.current = key
-  }, [args.visible?.startCfi, args.visible?.endCfi, cancelActive])
 
   const commitAssistant = useCallback(async (request: RequestState): Promise<void> => {
     const text = request.accumulated
@@ -243,7 +239,7 @@ export function useChat(args: UseChatArgs): ChatState {
     }
   }, [abortRequest, isOwner, release])
 
-  const run = useCallback(async (text: string, quotes: QuoteRecord[]): Promise<void> => {
+  const run = useCallback(async (text: string, quotes: QuoteRecord[], requestMessages?: ChatMessage[]): Promise<void> => {
     if (busyRef.current) return
     busyRef.current = true
     const owner: Owner = {
@@ -265,21 +261,20 @@ export function useChat(args: UseChatArgs): ChatState {
       return
     }
     setError(null)
-    lastAttemptRef.current = { text, quotes }
-    const history: ChatMessage[] = messages.map((m) => ({ role: m.role, content: m.content }))
-    let assembled: ReturnType<typeof buildContext>
+    lastAttemptRef.current = { text, quotes, messages: requestMessages }
+    let messagesToSend: ChatMessage[]
     try {
-      assembled = buildContext({
+      messagesToSend = requestMessages ?? buildContext({
         systemPrompt: args.systemPrompt,
         bookTitle: args.book.title,
         author: args.book.author,
         visible,
         toc: args.toc,
         quotes,
-        history,
+        history: messages.map(toHistoryMessage),
         userText: text,
         limit: args.contextLimit
-      })
+      }).messages
     } catch (error) {
       const current = isOwner(owner)
       release(owner)
@@ -294,7 +289,7 @@ export function useChat(args: UseChatArgs): ChatState {
       if (!conversationId) {
         const created = await window.api.createConversation({
           bookId: args.book.id,
-          startCfi: visible.startCfi,
+          startCfi: quotes.find((quote) => quote.startCfi)?.startCfi ?? visible.startCfi,
           endCfi: args.conversationEndCfi ?? visible.endCfi,
           chapterLabel: visible.chapterLabel,
           excerpt: visible.text.slice(0, 20)
@@ -334,7 +329,7 @@ export function useChat(args: UseChatArgs): ChatState {
         await args.onConversationCreated(conversationId, args.mergedEndCfi)
       }
       args.clearQuotes()
-      await start(assembled.messages, conversationId, owner)
+      await start(messagesToSend, conversationId, owner)
     } catch (error) {
       const current = isOwner(owner)
       owner.userMessagePending = false
@@ -351,6 +346,12 @@ export function useChat(args: UseChatArgs): ChatState {
     const trimmed = text.trim()
     if (trimmed.length > 0) await run(trimmed, args.getQuotes())
   }, [args, run])
+
+  const translate = useCallback(async (quotes: QuoteRecord[]) => {
+    if (quotes.length === 0) return
+    const selected = quotes.map((quote) => quote.text).join('\n')
+    await run('翻译', quotes, [{ role: 'user', content: `翻译：\n${selected}` }])
+  }, [run])
 
   const retry = useCallback(async () => {
     if (busyRef.current) return
@@ -371,9 +372,9 @@ export function useChat(args: UseChatArgs): ChatState {
     const generation = generationRef.current
     setError(null)
     setStreaming('')
-    const history: ChatMessage[] = messages.slice(0, -1).map((m) => ({ role: m.role, content: m.content }))
+    const history: ChatMessage[] = messages.slice(0, -1).map(toHistoryMessage)
     try {
-      const assembled = buildContext({
+      const messagesToSend = last.messages ?? buildContext({
         systemPrompt: args.systemPrompt,
         bookTitle: args.book.title,
         author: args.book.author,
@@ -383,12 +384,12 @@ export function useChat(args: UseChatArgs): ChatState {
         history,
         userText: last.text,
         limit: args.contextLimit
-      })
+      }).messages
       if (generation !== generationRef.current || disposedRef.current) {
         release(owner)
         return
       }
-      await start(assembled.messages, conversationId, owner)
+      await start(messagesToSend, conversationId, owner)
     } catch (error) {
       const current = isOwner(owner)
       release(owner)
@@ -403,5 +404,15 @@ export function useChat(args: UseChatArgs): ChatState {
     cancelActive(true)
   }, [cancelActive])
 
-  return { messages, streaming, error, send, stop, retry, setMessages }
+  return { messages, streaming, error, send, translate, stop, retry, setMessages }
+}
+
+function toHistoryMessage(message: MessageRecord): ChatMessage {
+  if (message.role !== 'user' || message.quotes.length === 0) {
+    return { role: message.role, content: message.content }
+  }
+  return {
+    role: 'user',
+    content: `用户划选的原文:\n${message.quotes.map((quote) => `> ${quote.text}`).join('\n')}\n\n${message.content}`
+  }
 }
