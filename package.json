@@ -16,7 +16,7 @@
     "test:watch": "vitest",
     "test:e2e": "npm run build && playwright test",
     "fixture": "tsx scripts/make-fixture-epub.ts",
-    "dist": "npm run build && electron-builder"
+    "dist": "npm run build && electron-builder --publish never"
   },
   "dependencies": {
     "dompurify": "^3.4.15",
