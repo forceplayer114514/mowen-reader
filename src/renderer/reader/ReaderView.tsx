@@ -67,16 +67,19 @@ interface SelectionTestHooks {
 interface Props {
   book: BookRecord
   onBack: () => void
+  theme: ThemeName
+  onToggleTheme: () => void
 }
 
-export default function ReaderView({ book, onBack }: Props) {
+export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
   const engineRef = useRef<ReaderEngine | null>(null)
   const [visible, setVisible] = useState<VisibleRange | null>(null)
   const [toc, setToc] = useState<TocItem[]>([])
   const [showToc, setShowToc] = useState(false)
   const [fontSize, setFontSize] = useState(18)
-  const [theme, setTheme] = useState<ThemeName>('light')
+  const themeRef = useRef(theme)
+  themeRef.current = theme
   const [error, setError] = useState<string | null>(null)
   const [selectionStore, setSelectionStore] = useState<SelectionStore | null>(null)
   const [readerEngine, setReaderEngine] = useState<ReaderEngine | null>(null)
@@ -89,6 +92,10 @@ export default function ReaderView({ book, onBack }: Props) {
   const anchorCfiRef = useRef<string | null>(null)
   const targetFontRef = useRef<number>(18)
   const appliedFontRef = useRef<number>(18)
+
+  useEffect(() => {
+    readerEngine?.setTheme(theme)
+  }, [readerEngine, theme])
 
   useEffect(() => {
     let cancelled = false
@@ -188,14 +195,12 @@ export default function ReaderView({ book, onBack }: Props) {
       if (!hostRef.current) return
       try {
         const savedFont = Number((await window.api.getSetting('fontSize')) ?? 18)
-        const savedTheme = ((await window.api.getSetting('theme')) ?? 'light') as ThemeName
         const savedLocations = await window.api.getLocations(book.id)
         const data = await window.api.readBookFile(book.id)
         if (cancelled) return
 
         engine = createEngine(hostRef.current)
         engineRef.current = engine
-        setReaderEngine(engine)
 
         // 侧边栏与正文共用一个临时选区 store。端到端测试额外通过同一 store
         // 暴露引用列表,不改变正常运行路径。
@@ -214,8 +219,6 @@ export default function ReaderView({ book, onBack }: Props) {
         targetFontRef.current = initialFont
         appliedFontRef.current = initialFont
         setFontSize(initialFont)
-        setTheme(savedTheme)
-        document.documentElement.dataset.theme = savedTheme
 
         // 位置索引首次生成完要落盘,下次开书省去重算。engine 在生成完成时和每次翻页时
         // 都会触发 onRelocated,这里复用同一个回调:exportLocations() 在索引还没
@@ -264,10 +267,13 @@ export default function ReaderView({ book, onBack }: Props) {
 
         await engine.open(data, {
           fontSize: Number.isFinite(savedFont) ? savedFont : 18,
-          theme: savedTheme,
+          theme: themeRef.current,
           savedLocations
         })
         if (cancelled) return
+        // 打开期间也可能切主题；发布引擎后由上面的 effect 应用最新主题。
+        engine.setTheme(themeRef.current)
+        setReaderEngine(engine)
 
         // 打开成功之后,如果 VISIBLE_STUCK_TIMEOUT_MS 之内一直等不到一次成功的
         // getVisible(),说明这本书是真的读不出来——跟下面 display() 刚返回时
@@ -425,20 +431,6 @@ export default function ReaderView({ book, onBack }: Props) {
     })
   }, [])
 
-  const toggleTheme = useCallback(() => {
-    setTheme((old) => {
-      const nextTheme: ThemeName = old === 'light' ? 'dark' : 'light'
-      engineRef.current?.setTheme(nextTheme)
-      document.documentElement.dataset.theme = nextTheme
-      // 同上:主题也是乐观更新,写盘失败要在页脚提示。
-      setError(null)
-      window.api.setSetting('theme', nextTheme).catch(() => {
-        setError('主题没有保存,下次打开可能会恢复默认')
-      })
-      return nextTheme
-    })
-  }, [])
-
   const toggleBookmark = useCallback(async () => {
     if (!visible) return
     setBookmarkError(null)
@@ -510,7 +502,7 @@ export default function ReaderView({ book, onBack }: Props) {
         <button className="button--icon" onClick={() => changeFont(2)} aria-label="放大字号">
           A+
         </button>
-        <button className="button--ghost" onClick={toggleTheme}>{theme === 'light' ? '夜间模式' : '日间模式'}</button>
+        <button type="button" className="button--ghost" data-testid="toggle-theme" onClick={onToggleTheme}>{theme === 'light' ? '夜间模式' : '日间模式'}</button>
         </div>
       </header>
 

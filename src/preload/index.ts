@@ -16,6 +16,7 @@ import type {
 } from '../shared/types'
 
 const api = {
+  openDownloadSite: (): Promise<void> => ipcRenderer.invoke('books:openDownloadSite'),
   listBooks: (): Promise<BookRecord[]> => ipcRenderer.invoke('books:list'),
   pickEpubFiles: (): Promise<string[]> => ipcRenderer.invoke('books:pickFiles'),
   pickFolder: (): Promise<string | null> => ipcRenderer.invoke('books:pickFolder'),

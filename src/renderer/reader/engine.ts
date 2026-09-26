@@ -12,12 +12,14 @@ import type {
 
 const THEMES: Record<ThemeName, Record<string, Record<string, string>>> = {
   light: {
-    'html, body': { color: '#29231e !important', 'background-color': '#fffdf9 !important' },
-    a: { color: '#b64c2e !important' }
+    'html:has(> body.light), body.light': { color: '#29231e !important', 'background-color': '#fffdf9 !important' },
+    'body.light a': { color: '#b64c2e !important' }
   },
   dark: {
-    'html, body': { color: '#f2ebe1 !important', 'background-color': '#1b1916 !important' },
-    a: { color: '#df7958 !important' }
+    'html:has(> body.dark), body.dark': { color: '#f2ebe1 !important', 'background-color': '#1b1916 !important' },
+    // 出版社常在段落 / span 上指定黑字白底，夜间不能只改 body 的继承色。
+    'body.dark *': { color: 'inherit !important', 'background-color': 'transparent !important' },
+    'body.dark a, body.dark a *': { color: '#df7958 !important' }
   }
 }
 
@@ -718,8 +720,11 @@ export function createEngine(container: HTMLElement): ReaderEngine {
         spread: 'none',
         allowScriptedContent: false
       })
-      nextRendition.themes.register('light', THEMES.light)
-      nextRendition.themes.register('dark', THEMES.dark)
+      // 一次注入两套限定 body 类名的样式，切换只换类名。
+      // epub.js 的 addStylesheetRules 是追加而非替换，不能每次 select 都追加配色规则。
+      nextRendition.themes.register('default', { ...THEMES.light, ...THEMES.dark })
+      nextRendition.themes.register('light', {})
+      nextRendition.themes.register('dark', {})
       nextRendition.themes.select(opts.theme)
       theme = opts.theme
       nextRendition.themes.fontSize(`${opts.fontSize}px`)

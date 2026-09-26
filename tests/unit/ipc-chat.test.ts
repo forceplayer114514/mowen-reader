@@ -17,7 +17,8 @@ process.env.READER_USER_DATA = mkdtempSync(join(tmpdir(), 'reader-ipc-'))
 const mocks = vi.hoisted(() => ({
   handlers: new Map<string, (event: unknown, ...args: never[]) => unknown>(),
   streamChat: vi.fn(),
-  listModels: vi.fn()
+  listModels: vi.fn(),
+  openExternal: vi.fn(async () => {})
 }))
 
 vi.mock('electron', () => ({
@@ -26,7 +27,8 @@ vi.mock('electron', () => ({
       mocks.handlers.set(channel, fn)
     }
   },
-  dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) }
+  dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
+  shell: { openExternal: mocks.openExternal }
 }))
 
 vi.mock('../../src/main/llm/client', () => ({
@@ -45,6 +47,11 @@ const fakeSafeStorage = {
 }
 
 registerIpc()
+
+it('下载网站通道忽略渲染层传入的任意地址，只打开固定 HTTPS 目标', async () => {
+  await mocks.handlers.get('books:openDownloadSite')!({}, ...(['file:///etc/passwd'] as never[]))
+  expect(mocks.openExternal).toHaveBeenCalledWith('https://z-library.bz/')
+})
 
 type Listener = (...args: unknown[]) => void
 

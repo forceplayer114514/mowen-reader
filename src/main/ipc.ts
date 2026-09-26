@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { readFile, rm } from 'node:fs/promises'
 import { basename } from 'node:path'
-import { dialog, ipcMain } from 'electron'
+import { dialog, ipcMain, shell } from 'electron'
 import type {
   AppendMessageInput,
   BookmarkRecord,
@@ -70,6 +70,10 @@ export function abortAllChats(): void {
 }
 
 export function registerIpc(): void {
+  // 固定目标，不提供可被渲染层滥用的任意 URL / 本地协议打开能力。
+  ipcMain.handle('books:openDownloadSite', (): Promise<void> =>
+    shell.openExternal('https://z-library.bz/')
+  )
   ipcMain.handle('books:list', (): BookRecord[] => listBooks(database()))
 
   ipcMain.handle('books:pickFiles', async (): Promise<string[]> => {

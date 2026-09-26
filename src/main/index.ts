@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { app, BrowserWindow, safeStorage } from 'electron'
+import { app, BrowserWindow, Menu, safeStorage } from 'electron'
 import { abortAllChats, registerIpc } from './ipc'
 import { initDataDir } from './paths'
 import { initSecrets } from './secrets'
@@ -37,6 +37,8 @@ function createWindow(): void {
 }
 
 void app.whenReady().then(() => {
+  // Windows / Linux 不需要 Electron 自动生成的开发菜单；macOS 保留系统菜单和快捷键。
+  if (process.platform !== 'darwin') Menu.setApplicationMenu(null)
   if (!app.isPackaged && process.platform === 'darwin') {
     app.dock?.setIcon(join(process.cwd(), 'build/icon.png'))
   }

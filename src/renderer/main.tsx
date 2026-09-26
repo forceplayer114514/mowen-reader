@@ -2,7 +2,6 @@ import './styles/theme.css'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
-import type { ThemeName } from './reader/types'
 
 /**
  * 冷启动时先按存储的主题设置好 document 根元素的 data-theme,再渲染整个应用。
@@ -15,9 +14,9 @@ import type { ThemeName } from './reader/types'
  * 阅读界面一个视图里。
  */
 async function applyStoredTheme(): Promise<void> {
-  let theme: ThemeName = 'light'
+  let theme = 'light'
   try {
-    theme = ((await window.api.getSetting('theme')) ?? 'light') as ThemeName
+    theme = (await window.api.getSetting('theme')) === 'dark' ? 'dark' : 'light'
   } catch {
     // 读取失败就用默认的浅色主题,不能因为这个阻塞应用启动。
   }

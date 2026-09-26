@@ -366,11 +366,75 @@ test('切换主题后重启应用,设置仍然是切换后的主题', async () =
   expect(shelfDataThemeAfterBack).toBe('dark')
 })
 
+test('主页主题与阅读同步，开书期间切换不会被旧设置覆盖', async () => {
+  const h = await launch()
+  await h.page.getByTestId('toggle-theme').click()
+  await expect(h.page.getByTestId('toggle-theme')).toHaveText('日间模式')
+  await importFixture(h)
+  // 人为放慢文件读取，验证阅读器 boot 期间切换主题的时序。
+  const bytes = await h.page.evaluate(async () => Array.from(new Uint8Array(
+    await window.api.readBookFile((await window.api.listBooks())[0].id)
+  )))
+  await h.app.evaluate(({ ipcMain }, data) => {
+    ipcMain.removeHandler('books:readFile')
+    ipcMain.handle('books:readFile', async () => {
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      return Uint8Array.from(data).buffer
+    })
+  }, bytes)
+  await h.page.getByTestId('book-card').first().click()
+  await expect(h.page.getByTestId('toggle-theme')).toHaveText('日间模式')
+  await h.page.getByTestId('toggle-theme').click()
+  await expect.poll(() => h.page.frames().find((frame) => frame !== h.page.mainFrame())
+    ?.evaluate(() => getComputedStyle(document.body).backgroundColor))
+    .toBe('rgb(255, 253, 249)')
+  await h.page.getByRole('button', { name: '← 书架' }).click()
+  await expect(h.page.getByTestId('toggle-theme')).toHaveText('夜间模式')
+  await expect.poll(() => h.page.evaluate(() => window.api.getSetting('theme'))).toBe('light')
+  await h.page.getByTestId('open-settings').click()
+  expect(await h.page.evaluate(() => document.documentElement.dataset.theme)).toBe('light')
+  await h.page.getByRole('button', { name: '← 返回书架' }).click()
+  await h.page.getByTestId('toggle-theme').click()
+  await h.page.getByTestId('open-conversations').click()
+  expect(await h.page.evaluate(() => document.documentElement.dataset.theme)).toBe('dark')
+})
+
+test('下载电子书只在默认浏览器打开指定网站，失败有提示', async () => {
+  const h = await launch()
+  await h.app.evaluate(({ shell }) => {
+    shell.openExternal = async (url: string) => {
+      Object.assign(globalThis, { downloadSiteUrl: url })
+    }
+  })
+  await h.page.getByTestId('download-books').click()
+  await expect.poll(() => h.app.evaluate(() =>
+    (globalThis as unknown as { downloadSiteUrl?: string }).downloadSiteUrl))
+    .toBe('https://z-library.bz/')
+  await h.app.evaluate(({ shell }) => {
+    shell.openExternal = async () => { throw new Error('No default browser') }
+  })
+  await h.page.getByTestId('download-books').click()
+  await expect(h.page.getByRole('status')).toContainText('无法打开下载网站')
+})
+
 test('夜间模式同时更新阅读外壳和书内正文', async () => {
   const h = await launch()
   await importRealisticFixture(h)
   await h.page.getByTestId('book-card').first().click()
   await h.page.getByTestId('reader-page').waitFor()
+  await waitForLocationsReady(h)
+  const indicator = await waitForStableIndicator(h)
+  const chapter = h.page.frames().find((frame) => frame !== h.page.mainFrame())!
+  // 模拟常见的出版社显式黑字白底，不能仅测试 body 继承色。
+  await chapter.evaluate(() => {
+    const p = document.querySelector('p')!
+    p.style.color = '#000'
+    p.style.backgroundColor = '#fff'
+  })
+  const countRules = () => chapter.evaluate(() => Array.from(document.styleSheets)
+    .filter((sheet) => sheet.ownerNode instanceof Element && sheet.ownerNode.id.startsWith('epubjs-inserted-css-'))
+    .reduce((sum, sheet) => sum + sheet.cssRules.length, 0))
+  const rulesBefore = await countRules()
 
   await h.page.getByRole('button', { name: '夜间' }).click()
   await expect(h.page.getByRole('button', { name: '日间' })).toBeVisible()
@@ -390,6 +454,33 @@ test('夜间模式同时更新阅读外壳和书内正文', async () => {
       const chapter = h.page.frames().find((frame) => frame !== h.page.mainFrame())
       return chapter?.evaluate(() => getComputedStyle(document.body).backgroundColor)
     })
+    .toBe('rgb(255, 253, 249)')
+
+  // 两套样式会留在同一个章节里，多次来回切换也必须只有当前主题生效。
+  for (const dark of [true, false, true, false]) {
+    await h.page.getByRole('button', { name: dark ? '夜间' : '日间' }).click()
+    await expect.poll(() => h.page.frames().find((frame) => frame !== h.page.mainFrame())
+      ?.evaluate(() => getComputedStyle(document.body).backgroundColor))
+      .toBe(dark ? 'rgb(27, 25, 22)' : 'rgb(255, 253, 249)')
+    await expect.poll(() => chapter.evaluate(() => {
+      const p = getComputedStyle(document.querySelector('p')!)
+      return { color: p.color, background: p.backgroundColor,
+        rootBackground: getComputedStyle(document.documentElement).backgroundColor }
+    })).toEqual(dark
+      ? { color: 'rgb(242, 235, 225)', background: 'rgba(0, 0, 0, 0)', rootBackground: 'rgb(27, 25, 22)' }
+      : { color: 'rgb(0, 0, 0)', background: 'rgb(255, 255, 255)', rootBackground: 'rgb(255, 253, 249)' })
+  }
+  expect(await countRules()).toBe(rulesBefore)
+  await expect(h.page.getByTestId('page-indicator')).toHaveText(indicator)
+  await h.page.getByTestId('toggle-theme').click()
+  await h.page.getByTestId('toggle-toc').click()
+  await h.page.getByRole('button', { name: '第二章 正文', exact: true }).click()
+  await expect.poll(() => h.page.frames().find((frame) => frame !== h.page.mainFrame())
+    ?.evaluate(() => getComputedStyle(document.body).backgroundColor))
+    .toBe('rgb(27, 25, 22)')
+  await h.page.getByTestId('toggle-theme').click()
+  await expect.poll(() => h.page.frames().find((frame) => frame !== h.page.mainFrame())
+    ?.evaluate(() => getComputedStyle(document.body).backgroundColor))
     .toBe('rgb(255, 253, 249)')
 })
 

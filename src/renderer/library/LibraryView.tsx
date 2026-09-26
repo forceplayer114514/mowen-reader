@@ -4,16 +4,19 @@ import { extractMetadata } from '../reader/metadata'
 import appIcon from '../assets/mowen-icon.png'
 import ConfirmDialog from '../ConfirmDialog'
 import { useBookCovers } from './useBookCovers'
+import type { ThemeName } from '../reader/types'
 
 interface Props {
   onOpenBook: (book: BookRecord) => void
   onOpenSettings?: () => void
   onOpenConversations?: () => void
+  theme: ThemeName
+  onToggleTheme: () => void
 }
 
 type Stager = (sourcePaths: string[]) => Promise<ImportedFile[]>
 
-export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversations }: Props) {
+export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversations, theme, onToggleTheme }: Props) {
   const [books, setBooks] = useState<BookRecord[]>([])
   const [busy, setBusy] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
@@ -185,6 +188,9 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
           </div>
         </div>
         <nav className="library__nav" aria-label="书架操作">
+          <button type="button" className="button--ghost" data-testid="toggle-theme" onClick={onToggleTheme}>
+            {theme === 'light' ? '夜间模式' : '日间模式'}
+          </button>
           <button type="button" className="button--ghost" data-testid="open-conversations" onClick={onOpenConversations}>
             对话
           </button>
@@ -193,6 +199,13 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
           </button>
           <button type="button" className="button--secondary" onClick={onPickFolder} data-testid="pick-folder">
             扫描文件夹
+          </button>
+          <button type="button" className="button--secondary" data-testid="download-books"
+            title="在浏览器中打开 Z-Library" onClick={() => {
+              setError(null)
+              void window.api.openDownloadSite().catch(() => setError('无法打开下载网站，请检查默认浏览器'))
+            }}>
+            下载电子书 ↗
           </button>
           <button type="button" className="button--primary" onClick={onPickFiles} data-testid="pick-files">
             ＋ 添加 EPUB
