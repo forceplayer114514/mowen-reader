@@ -1,4 +1,4 @@
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
   allowSource,
@@ -16,7 +16,7 @@ describe('assertAllowed', () => {
   it('记录过的路径能通过', () => {
     const p = '/Users/x/书库/a.epub'
     allowSource(p)
-    expect(assertAllowed(p)).toBe(p)
+    expect(assertAllowed(p)).toBe(resolve(p))
   })
 
   it('没记录过的路径会抛错', () => {
@@ -26,19 +26,19 @@ describe('assertAllowed', () => {
   it('批量记录后每一条都能通过', () => {
     const paths = ['/a/1.epub', '/a/2.epub']
     allowSources(paths)
-    for (const p of paths) expect(assertAllowed(p)).toBe(p)
+    for (const p of paths) expect(assertAllowed(p)).toBe(resolve(p))
   })
 
   it('记录时带多余的 /. 不影响之后用等价形式校验', () => {
     const dir = '/Users/x/书库'
     allowSource(dir + '/.')
-    expect(assertAllowed(dir)).toBe(dir)
+    expect(assertAllowed(dir)).toBe(resolve(dir))
   })
 
   it('记录时带 .. 段,解析到同一位置后仍能通过', () => {
     const real = '/Users/x/书库'
     allowSource('/Users/x/其他/../书库')
-    expect(assertAllowed(real)).toBe(real)
+    expect(assertAllowed(real)).toBe(resolve(real))
   })
 
   it('clearAllowedSources 清空后,原先记录过的路径也会被拒绝', () => {
