@@ -73,6 +73,9 @@ export default function Sidebar({
   const [mergedVisible, setMergedVisible] = useState<VisibleRange | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
+  const [pendingTranslation, setPendingTranslation] = useState<QuoteRecord | null>(null)
+  const [translationConsentBusy, setTranslationConsentBusy] = useState(false)
+  const translationConsentChecking = useRef(false)
   const [deleting, setDeleting] = useState(false)
   const conversationsRequestRef = useRef(0)
   const conversationChosenRef = useRef(false)
@@ -420,7 +423,32 @@ export default function Sidebar({
   }
 
   const removeQuote = (cfiRange: string): void => { selection?.toggle(cfiRange, quotes.find((q) => q.cfiRange === cfiRange)?.text ?? '') }
-  const translateQuote = (quote: QuoteRecord): void => { setTab('chat'); void chat.translate([quote]) }
+  const translateQuote = (quote: QuoteRecord): void => {
+    if (translationConsentChecking.current || chat.streaming !== null) return
+    translationConsentChecking.current = true
+    void Promise.all([window.api.getSetting('translation.mode'), window.api.getSetting('translation.onlineConsent')])
+      .then(([mode, consent]) => {
+        if (!notesAliveRef.current) return
+        if (mode !== 'offline' && consent !== 'true') { setPendingTranslation(quote); return }
+        setTab('chat')
+        void chat.translate([quote])
+      }).catch(() => { if (notesAliveRef.current) setError('翻译设置读取失败，请重试') })
+      .finally(() => { translationConsentChecking.current = false })
+  }
+
+  async function approveTranslation(): Promise<void> {
+    if (!pendingTranslation || translationConsentBusy) return
+    const quote = pendingTranslation
+    setTranslationConsentBusy(true)
+    try {
+      await window.api.setSetting('translation.onlineConsent', 'true')
+      if (!notesAliveRef.current) return
+      setPendingTranslation(null)
+      setTab('chat')
+      void chat.translate([quote])
+    } catch { if (notesAliveRef.current) setError('授权保存失败，请重试') }
+    finally { if (notesAliveRef.current) setTranslationConsentBusy(false) }
+  }
 
   return (
     <>
@@ -491,6 +519,11 @@ export default function Sidebar({
       </div>
       </div>
     </aside>
+    {pendingTranslation && <ConfirmDialog title="使用免费在线翻译？" tone="neutral"
+      message="只将你选中的文字发送给 MyMemory 翻译服务，不发送书籍全文、聊天记录或 API 密钥。服务有免费额度和网络限制；你也可以在设置中选择离线翻译。"
+      confirmLabel="同意并翻译" onCancel={() => setPendingTranslation(null)}
+      onConfirm={() => void approveTranslation()} busy={translationConsentBusy}
+      testId="translation-consent" confirmTestId="translation-consent-yes" />}
     {pendingNoteAction && <ConfirmDialog title="放弃未提交的注释？" message="当前编辑的内容尚未保存，切换原文会丢弃这些修改。"
       confirmLabel="放弃修改" onCancel={() => setPendingNoteAction(null)}
       onConfirm={() => { pendingNoteAction.run(); setPendingNoteAction(null) }} testId="confirm-note-discard" />}

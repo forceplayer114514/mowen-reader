@@ -11,7 +11,13 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [macos-latest, windows-latest]
+        include:
+          - os: macos-latest
+            target: '--mac --arm64'
+          - os: macos-15-intel
+            target: '--mac --x64'
+          - os: windows-latest
+            target: '--win --x64'
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -21,7 +27,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
-      - run: npm run dist
+      - run: npm run dist -- ${{ matrix.target }}
+      - run: npx tsx scripts/smoke-offline-translation.ts
+      - run: node scripts/smoke-packaged-runtime.cjs
       - uses: actions/upload-artifact@v4
         with:
           name: installers-${{ matrix.os }}

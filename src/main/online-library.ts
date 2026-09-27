@@ -4,8 +4,9 @@ import { lstat, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { BrowserWindow, DownloadItem, ipcMain, shell, WebContentsView } from 'electron'
 import type { DownloadMetadata, DownloadTask, OnlineAction, OnlineBounds, OnlineSnapshot } from '../shared/types'
-import { copyEpubIntoLibrary, discardStagedFile } from './books/import'
-import { MAX_DOWNLOAD_BYTES, validateDownloadedEpub } from './books/validate-download'
+import { copyBookIntoLibrary, discardStagedFile, stripBookExtension } from './books/import'
+import { MAX_DOWNLOAD_BYTES, validateDownloadedBook } from './books/validate-download'
+import { bookFormat, maxBookBytes } from '../shared/book-format'
 import { listBooks } from './db/books'
 import { getSetting, setSetting } from './db/settings'
 import { database, finishBookImport } from './ipc'
@@ -106,7 +107,7 @@ export function attachOnlineLibrary(win: BrowserWindow): void {
         const stat = await lstat(job.path)
         if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_DOWNLOAD_BYTES) throw new Error('下载文件无效或超过 64 MB')
         const bytes = await readFile(job.path)
-        await validateDownloadedEpub(bytes)
+        await validateDownloadedBook(bytes, job.path)
         job.hash = createHash('sha256').update(bytes).digest('hex')
         job.status = 'ready'; job.canImport = true; job.message = undefined
       } catch (cause) {
@@ -181,21 +182,23 @@ export function attachOnlineLibrary(win: BrowserWindow): void {
         failedDownloadNavigation = null; error = null
       }
       const name = item.getFilename().replace(/[\x00-\x1f]/g, '').slice(0, 180)
+      const format = bookFormat(name)
+      const limit = format ? maxBookBytes[format] : MAX_DOWNLOAD_BYTES
       const pending = [...jobs.values()].filter(j => !['imported', 'cancelled'].includes(j.status) && j.canImport !== false).length
-      if (!/\.epub$/i.test(name) || !item.getURLChain().every(safeUrl) || item.getTotalBytes() > MAX_DOWNLOAD_BYTES || pending >= 5) {
+      if (!format || !item.getURLChain().every(safeUrl) || item.getTotalBytes() > limit || pending >= 5) {
         event.preventDefault()
         const id = randomUUID()
         jobs.set(id, { id, name, path: join(root, `${id}.epub`), status: 'error', received: 0, total: 0,
-          canImport: false, message: pending >= 5 ? '最多保留 5 个待处理下载，请先入库或移除' : '仅支持 64 MB 以内的 EPUB，请在网站选择 EPUB 格式' })
+          canImport: false, message: pending >= 5 ? '最多保留 5 个待处理下载，请先入库或移除' : '仅支持 EPUB / PDF（64 MB 内）或 TXT（16 MB 内）' })
         publish(); return
       }
       const id = randomUUID()
-      const job: Job = { id, name, path: join(root, `${id}.epub`), status: 'downloading', received: 0, total: item.getTotalBytes(), item }
+      const job: Job = { id, name, path: join(root, `${id}.${format}`), status: 'downloading', received: 0, total: item.getTotalBytes(), item }
       jobs.set(id, job)
       item.setSavePath(job.path)
       item.on('updated', () => {
         job.received = item.getReceivedBytes(); job.total = item.getTotalBytes()
-        if (job.received > MAX_DOWNLOAD_BYTES) { job.message = '电子书超过 64 MB 限制'; item.cancel() }
+        if (job.received > limit) { job.message = `电子书超过 ${limit / 1024 / 1024} MB 限制`; item.cancel() }
         publish()
       })
       item.once('done', (_event, state) => {
@@ -315,18 +318,18 @@ export function attachOnlineLibrary(win: BrowserWindow): void {
     if (job.committing) throw new Error('正在保存电子书')
     job.committing = true
     const next = imports.then(async () => {
-      let staged: Awaited<ReturnType<typeof copyEpubIntoLibrary>> | undefined
+      let staged: Awaited<ReturnType<typeof copyBookIntoLibrary>> | undefined
       try {
         const sourcePath = `online:sha256:${job.hash}`
         const existing = listBooks(database()).find(book => book.sourcePath === sourcePath)
         if (existing) { job.bookId = existing.id; job.message = '这本书已在书库中，未重复添加' }
         else {
-          staged = await copyEpubIntoLibrary(job.path)
+          staged = await copyBookIntoLibrary(job.path)
           const stat = await lstat(staged.filePath)
           if (!stat.isFile() || stat.size > MAX_DOWNLOAD_BYTES || createHash('sha256').update(await readFile(staged.filePath)).digest('hex') !== job.hash) {
             throw new Error('下载文件已改变，请重新下载')
           }
-          const book = await finishBookImport({ ...meta, id: staged.id, sourcePath, title: meta.title || job.name.replace(/\.epub$/i, '') })
+          const book = await finishBookImport({ ...meta, id: staged.id, sourcePath, title: meta.title || stripBookExtension(job.name) })
           job.bookId = book.id; job.message = '已加入默认书库'
         }
         job.status = 'imported'; job.canImport = false
@@ -353,9 +356,10 @@ export function attachOnlineLibrary(win: BrowserWindow): void {
   win.webContents.on('render-process-gone', resetClaims)
   // Recover completed files after restart; interrupted .crdownload files are never treated as books.
   for (const name of readdirSync(root)) {
-    const id = name.replace(/\.epub$/, '')
-    if (!name.endsWith('.epub') || !UUID.test(id)) continue
-    const job: Job = { id, name: '上次下载的电子书.epub', path: join(root, name), status: 'validating', received: 0, total: 0 }
+    const format = bookFormat(name)
+    const id = stripBookExtension(name)
+    if (!format || !UUID.test(id)) continue
+    const job: Job = { id, name: `上次下载的电子书.${format}`, path: join(root, name), status: 'validating', received: 0, total: 0 }
     jobs.set(id, job); void validate(job)
   }
   win.once('closed', () => {

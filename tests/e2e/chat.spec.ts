@@ -14,10 +14,12 @@ import {
   type Harness
 } from './helpers'
 import { closeAllFakeLlms, startFakeLlm, type FakeLlm } from './fake-llm'
+import { closeFakeTranslations, startFakeTranslation } from './fake-translation'
 
 test.afterEach(async () => {
   await closeAllApps()
   await closeAllFakeLlms()
+  await closeFakeTranslations()
 })
 
 async function openBook(h: Harness, fake?: FakeLlm, selection = false): Promise<void> {
@@ -107,7 +109,8 @@ test('发送完成后页面高亮被清除', async () => {
 })
 
 test('翻译悬浮在对应引用上方，且不会改变阅读位置', async () => {
-  const h = await launch()
+  const translator = await startFakeTranslation()
+  const h = await launch(undefined, { READER_TRANSLATION_TEST_URL: translator.url })
   const fake = await startFakeLlm()
   await openBook(h, fake, true)
   const before = await h.page.getByTestId('page-indicator').textContent()
@@ -123,12 +126,14 @@ test('翻译悬浮在对应引用上方，且不会改变阅读位置', async ()
   const translateBox = await translate.boundingBox()
   expect(translateBox!.y + translateBox!.height).toBeLessThanOrEqual(chipBox!.y + 3)
   await translate.click()
-  await expect(h.page.getByTestId('message-assistant').last()).toContainText('这是假的回答。', {
+  await h.page.getByTestId('translation-consent-yes').click()
+  await expect(h.page.getByTestId('message-assistant').last()).toContainText('这是独立翻译结果。', {
     timeout: 20_000
   })
-  const sent = fake.requests[0]?.body.messages?.at(-1)?.content ?? ''
+  const sent = translator.texts.join('')
   expect(sent).toContain(quotes[1].text)
   expect(sent).not.toContain(quotes[0].text)
+  expect(fake.requests).toHaveLength(0)
   await expect(h.page.getByTestId('page-indicator')).toHaveText(before!)
 })
 

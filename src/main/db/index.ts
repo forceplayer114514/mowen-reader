@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS books (
   locations     TEXT,
   added_at      INTEGER NOT NULL,
   last_read_cfi TEXT,
-  last_read_at  INTEGER
+  last_read_at  INTEGER,
+  read_progress REAL NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -75,12 +76,31 @@ CREATE TABLE IF NOT EXISTS annotations (
   UNIQUE(book_id, cfi_range)
 );
 CREATE INDEX IF NOT EXISTS idx_annotations_book ON annotations(book_id);
+
+CREATE TABLE IF NOT EXISTS highlights (
+  id TEXT PRIMARY KEY,
+  book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  cfi_range TEXT NOT NULL,
+  start_cfi TEXT NOT NULL,
+  quote TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  UNIQUE(book_id, cfi_range)
+);
+
+CREATE INDEX IF NOT EXISTS idx_highlights_book ON highlights(book_id, created_at);
+
+CREATE TABLE IF NOT EXISTS reading_time (
+  book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  day TEXT NOT NULL,
+  milliseconds INTEGER NOT NULL CHECK(typeof(milliseconds) = 'integer' AND milliseconds > 0),
+  PRIMARY KEY(book_id, day)
+);
 `
 
 export type Db = DatabaseSync
 
-/** SQLite user_version：v2 对话、v3 书签、v4 注释。 */
-export const SCHEMA_VERSION = 4
+/** SQLite user_version：v2 对话、v3 书签、v4 注释、v5 高亮、v6 阅读时长、v7 阅读进度。 */
+export const SCHEMA_VERSION = 7
 
 /** 打开数据库并确保表结构存在。传 ':memory:' 得到一个测试用的临时库。 */
 export function openDatabase(file: string): Db {
@@ -98,7 +118,10 @@ export function openDatabase(file: string): Db {
   }
   db.exec('BEGIN IMMEDIATE')
   try {
+    const oldBookColumns = db.prepare('PRAGMA table_info(books)').all() as { name: string }[]
+    const hadProgress = oldBookColumns.some(column => column.name === 'read_progress')
     db.exec(SCHEMA)
+    if (version < 7 && oldBookColumns.length > 0 && !hadProgress) db.exec('ALTER TABLE books ADD COLUMN read_progress REAL NOT NULL DEFAULT 0')
     // 幂等 schema 补齐新增表，所有迁移成功后才升级版本号。
     if (version < SCHEMA_VERSION) db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
     db.exec('COMMIT')

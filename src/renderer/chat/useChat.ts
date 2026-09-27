@@ -33,6 +33,7 @@ interface Attempt {
   text: string
   quotes: QuoteRecord[]
   messages?: ChatMessage[]
+  translation?: string
 }
 
 interface Owner {
@@ -215,11 +216,13 @@ export function useChat(args: UseChatArgs): ChatState {
     }
   }, [abortRequest, release])
 
-  const start = useCallback(async (messagesToSend: ChatMessage[], conversationId: string, owner: Owner): Promise<void> => {
+  const start = useCallback(async (messagesToSend: ChatMessage[], conversationId: string, owner: Owner, translation?: string): Promise<void> => {
     const pending: PendingStart = { conversationId, current: true, owner }
     pendingRef.current = pending
     try {
-      const requestId = await window.api.startChat({ messages: messagesToSend, conversationId })
+      const requestId = translation === undefined
+        ? await window.api.startChat({ messages: messagesToSend, conversationId })
+        : await window.api.startTranslation({ text: translation, conversationId })
       const request: RequestState = {
         id: requestId,
         conversationId,
@@ -246,7 +249,7 @@ export function useChat(args: UseChatArgs): ChatState {
     }
   }, [abortRequest, isOwner, release])
 
-  const run = useCallback(async (text: string, quotes: QuoteRecord[], requestMessages?: ChatMessage[]): Promise<void> => {
+  const run = useCallback(async (text: string, quotes: QuoteRecord[], translation?: string): Promise<void> => {
     if (busyRef.current) return
     busyRef.current = true
     const owner: Owner = {
@@ -268,10 +271,10 @@ export function useChat(args: UseChatArgs): ChatState {
       return
     }
     setError(null)
-    lastAttemptRef.current = { text, quotes, messages: requestMessages }
+    lastAttemptRef.current = { text, quotes, translation }
     let messagesToSend: ChatMessage[]
     try {
-      messagesToSend = requestMessages ?? buildContext({
+      messagesToSend = translation !== undefined ? [] : buildContext({
         systemPrompt: args.systemPrompt,
         bookTitle: args.book.title,
         author: args.book.author,
@@ -336,7 +339,7 @@ export function useChat(args: UseChatArgs): ChatState {
         await args.onConversationCreated(conversationId, args.mergedEndCfi)
       }
       args.clearQuotes()
-      await start(messagesToSend, conversationId, owner)
+      await start(messagesToSend, conversationId, owner, translation)
     } catch (error) {
       const current = isOwner(owner)
       owner.userMessagePending = false
@@ -357,7 +360,8 @@ export function useChat(args: UseChatArgs): ChatState {
   const translate = useCallback(async (quotes: QuoteRecord[]) => {
     if (quotes.length === 0) return
     const selected = quotes.map((quote) => quote.text).join('\n')
-    await run('翻译', quotes, [{ role: 'user', content: `翻译：\n${selected}` }])
+    if (selected.length > 10000) { setError('一次最多翻译 10000 字，请缩短选文'); return }
+    await run('翻译', quotes, selected)
   }, [run])
 
   const retry = useCallback(async () => {
@@ -381,7 +385,7 @@ export function useChat(args: UseChatArgs): ChatState {
     setStreaming('')
     const history: ChatMessage[] = messages.slice(0, -1).map(toHistoryMessage)
     try {
-      const messagesToSend = last.messages ?? buildContext({
+      const messagesToSend = last.translation !== undefined ? [] : last.messages ?? buildContext({
         systemPrompt: args.systemPrompt,
         bookTitle: args.book.title,
         author: args.book.author,
@@ -396,7 +400,7 @@ export function useChat(args: UseChatArgs): ChatState {
         release(owner)
         return
       }
-      await start(messagesToSend, conversationId, owner)
+      await start(messagesToSend, conversationId, owner, last.translation)
     } catch (error) {
       const current = isOwner(owner)
       release(owner)

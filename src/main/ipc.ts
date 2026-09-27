@@ -17,9 +17,16 @@ import type {
   MessageRecord,
   StartChatInput
 } from '../shared/types'
-import { discardStagedFile, libraryFilePath, removeBookFiles, writeCover } from './books/import'
+import { supportedBookExtensions } from '../shared/book-format'
+import {
+  discardStagedFile,
+  removeBookFiles,
+  resolveStagedFile,
+  stripBookExtension,
+  writeCover
+} from './books/import'
 import { scanFolder } from './books/scan'
-import { allowSource, allowSources, assertAllowed, assertEpub } from './books/source-gate'
+import { allowSource, allowSources, assertAllowed, assertSupportedBook } from './books/source-gate'
 import { stageMany } from './books/stage'
 import { openDatabase, type Db } from './db'
 import {
@@ -57,6 +64,9 @@ import { listModels, streamChat } from './llm/client'
 import { bindSessionLifecycle, createSessionRegistry } from './llm/session'
 import { dbFile } from './paths'
 import { clearApiKey, readApiKey, setApiKey } from './secrets'
+import { abortTranslation, disposeTranslation, registerTranslationIpc } from './translation-ipc'
+import { addHighlight, deleteHighlight, listHighlights } from './db/highlights'
+import type { CreateHighlightInput } from '../shared/highlight-types'
 
 let db: Db | null = null
 
@@ -80,13 +90,17 @@ function annotationContent(value: unknown): asserts value is string {
 /** 应用即将退出时调用:中止所有还在跑的模型请求。见 src/main/index.ts 的 before-quit。 */
 export function abortAllChats(): void {
   sessions.abortAll()
+  disposeTranslation()
 }
 
 export async function finishBookImport(input: FinishImportInput): Promise<BookRecord> {
+  // Derive the format from the actual staged file, never renderer-supplied source metadata.
+  const filePath = await resolveStagedFile(input.id)
   const cover = input.coverBytes ? await writeCover(input.id, new Uint8Array(input.coverBytes)) : null
+  // 标题兜底去掉三类扩展名；沿用现有 DB schema，不迁移或重写旧书籍数据。
   const record: BookRecord = {
-    id: input.id, title: input.title || basename(input.sourcePath, '.epub'), author: input.author,
-    coverPath: cover, filePath: libraryFilePath(input.id), sourcePath: input.sourcePath,
+    id: input.id, title: input.title || stripBookExtension(basename(input.sourcePath)), author: input.author,
+    coverPath: cover, filePath, sourcePath: input.sourcePath,
     addedAt: Date.now(), lastReadCfi: null, lastReadAt: null
   }
   try { insertBook(database(), record) }
@@ -98,6 +112,23 @@ export async function finishBookImport(input: FinishImportInput): Promise<BookRe
 }
 
 export function registerIpc(): void {
+  registerTranslationIpc(database)
+  ipcMain.handle('highlights:list', (_event, bookId: string) => {
+    annotationId(bookId)
+    return listHighlights(database(), bookId)
+  })
+  ipcMain.handle('highlights:add', (_event, input: CreateHighlightInput) => {
+    if (!input || typeof input !== 'object') throw new Error('高光参数无效')
+    annotationId(input.bookId)
+    if (!getBook(database(), input.bookId)) throw new Error('书籍不存在')
+    if (typeof input.startCfi !== 'string' || input.startCfi.length > 4096 || !/^epubcfi\([^,]+![^,]+\)$/.test(input.startCfi) ||
+      typeof input.cfiRange !== 'string' || input.cfiRange.length > 4096 || !/^epubcfi\(.+!.+,.+,.+\)$/.test(input.cfiRange) ||
+      typeof input.quote !== 'string' || !input.quote.trim() || input.quote.length > 200000) {
+      throw new Error('高光原文位置无效，请重新划选')
+    }
+    return addHighlight(database(), input)
+  })
+  ipcMain.handle('highlights:delete', (_event, id: string) => { annotationId(id); deleteHighlight(database(), id) })
   ipcMain.handle('annotations:list', (_e, bookId: string): AnnotationRecord[] => {
     annotationId(bookId)
     return listAnnotations(database(), bookId)
@@ -132,8 +163,8 @@ export function registerIpc(): void {
 
   ipcMain.handle('books:pickFiles', async (): Promise<string[]> => {
     const result = await dialog.showOpenDialog({
-      title: '选择 EPUB 文件',
-      filters: [{ name: 'EPUB 电子书', extensions: ['epub'] }],
+      title: '选择电子书文件',
+      filters: [{ name: '电子书', extensions: [...supportedBookExtensions] }],
       properties: ['openFile', 'multiSelections']
     })
     if (result.canceled) return []
@@ -166,16 +197,17 @@ export function registerIpc(): void {
 
   // 拖拽导入的路径合法地来自渲染层本身(File 对象经 webUtils.getPathForFile 得到),
   // 天然过不了 assertAllowed 这道只认"主进程自己发出的路径"的闸门,所以单独开一条通道:
-  // 只要求路径以 .epub 结尾,就把它记进白名单,再和 stageImport 共用同一个 stageMany 去复制。
+  // 只要求路径是支持的书籍格式(EPUB/PDF/TXT),就把它记进白名单,再和 stageImport
+  // 共用同一个 stageMany 去复制。stageOne 里还有 lstat/常规文件/体积的二次校验。
   // 残余风险的边界现在是准确的:被攻破的渲染层仍可以让本机磁盘上任意一个已经存在的、
-  // 真实的 .epub 常规文件被复制进书库、读出内容;符号链接会被 stageOne 里的 lstat
-  // 检查拒绝,不能再借一个 .epub 名字的符号链接读出任意文件的真实字节。前者是支持
+  // 真实的支持格式常规文件被复制进书库、读出内容;符号链接会被 stageOne 里的 lstat
+  // 检查拒绝,不能再借一个书籍名字的符号链接读出任意文件的真实字节。前者是支持
   // 拖拽导入必须付出的代价,不是遗漏。
   ipcMain.handle(
     'books:stageDropped',
     async (_e, sourcePaths: string[]): Promise<ImportedFile[]> => {
       for (const p of sourcePaths) {
-        assertEpub(p)
+        assertSupportedBook(p)
         allowSource(p)
       }
       return stageMany(sourcePaths)
@@ -204,10 +236,10 @@ export function registerIpc(): void {
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer
   })
 
-  // 刚复制进库、还没入库的文件靠这个读。路径由 id 在主进程内推导,
-  // 渲染层给不出任意路径——libraryFilePath 本身就是边界。
+  // 刚复制进库、还没入库的文件靠这个读。路径由 id 在主进程内按白名单扩展名推导,
+  // 渲染层给不出任意路径——resolveStagedFile 本身就是边界。
   ipcMain.handle('books:readStaged', async (_e, id: string): Promise<ArrayBuffer> => {
-    const buf = await readFile(libraryFilePath(id))
+    const buf = await readFile(await resolveStagedFile(id))
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer
   })
 
@@ -225,8 +257,8 @@ export function registerIpc(): void {
     await removeBookFiles(book).catch(() => { console.warn('已删除书籍记录，但库内文件清理失败', id) })
   })
 
-  ipcMain.handle('books:saveProgress', (_e, id: string, cfi: string): void => {
-    updateProgress(database(), id, cfi)
+  ipcMain.handle('books:saveProgress', (_e, id: string, cfi: string, progress = 0): void => {
+    updateProgress(database(), id, cfi, progress)
   })
 
   ipcMain.handle('books:getLocations', (_e, id: string): string | null => {
@@ -507,6 +539,7 @@ export function registerIpc(): void {
 
   ipcMain.handle('chat:abort', (_e, requestId: string) => {
     sessions.abort(requestId)
+    abortTranslation(requestId)
   })
 
   // 仅端到端测试使用:绕开系统文件选择框直接传入路径。

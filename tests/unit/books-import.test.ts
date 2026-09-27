@@ -3,11 +3,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  copyBookIntoLibrary,
   copyEpubIntoLibrary,
   coverExtension,
   coverPath,
   discardStagedFile,
   libraryFilePath,
+  resolveStagedFile,
+  stripBookExtension,
   removeBookFiles,
   writeCover
 } from '../../src/main/books/import'
@@ -142,6 +145,69 @@ describe('libraryFilePath', () => {
     const result = await copyEpubIntoLibrary(src)
     expect(result.filePath).toBe(libraryFilePath(result.id))
   })
+
+  it('format 参数支持 pdf/txt,默认 epub 保持兼容', () => {
+    const id = '3fa85f64-5717-4562-b3fc-2c963f66afa6'
+    expect(libraryFilePath(id, 'pdf')).toBe(join(dataDir, 'books', `${id}.pdf`))
+    expect(libraryFilePath(id, 'txt')).toBe(join(dataDir, 'books', `${id}.txt`))
+    expect(libraryFilePath(id, 'PDF')).toBe(join(dataDir, 'books', `${id}.pdf`))
+    expect(() => libraryFilePath(id, 'mobi')).toThrow(/不支持的书籍格式/)
+    expect(() => libraryFilePath(id, '../evil')).toThrow()
+  })
+
+  it('stripBookExtension 去掉三类扩展名(大小写不敏感)', () => {
+    expect(stripBookExtension('书.epub')).toBe('书')
+    expect(stripBookExtension('书.PDF')).toBe('书')
+    expect(stripBookExtension('笔记.Txt')).toBe('笔记')
+    expect(stripBookExtension('book.epub.txt')).toBe('book.epub')
+    expect(stripBookExtension('无扩展名')).toBe('无扩展名')
+  })
+})
+
+describe('copyBookIntoLibrary', () => {
+  it('pdf/txt 保留原始扩展名,内容一致', async () => {
+    const pdf = join(workDir, '书.pdf')
+    const txt = join(workDir, '笔记.txt')
+    writeFileSync(pdf, 'PDF-CONTENT')
+    writeFileSync(txt, 'TXT-CONTENT')
+    const a = await copyBookIntoLibrary(pdf)
+    const b = await copyBookIntoLibrary(txt)
+    expect(a.filePath).toBe(libraryFilePath(a.id, 'pdf'))
+    expect(b.filePath).toBe(libraryFilePath(b.id, 'txt'))
+    expect(readFileSync(a.filePath, 'utf8')).toBe('PDF-CONTENT')
+    expect(readFileSync(b.filePath, 'utf8')).toBe('TXT-CONTENT')
+  })
+
+  it('白名单外的格式被拒绝', async () => {
+    const src = join(workDir, '书.mobi')
+    writeFileSync(src, 'X')
+    await expect(copyBookIntoLibrary(src)).rejects.toThrow(/只支持 EPUB、PDF、TXT 文件/)
+  })
+
+  it('源文件不存在时抛出带路径的错误', async () => {
+    await expect(copyBookIntoLibrary(join(workDir, '没有这个.pdf'))).rejects.toThrow(
+      /没有这个\.pdf/
+    )
+  })
+})
+
+describe('resolveStagedFile', () => {
+  it('按 id 找到 pdf/txt 暂存文件,只认白名单扩展名', async () => {
+    const src = join(workDir, '书.pdf')
+    writeFileSync(src, 'PDF')
+    const imported = await copyBookIntoLibrary(src)
+    await expect(resolveStagedFile(imported.id)).resolves.toBe(imported.filePath)
+  })
+
+  it('非法 id 被拒绝,不拼接任意路径', async () => {
+    await expect(resolveStagedFile('../../../etc/passwd')).rejects.toThrow()
+  })
+
+  it('不存在的 id 抛错', async () => {
+    await expect(resolveStagedFile('3fa85f64-5717-4562-b3fc-2c963f66afa6')).rejects.toThrow(
+      /找不到已暂存文件/
+    )
+  })
 })
 
 describe('coverPath', () => {
@@ -235,5 +301,22 @@ describe('discardStagedFile', () => {
     await discardStagedFile(imported.id)
 
     expect(existsSync(writtenCoverPath)).toBe(false)
+  })
+
+  it('pdf/txt 暂存文件同样能按 id 丢弃,只认白名单扩展名', async () => {
+    const pdf = join(workDir, 'g.pdf')
+    const txt = join(workDir, 'h.txt')
+    writeFileSync(pdf, 'PDF')
+    writeFileSync(txt, 'TXT')
+    const a = await copyBookIntoLibrary(pdf)
+    const b = await copyBookIntoLibrary(txt)
+    await discardStagedFile(a.id)
+    await discardStagedFile(b.id)
+    expect(existsSync(a.filePath)).toBe(false)
+    expect(existsSync(b.filePath)).toBe(false)
+  })
+
+  it('非法 id 被拒绝,不删除任意路径', async () => {
+    await expect(discardStagedFile('../../../etc/passwd')).rejects.toThrow()
   })
 })

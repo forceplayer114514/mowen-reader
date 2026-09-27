@@ -1,4 +1,6 @@
 import { Book } from 'epubjs'
+import { decodeText } from './text-book'
+import { loadPdf, pdfError } from './pdf'
 
 /**
  * 在渲染进程里解析 EPUB 元数据。
@@ -13,11 +15,36 @@ import { Book } from 'epubjs'
  * DOM/XML 解析器,重新实现一遍解析逻辑代价远大于放宽这一条约束。
  * 这个矛盾已经按指示如实记录,交由上级裁决,这里不擅自更改计划文件。
  */
-export async function extractMetadata(data: ArrayBuffer): Promise<{
+export async function extractMetadata(data: ArrayBuffer, format: 'epub' | 'pdf' | 'txt' = 'epub'): Promise<{
   title: string
   author: string | null
   coverBytes: ArrayBuffer | null
 }> {
+  if (format === 'txt') {
+    decodeText(data)
+    return { title: '', author: null, coverBytes: null }
+  }
+  if (format === 'pdf') {
+    const task = loadPdf(data)
+    const timeout = setTimeout(() => { void task.destroy() }, 30000)
+    try {
+      const pdf = await task.promise
+      const metadata = await pdf.getMetadata()
+      const info = metadata.info as { Title?: unknown; Author?: unknown }
+      let coverBytes: ArrayBuffer | null = null
+      try {
+        const page = await pdf.getPage(1)
+        const viewport = page.getViewport({ scale: 300 / page.getViewport({ scale: 1 }).width })
+        const canvas = document.createElement('canvas')
+        canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height)
+        await page.render({ canvas, canvasContext: canvas.getContext('2d')!, viewport }).promise
+        const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
+        coverBytes = blob ? await blob.arrayBuffer() : null
+      } catch { /* Missing preview must not reject an otherwise readable PDF. */ }
+      return { title: typeof info.Title === 'string' ? info.Title.trim() : '', author: typeof info.Author === 'string' ? info.Author.trim() || null : null, coverBytes }
+    } catch (error) { throw pdfError(error) }
+    finally { clearTimeout(timeout); await task.destroy() }
+  }
   const book = new Book({ replacements: 'none', requestMethod: async () => { throw new Error('元数据解析不允许访问网络') } })
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<never>((_resolve, reject) => {

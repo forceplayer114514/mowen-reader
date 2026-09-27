@@ -1,5 +1,6 @@
 import { readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
+import { bookFormat } from '../../shared/book-format'
 
 async function walk(dir: string, out: string[]): Promise<void> {
   const entries = await readdir(dir, { withFileTypes: true })
@@ -7,13 +8,13 @@ async function walk(dir: string, out: string[]): Promise<void> {
     const full = join(dir, entry.name)
     if (entry.isDirectory()) {
       await walk(full, out)
-    } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.epub')) {
+    } else if (entry.isFile() && bookFormat(entry.name) !== null) {
       out.push(full)
     }
   }
 }
 
-/** 递归找出文件夹下所有 EPUB,排除掉已经导入过的源路径。 */
+/** 递归找出文件夹下所有支持的书籍(EPUB/PDF/TXT),排除掉已经导入过的源路径。 */
 export async function scanFolder(dir: string, alreadyImported: string[]): Promise<string[]> {
   let info: any
   try {

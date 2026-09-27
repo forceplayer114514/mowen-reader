@@ -9,9 +9,10 @@ interface Props {
   busy?: boolean
   testId?: string
   confirmTestId?: string
+  tone?: 'danger' | 'neutral'
 }
 
-export default function ConfirmDialog({ title, message, confirmLabel, onCancel, onConfirm, busy = false, testId, confirmTestId }: Props) {
+export default function ConfirmDialog({ title, message, confirmLabel, onCancel, onConfirm, busy = false, testId, confirmTestId, tone = 'danger' }: Props) {
   const cancelRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null
@@ -24,12 +25,12 @@ export default function ConfirmDialog({ title, message, confirmLabel, onCancel, 
       <div className="modal" role="dialog" aria-modal="true" aria-label={title} onKeyDown={(event) => {
         if (event.key === 'Escape' && !busy) onCancel()
       }}>
-        <div className="modal__symbol modal__symbol--danger">!</div>
+        <div className={`modal__symbol${tone === 'danger' ? ' modal__symbol--danger' : ''}`}>{tone === 'danger' ? '!' : '↗'}</div>
         <h2>{title}</h2>
         <p className="modal__copy">{message}</p>
         <div className="modal__actions">
           <button type="button" ref={cancelRef} onClick={onCancel} disabled={busy}>取消</button>
-          <button type="button" className="button--danger" data-testid={confirmTestId} onClick={onConfirm} disabled={busy}>
+          <button type="button" className={tone === 'danger' ? 'button--danger' : 'button--primary'} data-testid={confirmTestId} onClick={onConfirm} disabled={busy}>
             {busy ? '处理中…' : confirmLabel}
           </button>
         </div>

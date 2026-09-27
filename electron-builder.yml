@@ -6,12 +6,15 @@ directories:
 files:
   - out/**/*
   - package.json
+asarUnpack:
+  - '**/node_modules/onnxruntime-node/**'
+  - '**/node_modules/sharp/**'
+  - '**/node_modules/@img/**'
 mac:
   icon: build/icon.png
   category: public.app-category.book
   target:
     - target: dmg
-      arch: [x64, arm64]
   # 不做签名与公证。用户首次打开需右键→打开,README 有说明。
   identity: null
   hardenedRuntime: false

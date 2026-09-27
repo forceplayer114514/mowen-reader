@@ -1,7 +1,18 @@
 import { expect, it } from 'vitest'
 import JSZip from 'jszip'
 import { buildFixtureEpub } from '../../scripts/make-fixture-epub'
-import { validateDownloadedEpub } from '../../src/main/books/validate-download'
+import { validateDownloadedBook, validateDownloadedEpub } from '../../src/main/books/validate-download'
+import { buildFixturePdf } from '../../scripts/make-fixture-pdf'
+
+it('PDF/TXT download validation rejects error pages, incomplete files and oversized text', async () => {
+  await expect(validateDownloadedBook(buildFixturePdf(), 'book.PDF')).resolves.toBeUndefined()
+  await expect(validateDownloadedBook(Buffer.from('你好'), 'book.txt')).resolves.toBeUndefined()
+  await expect(validateDownloadedBook(Buffer.from('<html>Log in</html>'), 'book.pdf')).rejects.toThrow('不是完整 PDF')
+  await expect(validateDownloadedBook(Buffer.from('%PDF-1.4 broken'), 'book.pdf')).rejects.toThrow('不是完整 PDF')
+  await expect(validateDownloadedBook(Buffer.from('\u0000secret'), 'book.txt')).rejects.toThrow('二进制')
+  await expect(validateDownloadedBook(Buffer.alloc(16 * 1024 * 1024 + 1), 'book.txt')).rejects.toThrow('16 MB')
+  await expect(validateDownloadedBook(Buffer.from('file'), 'book.exe')).rejects.toThrow('仅支持')
+})
 
 it('accepts a real EPUB and rejects HTML, missing manifest and traversal', async () => {
   await expect(validateDownloadedEpub(Buffer.from(await buildFixtureEpub()))).resolves.toBeUndefined()

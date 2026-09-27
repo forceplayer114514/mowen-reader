@@ -1,6 +1,7 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, Menu, safeStorage } from 'electron'
-import { abortAllChats, registerIpc } from './ipc'
+import { abortAllChats, database, registerIpc } from './ipc'
+import { attachReadingStats, registerReadingStats } from './reading-stats'
 import { initDataDir } from './paths'
 import { initSecrets } from './secrets'
 import { attachOnlineLibrary } from './online-library'
@@ -27,6 +28,7 @@ function createWindow(): void {
   })
 
   attachOnlineLibrary(win)
+  attachReadingStats(win, database)
 
   if (!process.env.READER_E2E) win.once('ready-to-show', () => win.show())
 
@@ -48,6 +50,7 @@ void app.whenReady().then(() => {
   }
   initSecrets(safeStorage)
   registerIpc()
+  registerReadingStats(database)
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

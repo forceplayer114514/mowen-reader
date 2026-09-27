@@ -4,7 +4,9 @@ import { normalizeChapterHref, resolveNavigationHref } from './href'
 import type {
   OpenOptions,
   AnnotationMarker,
+  PersistentHighlightItem,
   ReaderEngine,
+  ReadingTool,
   SelectionPoint,
   ThemeName,
   TocItem,
@@ -35,6 +37,19 @@ const HIGHLIGHT_STYLES: Record<ThemeName, Record<string, string>> = {
   light: { fill: '#f2c14e', 'fill-opacity': '0.45', 'mix-blend-mode': 'multiply' },
   dark: { fill: '#7aa2f7', 'fill-opacity': '0.38', 'mix-blend-mode': 'screen' }
 }
+
+/**
+ * 持久荧光笔的配色:淡黄句背景,和上面临时引用的那套区分开。
+ * 同样走 epub.js 的 highlight 槽位(见 attachPersistent 的注释),只是颜色不同;
+ * 两套主题都要配,理由和上面那套一样:multiply 在深色底上只会越叠越黑。
+ */
+const PERSISTENT_STYLES: Record<ThemeName, Record<string, string>> = {
+  light: { fill: '#fff59d', 'fill-opacity': '0.6', 'mix-blend-mode': 'multiply' },
+  dark: { fill: '#fff59d', 'fill-opacity': '0.35', 'mix-blend-mode': 'screen' }
+}
+
+/** 持久高亮在页面上那层 SVG 的类名,和临时引用的 epubjs-hl 区分开,方便测试定位。 */
+const PERSISTENT_CLASS = 'epubjs-hl-persistent'
 
 /** 固定 CFI 索引的切分粒度；页数另按当前排版尺寸计算。 */
 const LOCATION_CHUNK = 1000
@@ -71,6 +86,17 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   // 记的是回调而不只是范围字符串:换主题时要按新配色把同一段重新画一遍,
   // 重画就得把原来的点击回调原样再传进去,否则重画完的高亮点了没反应。
   const highlights = new Map<string, () => void>()
+  // 持久荧光笔高亮:范围 -> {id, 点击回调},和上面临时引用那份账分开记。
+  // 两套都走 epub.js 的 'highlight' 标注槽位(hash 是「范围+类型」拼出来的,
+  // 见 annotations.js 的 add()),所以同一个范围字符串在两边同时存在时页面上
+  // 只有一个 SVG 坑位——这时视觉和点击都归持久层(见 attachHighlight /
+  // detachHighlight / syncHighlights 里互相让路的注释),两边的账本身互不覆盖。
+  const persistent = new Map<string, { id: string; onClick: () => void }>()
+  // setPersistentHighlights 传进来的按 id 回调。用引用而不是每次重建闭包:
+  // 换主题重画时要把原来的回调原样再传进去,闭包里读这个引用永远拿到最新的。
+  let persistentClick: (id: string) => void = () => {}
+  // 当前阅读工具。erase 下拖选不再当引用交出去(见 consumeSelection),其它行为不变。
+  let readingTool: ReadingTool = 'select'
   // 该从 epub.js 那边摘掉、但当时一个章节视图都没渲染出来所以没敢摘的范围。
   // 见 hasRenderedViews() 的注释:那种时候摘会把 epub.js 自己的两张表弄成不一致。
   // 等下一次有视图渲染出来,syncHighlights() 会把这里欠着的一并补掉。
@@ -254,6 +280,9 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   /** 把一段范围按当前主题画上去。现在画不了就只留在账上,等下一次渲染时补画。 */
   function attachHighlight(cfiRange: string, onClick: () => void): void {
     if (!rendition || !hasRenderedViews()) return
+    // 持久层占着这个槽位时视觉和点击都归它,临时层只记账不覆盖——否则两边
+    // 来回覆盖,同一段既是引用又是荧光笔时会闪来闪去,点的那一下也不知道归谁。
+    if (persistent.has(cfiRange)) return
     // 先删一次再加:epub.js 的 Annotations 用「范围+类型」当 key 存(annotations.js
     // 的 add()),同一段重复加会把记录覆盖掉,但页面上先画的那层 SVG 矩形还挂在
     // marks-pane 上没人再摸得到,颜色越叠越深且永远删不掉。
@@ -262,7 +291,31 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     // 第二个参数是挂在这条标注上的自定义数据,epub.js 会往里写 epubcfi 字段
     // (iframe.js 的 highlight()),所以每次都给一个新的空对象,不要共用。
     // 第四个参数是 CSS 类名,给 undefined 就用库自己的默认值 epubjs-hl。
-    rendition.annotations.highlight(cfiRange, {}, onClick, undefined, HIGHLIGHT_STYLES[theme])
+    rendition.annotations.highlight(cfiRange, {}, () => { if (readingTool === 'select') onClick() }, undefined, HIGHLIGHT_STYLES[theme])
+  }
+
+  /** 把一段持久高亮按当前主题画上去,规则和上面那套一样,只是颜色和类名不同。 */
+  function attachPersistent(cfiRange: string, onClick: () => void): void {
+    if (!rendition || !hasRenderedViews()) return
+    rendition.annotations.remove(cfiRange, 'highlight')
+    pendingRemovals.delete(cfiRange)
+    rendition.annotations.highlight(cfiRange, {}, onClick, PERSISTENT_CLASS, PERSISTENT_STYLES[theme])
+  }
+
+  /** 把一段持久高亮从页面上摘掉;同一范围上还有临时引用时把它画回来。 */
+  function detachPersistent(cfiRange: string): void {
+    if (!rendition) return
+    if (!hasRenderedViews()) {
+      pendingRemovals.add(cfiRange)
+      return
+    }
+    pendingRemovals.delete(cfiRange)
+    rendition.annotations.remove(cfiRange, 'highlight')
+    // 擦掉持久层不能顺手带走临时引用:同一范围上还有临时账时,把它按原样画回来。
+    const transient = highlights.get(cfiRange)
+    if (transient) {
+      rendition.annotations.highlight(cfiRange, {}, () => { if (readingTool === 'select') transient() }, undefined, HIGHLIGHT_STYLES[theme])
+    }
   }
 
   /** 把一段范围从页面上摘掉。现在摘不安全就欠着,见 hasRenderedViews()。 */
@@ -276,6 +329,11 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     // 第二个参数不能省:Annotations.remove() 拿「范围+类型」拼出 key 去查,
     // 少了类型就查不到任何东西,这一行会变成静默的空操作。
     rendition.annotations.remove(cfiRange, 'highlight')
+    // 同一范围上还贴着持久高亮时,把它按原样画回来:临时引用的摘除不能带走持久层。
+    const kept = persistent.get(cfiRange)
+    if (kept) {
+      rendition.annotations.highlight(cfiRange, {}, kept.onClick, PERSISTENT_CLASS, PERSISTENT_STYLES[theme])
+    }
   }
 
   /**
@@ -299,8 +357,16 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       rendition.annotations.remove(cfiRange, 'highlight')
     }
     pendingRemovals.clear()
-    for (const [cfiRange, onClick] of highlights) {
-      attachHighlight(cfiRange, onClick)
+    // 两份账的并集,同一范围持久层优先:临时层的 clearHighlights() 只会清掉
+    // 自己的账(见 detachHighlight 把持久层画回来的注释),这里重画也不会丢对方。
+    for (const cfiRange of new Set([...highlights.keys(), ...persistent.keys()])) {
+      const kept = persistent.get(cfiRange)
+      if (kept) {
+        attachPersistent(cfiRange, kept.onClick)
+      } else {
+        const onClick = highlights.get(cfiRange)
+        if (onClick) attachHighlight(cfiRange, onClick)
+      }
     }
   }
 
@@ -519,6 +585,10 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   function consumeSelection(press: PressKind, event: Event, fromContent: boolean): void {
     if (selectionListeners.length === 0) return
     if (!rendition) return
+    // 橡皮模式下拖选什么也不做:既不变成引用,也不存成荧光笔。选区同样不收走,
+    // 用户拖出来的那段话还留在那里可复制——和"没有人订阅时保留原生选区"那条
+    // 用例是同一个道理。荧光笔模式照常通知,由 ReaderView 存盘并清掉临时引用。
+    if (readingTool === 'erase') return
     // getContents() 在这版 epub.js 的类型声明里被错标成单个 Contents,运行时实际
     // 返回数组(和 getVisible() 里那处断言同因),这里只在本文件内断言。
     const all = rendition.getContents() as unknown as Contents[]
@@ -776,6 +846,10 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     // 下一本书刚打开就会以为页面上已经有高亮,clearHighlights() 会对着新书里
     // 根本不存在的范围做删除。
     highlights.clear()
+    // 持久层同样跟着这本书走,下一本书不该看到上一本书的荧光笔。
+    persistent.clear()
+    persistentClick = () => {}
+    readingTool = 'select'
     // 欠着的摘除也跟着这本书一起作废:范围字符串是这本书的,留到下一本书上
     // 只会对着不存在的范围做删除。
     pendingRemovals.clear()
@@ -1090,7 +1164,10 @@ export function createEngine(container: HTMLElement): ReaderEngine {
         chapterHref: href,
         chapterLabel: entry ? entry.label : null,
         page,
-        totalPages
+        totalPages,
+        readProgress: locationsReady && rendition.location.atEnd ? 1
+          : rendition.location.atStart ? 0
+          : Math.max(0, Math.min(0.99, loc / Math.max(1, locationCount - 1)))
       }
     },
 
@@ -1156,6 +1233,34 @@ export function createEngine(container: HTMLElement): ReaderEngine {
         detachHighlight(cfiRange)
       }
       highlights.clear()
+    },
+
+    setPersistentHighlights(items: PersistentHighlightItem[], onClick: (id: string) => void): void {
+      // 整表替换:调用方(ReaderView)持有存盘的完整列表,引擎只负责画出来。
+      // 同一次传入里重复的范围只留第一条,不画两层。
+      persistentClick = onClick
+      const next = new Map<string, { id: string; onClick: () => void }>()
+      for (const item of items) {
+        if (next.has(item.cfiRange)) continue
+        next.set(item.cfiRange, { id: item.id, onClick: () => persistentClick(item.id) })
+      }
+      for (const cfiRange of [...persistent.keys()]) {
+        const prev = persistent.get(cfiRange)
+        const incoming = next.get(cfiRange)
+        if (!incoming || incoming.id !== prev?.id) {
+          persistent.delete(cfiRange)
+          detachPersistent(cfiRange)
+        }
+      }
+      for (const [cfiRange, entry] of next) {
+        const prev = persistent.get(cfiRange)
+        persistent.set(cfiRange, entry)
+        if (!prev || prev.id !== entry.id) attachPersistent(cfiRange, entry.onClick)
+      }
+    },
+
+    setReadingTool(tool: ReadingTool): void {
+      readingTool = tool
     },
 
     setAnnotations(items: AnnotationMarker[], onClick: (id: string) => void): void {

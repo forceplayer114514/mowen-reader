@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { BookRecord, ImportedFile } from '@shared/types'
+import { bookFormat } from '@shared/book-format'
+import { readingPercent } from '@shared/reading-stats'
 import { extractMetadata } from '../reader/metadata'
 import appIcon from '../assets/mowen-icon.png'
 import ConfirmDialog from '../ConfirmDialog'
@@ -10,6 +12,7 @@ interface Props {
   onOpenBook: (book: BookRecord) => void
   onOpenSettings?: () => void
   onOpenConversations?: () => void
+  onOpenStats?: () => void
   onOpenOnline?: () => void
   onOpenDownloads?: () => void
   downloadCount?: number
@@ -21,12 +24,17 @@ interface Props {
 
 type Stager = (sourcePaths: string[]) => Promise<ImportedFile[]>
 
-export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversations, onOpenOnline, onOpenDownloads, downloadCount, downloadsOpen, revision, theme, onToggleTheme }: Props) {
+export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversations, onOpenStats, onOpenOnline, onOpenDownloads, downloadCount, downloadsOpen, revision, theme, onToggleTheme }: Props) {
   const [books, setBooks] = useState<BookRecord[]>([])
   const [busy, setBusy] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
   const coverUrls = useBookCovers(books)
+  const search = query.trim().normalize('NFKC').toLowerCase()
+  const filteredBooks = books.filter(book => `${book.title} ${book.author ?? ''}`.normalize('NFKC').toLowerCase().includes(search))
+  // listBooks 已按最近阅读时间倒序；搜索只筛选书卡，不改变继续阅读的目标。
+  const lastBook = books.find(book => book.lastReadAt !== null)
   // 等待用户确认删除的那本书;非 null 时弹出确认框。删除会连带清掉用户复制
   // 进库的文件副本,不可撤销,所以必须先经过这一步确认,不能点了就删。
   const [pendingDelete, setPendingDelete] = useState<BookRecord | null>(null)
@@ -56,7 +64,7 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
         const [file] = await stage([sourcePath])
         staged = file
         const bytes = await window.api.readStagedFile(file.id)
-        const meta = await extractMetadata(bytes)
+        const meta = await extractMetadata(bytes, bookFormat(file.filePath) ?? 'epub')
         await window.api.finishImport({
           id: file.id,
           sourcePath,
@@ -123,7 +131,7 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
     try {
       const found = await window.api.scanFolder(dir)
       if (found.length === 0) {
-        setError('这个文件夹里没有发现未导入的 EPUB')
+        setError('这个文件夹里没有发现未导入的 EPUB、PDF 或 TXT')
         return
       }
       await importPaths(found, window.api.stageImport)
@@ -165,10 +173,10 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
       const paths: string[] = []
       for (const file of Array.from(e.dataTransfer.files)) {
         const path = window.api.pathForFile(file)
-        if (path && path.toLowerCase().endsWith('.epub')) paths.push(path)
+        if (path && bookFormat(path)) paths.push(path)
       }
       if (paths.length === 0) {
-        setError('拖进来的文件里没有 EPUB')
+        setError('拖进来的文件里没有 EPUB、PDF 或 TXT')
         return
       }
       // 拖拽来的路径合法地来自渲染层本身,过不了 stageImport 背后那道
@@ -204,6 +212,7 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
           <button type="button" className="button--ghost" data-testid="open-conversations" onClick={onOpenConversations}>
             对话
           </button>
+          <button type="button" className="button--ghost" data-testid="open-stats" onClick={onOpenStats}>统计</button>
           <button type="button" className="button--ghost" data-testid="open-settings" onClick={onOpenSettings}>
             设置
           </button>
@@ -217,7 +226,7 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
           {!!downloadCount && <button type="button" className="button--ghost" data-testid="open-downloads"
             aria-expanded={downloadsOpen} onClick={onOpenDownloads}>下载记录 ({downloadCount})</button>}
           <button type="button" className="button--primary" onClick={onPickFiles} data-testid="pick-files">
-            ＋ 添加 EPUB
+            ＋ 添加书籍
           </button>
         </nav>
       </header>
@@ -226,10 +235,27 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
         <div>
           <p className="eyebrow">个人书库</p>
           <h1>你的书架</h1>
-          <p>沉浸阅读，在需要时让 AI 帮你理解、翻译和梳理。</p>
+          <p>支持 EPUB、PDF、TXT。在需要时让 AI 帮你理解、翻译和梳理。</p>
         </div>
-        <span className="library__count">{books.length} 本书</span>
+        <span className="library__count" data-testid="library-count">{search ? `${filteredBooks.length} / ${books.length}` : books.length} 本书</span>
       </section>
+
+      <div className="library__tools">
+        <div className="library__search">
+          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+            <circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4 4" />
+          </svg>
+          <input type="search" data-testid="library-search" aria-label="搜索图书" placeholder="搜索书名或作者…"
+            value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') setQuery('') }} />
+          {query && <button type="button" className="button--icon" aria-label="清空搜索" onClick={() => setQuery('')}>×</button>}
+        </div>
+        <button type="button" className="button--primary library__continue" data-testid="continue-reading"
+          disabled={!lastBook || error === '书库读取失败，已保存的书籍未删除，请重试'}
+          title={lastBook ? `继续阅读（${lastBook.title}）` : '打开一本书后，可从这里接着读'}
+          onClick={() => { if (lastBook) onOpenBook(lastBook) }}>
+          <span aria-hidden="true">↗</span><span>{lastBook ? `继续阅读（${lastBook.title}）` : '继续阅读'}</span>
+        </button>
+      </div>
 
       {(busy || error) && (
         <div className={`library__notice${error ? ' library__notice--error' : ''}`} role="status">
@@ -244,11 +270,17 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
         <div className="empty">
           <span className="empty__icon">＋</span>
           <strong>{error === '书库读取失败，已保存的书籍未删除，请重试' ? '书库暂时无法读取' : '书架是空的'}</strong>
-          <p>{error === '书库读取失败，已保存的书籍未删除，请重试' ? '请先重试，不需要重新导入原有书籍。' : '把第一本书拖进来，或点击右上角的「添加 EPUB」。'}</p>
+          <p>{error === '书库读取失败，已保存的书籍未删除，请重试' ? '请先重试，不需要重新导入原有书籍。' : '把 EPUB、PDF 或 TXT 拖进来，或点击右上角的「添加书籍」。'}</p>
+        </div>
+      ) : filteredBooks.length === 0 ? (
+        <div className="empty" role="status">
+          <strong>没有找到匹配的图书</strong>
+          <p>试试其他书名或作者，或清空搜索查看全部书籍。</p>
+          <button type="button" className="button--secondary" onClick={() => setQuery('')}>查看全部书籍</button>
         </div>
       ) : (
         <div className="library__grid">
-          {books.map((book) => (
+          {filteredBooks.map((book) => (
             <div
               key={book.id}
               className="book-card"
@@ -268,9 +300,10 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
                   {coverUrls[book.id] ? (
                     <img src={coverUrls[book.id]} alt="" />
                   ) : book.title}
+                  <span className="book-card__progress" data-testid="book-progress" aria-label={`已读 ${readingPercent(book.readProgress)}%`}>{readingPercent(book.readProgress)}%</span>
                 </div>
                 <div className="book-card__title">{book.title}</div>
-                <div className="book-card__author">{book.author ?? '佚名'}</div>
+                <div className="book-card__author">{book.author ?? '佚名'} · {(bookFormat(book.filePath) ?? 'epub').toUpperCase()}</div>
               </button>
             </div>
           ))}

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import TranslationSettings from './TranslationSettings'
 import {
   DEFAULT_CONTEXT_LIMIT,
   DEFAULT_SYSTEM_PROMPT,
@@ -271,6 +272,7 @@ export default function SettingsView({ onBack }: Props) {
         </div>
       </header>
       <section className="settings__form">
+        <TranslationSettings />
         <div className="settings__section">
           <div className="settings__section-head">
             <div>

@@ -8,6 +8,7 @@ export interface BookRecord {
   addedAt: number
   lastReadCfi: string | null
   lastReadAt: number | null
+  readProgress?: number
 }
 
 export interface ImportedFile {

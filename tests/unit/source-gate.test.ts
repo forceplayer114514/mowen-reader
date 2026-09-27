@@ -5,6 +5,7 @@ import {
   allowSources,
   assertAllowed,
   assertEpub,
+  assertSupportedBook,
   clearAllowedSources
 } from '../../src/main/books/source-gate'
 
@@ -58,7 +59,27 @@ describe('assertEpub', () => {
     expect(() => assertEpub('/a/b.EPUB')).not.toThrow()
   })
 
-  it('非 epub 文件被拒绝', () => {
+  it('非 epub 文件被拒绝(在线下载通道保留 EPUB 专检)', () => {
     expect(() => assertEpub('/a/id_rsa')).toThrow(/只支持 EPUB 文件/)
+    expect(() => assertEpub('/a/b.pdf')).toThrow(/只支持 EPUB 文件/)
+  })
+})
+
+describe('assertSupportedBook', () => {
+  it.each([
+    ['/a/b.epub', 'epub'],
+    ['/a/b.EPUB', 'epub'],
+    ['/a/b.pdf', 'pdf'],
+    ['/a/b.PDF', 'pdf'],
+    ['/a/b.txt', 'txt'],
+    ['/a/b.TXT', 'txt']
+  ])('%s 通过并返回 %s', (path, format) => {
+    expect(assertSupportedBook(path)).toBe(format)
+  })
+
+  it('白名单外的扩展名被拒绝', () => {
+    expect(() => assertSupportedBook('/a/id_rsa')).toThrow(/只支持 EPUB、PDF、TXT 文件/)
+    expect(() => assertSupportedBook('/a/b.mobi')).toThrow(/只支持 EPUB、PDF、TXT 文件/)
+    expect(() => assertSupportedBook('/a/b.epub.txt.bak')).toThrow(/只支持 EPUB、PDF、TXT 文件/)
   })
 })

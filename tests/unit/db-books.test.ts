@@ -10,6 +10,7 @@ import {
   listBookmarks,
   listBooks,
   listSourcePaths,
+  markBookRead,
   setLocations,
   updateProgress
 } from '../../src/main/db/books'
@@ -26,6 +27,7 @@ function make(id: string, over: Partial<BookRecord> = {}): BookRecord {
     addedAt: 1000,
     lastReadCfi: null,
     lastReadAt: null,
+    readProgress: 0,
     ...over
   }
 }
@@ -57,10 +59,18 @@ describe('books 表', () => {
   it('更新进度会同时写入位置和时间', () => {
     const db = openDatabase(':memory:')
     insertBook(db, make('a'))
-    updateProgress(db, 'a', 'epubcfi(/6/4!/4/2/2)')
+    updateProgress(db, 'a', 'epubcfi(/6/4!/4/2/2)', 0.5)
     const got = getBook(db, 'a')!
     expect(got.lastReadCfi).toBe('epubcfi(/6/4!/4/2/2)')
     expect(got.lastReadAt).toBeGreaterThan(0)
+    expect(got.readProgress).toBe(0.5)
+    updateProgress(db, 'a', 'earlier', 0.2)
+    expect(getBook(db, 'a')).toMatchObject({ lastReadCfi: 'earlier', readProgress: 0.5 })
+    updateProgress(db, 'a', 'end', 1)
+    updateProgress(db, 'a', 'start')
+    expect(getBook(db, 'a')).toMatchObject({ lastReadCfi: 'start', readProgress: 1 })
+    for (const invalid of [NaN, Infinity, -1, 2]) expect(() => updateProgress(db, 'a', 'bad', invalid)).toThrow('无效')
+    expect(getBook(db, 'a')).toMatchObject({ lastReadCfi: 'start', readProgress: 1 })
     db.close()
   })
 
@@ -69,6 +79,16 @@ describe('books 表', () => {
     insertBook(db, make('a'))
     deleteBook(db, 'a')
     expect(listBooks(db)).toEqual([])
+    db.close()
+  })
+
+  it('重新打开旧书但不翻页，也成为最近阅读；不修改保存的位置', () => {
+    const db = openDatabase(':memory:')
+    insertBook(db, make('a', { lastReadAt: 100, lastReadCfi: 'saved-a' }))
+    insertBook(db, make('b', { lastReadAt: 200, lastReadCfi: 'saved-b' }))
+    markBookRead(db, 'a')
+    expect(listBooks(db)[0].id).toBe('a')
+    expect(getBook(db, 'a')?.lastReadCfi).toBe('saved-a')
     db.close()
   })
 

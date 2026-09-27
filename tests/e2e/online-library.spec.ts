@@ -4,6 +4,7 @@ import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test, type Page } from '@playwright/test'
 import { buildFixtureEpub } from '../../scripts/make-fixture-epub'
+import { buildFixturePdf } from '../../scripts/make-fixture-pdf'
 import { closeAllApps, launch, type Harness } from './helpers'
 
 let server: Server
@@ -16,13 +17,15 @@ test.beforeAll(async () => {
   server = createServer((req, res) => {
     if (req.url === '/') {
       res.setHeader('Content-Type', 'text/html; charset=utf-8')
-      res.end('<h1>在线书库测试</h1><a href="/book.epub">下载 EPUB</a> <a href="/bad.epub">错误页面</a> <a href="/broken.epub">损坏电子书</a> <a href="/slow.epub">慢速下载</a> <a href="/book.pdf">PDF</a>')
+      res.end('<h1>在线书库测试</h1><a href="/book.epub">下载 EPUB</a> <a href="/bad.epub">错误页面</a> <a href="/broken.epub">损坏电子书</a> <a href="/slow.epub">慢速下载</a> <a href="/book.pdf">PDF</a> <a href="/valid.pdf">下载 PDF</a> <a href="/text.txt">下载 TXT</a>')
       return
     }
     res.setHeader('Content-Disposition', `attachment; filename="${req.url?.slice(1)}"`)
     res.setHeader('Content-Type', 'application/epub+zip')
     if (req.url === '/bad.epub') { res.end('<html>Login required</html>'); return }
     if (req.url === '/book.pdf') { res.end('%PDF'); return }
+    if (req.url === '/valid.pdf') { res.end(buildFixturePdf()); return }
+    if (req.url === '/text.txt') { res.end('第一章 开始\n在线文本下载测试。\n第二章 结束\n保存原始 TXT 格式。'); return }
     if (req.url === '/broken.epub') { res.end(brokenBytes); return }
     res.setHeader('Content-Length', bytes.length)
     if (req.url === '/slow.epub') {
@@ -80,7 +83,7 @@ test('manual import, invalid files and cancellation never silently pollute the l
   await remote.getByRole('link', { name: '错误页面' }).click()
   await expect(h.page.getByTestId('download-task').last()).toContainText('不是 EPUB')
   await remote.getByRole('link', { name: 'PDF', exact: true }).click()
-  await expect(h.page.getByTestId('download-task').last()).toContainText('仅支持')
+  await expect(h.page.getByTestId('download-task').last()).toContainText('不是完整 PDF')
   await remote.getByRole('link', { name: '慢速下载' }).click()
   await expect(h.page.getByTestId('download-task').last()).toContainText('下载中')
   await h.page.getByRole('button', { name: '取消 slow.epub', exact: true }).click()
@@ -100,6 +103,31 @@ test('downloads finish after returning to the shelf, and native content follows 
   const bounds = await h.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].contentView.children.at(-1)!.getBounds())
   expect(bounds.x).toBe(Math.round(host!.x))
   expect(bounds.height).toBe(Math.round(host!.height))
+})
+
+test('PDF/TXT downloads import in their original format and pending PDF recovers after restart', async () => {
+  let h = await launch(undefined, { READER_ONLINE_URL: url })
+  const remote = await site(h)
+  await h.page.getByLabel('下载后自动入库').uncheck()
+  await remote.getByRole('link', { name: '下载 PDF', exact: true }).click()
+  await expect(h.page.getByTestId('download-task')).toContainText('待入库')
+  const profile = h.userData
+  await h.app.close()
+  h = await launch(profile, { READER_ONLINE_URL: url })
+  await h.page.getByTestId('open-downloads').click()
+  await expect(h.page.getByTestId('download-task')).toContainText('待入库')
+  await h.page.getByLabel('下载后自动入库').check()
+  await expect(h.page.getByTestId('book-card')).toHaveCount(1)
+  await expect(h.page.getByTestId('book-card')).toContainText('PDF Reading Test')
+  const restartedRemote = await site(h)
+  await restartedRemote.getByRole('link', { name: '下载 TXT', exact: true }).click()
+  await expect(h.page.getByTestId('download-task').last()).toContainText('已入库')
+  await h.page.getByRole('button', { name: '← 书架', exact: true }).click()
+  await expect(h.page.getByTestId('book-card')).toHaveCount(2)
+  const books = await h.page.evaluate(() => window.api.listBooks())
+  expect(books.map((b) => b.filePath.slice(-4)).sort()).toEqual(['.pdf', '.txt'])
+  await h.page.getByTestId('book-card').filter({ hasText: 'PDF Reading Test' }).click()
+  await expect(h.page.getByTestId('page-indicator')).toHaveText('第 1 / 3 页')
 })
 
 test('completed manual downloads and auto-import preference survive restart', async () => {

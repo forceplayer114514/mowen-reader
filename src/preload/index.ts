@@ -1,4 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import type { CreateHighlightInput, HighlightRecord } from '../shared/highlight-types'
+import type { TranslationSnapshot } from '../shared/translation-types'
+import type { ReadingStats } from '../shared/reading-stats'
 import type {
   AppendMessageInput,
   AnnotationRecord,
@@ -22,6 +25,26 @@ import type {
 } from '../shared/types'
 
 const api = {
+  setReadingBook: (bookId: string | null): Promise<void> => ipcRenderer.invoke('reading:book', bookId),
+  readingStats: (): Promise<ReadingStats> => ipcRenderer.invoke('reading:stats'),
+  onReadingStatsError: (callback: (error: string | null) => void): (() => void) => {
+    const listener = (_event: unknown, error: string | null): void => callback(error)
+    ipcRenderer.on('reading:error', listener)
+    return () => ipcRenderer.off('reading:error', listener)
+  },
+  listHighlights: (bookId: string): Promise<HighlightRecord[]> => ipcRenderer.invoke('highlights:list', bookId),
+  addHighlight: (input: CreateHighlightInput): Promise<HighlightRecord> => ipcRenderer.invoke('highlights:add', input),
+  deleteHighlight: (id: string): Promise<void> => ipcRenderer.invoke('highlights:delete', id),
+  translationSnapshot: (): Promise<TranslationSnapshot> => ipcRenderer.invoke('translation:snapshot'),
+  downloadTranslationPack: (): Promise<void> => ipcRenderer.invoke('translation:download'),
+  cancelTranslationDownload: (): Promise<void> => ipcRenderer.invoke('translation:cancelDownload'),
+  removeTranslationPack: (): Promise<void> => ipcRenderer.invoke('translation:remove'),
+  startTranslation: (input: { text: string; conversationId?: string }): Promise<string> => ipcRenderer.invoke('translation:start', input),
+  onTranslationChanged: (callback: (snapshot: TranslationSnapshot) => void): (() => void) => {
+    const listener = (_event: unknown, snapshot: TranslationSnapshot): void => callback(snapshot)
+    ipcRenderer.on('translation:changed', listener)
+    return () => ipcRenderer.off('translation:changed', listener)
+  },
   onlineSnapshot: (): Promise<OnlineSnapshot> => ipcRenderer.invoke('online:snapshot'),
   onlineBounds: (bounds: OnlineBounds | null): Promise<void> => ipcRenderer.invoke('online:bounds', bounds),
   onlineAction: (action: OnlineAction, approvedOrigin?: string): Promise<void> => ipcRenderer.invoke('online:action', action, approvedOrigin),
@@ -58,8 +81,8 @@ const api = {
   discardStagedFile: (id: string): Promise<void> =>
     ipcRenderer.invoke('books:discardStaged', id),
   deleteBook: (id: string): Promise<void> => ipcRenderer.invoke('books:delete', id),
-  saveProgress: (id: string, cfi: string): Promise<void> =>
-    ipcRenderer.invoke('books:saveProgress', id, cfi),
+  saveProgress: (id: string, cfi: string, progress = 0): Promise<void> =>
+    ipcRenderer.invoke('books:saveProgress', id, cfi, progress),
   getLocations: (id: string): Promise<string | null> =>
     ipcRenderer.invoke('books:getLocations', id),
   saveLocations: (id: string, json: string): Promise<void> =>

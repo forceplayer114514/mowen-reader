@@ -17,7 +17,7 @@ export interface VisibleRange {
   text: string
   startCfi: string
   endCfi: string
-  /** 由 startCfi/endCfi 合成的范围 CFI;合成失败时为空字符串,此时 approximate 为 true */
+  /** 范围 CFI；EPUB 跨章无法合成时 approximate 为 true。PDF 并排两页也为空，但 text 是准确的两页全文。 */
   rangeCfi: string
   /**
    * text 是否只是近似值——true 时它是整份章节文档的全文,而不是屏幕上精确可见
@@ -33,6 +33,8 @@ export interface VisibleRange {
   page: number
   /** 当前排版下估算的全书总页数 */
   totalPages: number
+  /** 固定正文位置进度，不依赖排版页码；索引未就绪时为 0，真正末页才为 1。 */
+  readProgress: number
 }
 
 export interface OpenOptions {
@@ -51,6 +53,15 @@ export interface AnnotationMarker {
   id: string
   cfiRange: string
   number: number
+}
+
+/** 正文阅读工具:普通划选 / 荧光笔 / 橡皮,三者互斥。 */
+export type ReadingTool = 'select' | 'highlight' | 'erase'
+
+/** 持久高亮在引擎侧的最小形状:按 id 回调,整块擦除。 */
+export interface PersistentHighlightItem {
+  id: string
+  cfiRange: string
 }
 
 export interface ReaderEngine {
@@ -91,6 +102,14 @@ export interface ReaderEngine {
   removeHighlight(cfiRange: string): void
   /** 抹掉当前这本书上所有由本引擎加过的高亮。 */
   clearHighlights(): void
+  /**
+   * 持久荧光笔高亮:整表替换,存盘的 CFI 范围,不碰分页与正文 DOM。
+   * 与上面的临时引用高亮各自记账、互不抹掉对方;点击某一块时按 id 回调,
+   * 由调用方决定擦除整块。
+   */
+  setPersistentHighlights(items: PersistentHighlightItem[], onClick: (id: string) => void): void
+  /** 切换阅读工具;引擎只在 erase 下不再把拖选当引用交出去,其它行为不变。 */
+  setReadingTool(tool: ReadingTool): void
   /** 正文外的上标覆盖层，不插入 EPUB 文本、不改变 CFI 或分页。 */
   setAnnotations(items: AnnotationMarker[], onClick: (id: string) => void): void
   destroy(): void

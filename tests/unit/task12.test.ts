@@ -12,6 +12,8 @@ import type { ConversationWithBook } from '../../src/shared/types'
 function settingsApi() {
   let done: ((id: string, result: { status: 'finished' | 'stopped' | 'error'; message?: string }) => void) | null = null
   return {
+    translationSnapshot: vi.fn(async () => ({ status: 'not-installed', received: 0, total: 100, size: 100, message: null })),
+    onTranslationChanged: vi.fn(() => () => {}),
     getSetting: vi.fn(async () => null),
     hasApiKey: vi.fn(async () => false),
     setSetting: vi.fn(async () => {}),

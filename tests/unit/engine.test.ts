@@ -240,6 +240,7 @@ describe('高亮与 epub.js 标注表', () => {
     const f = createFakeEpub()
     const engine = await openEngine()
     const v = await engine.getVisible()
+    expect(v.readProgress).toBe(0.99) // 索引末端不是实际最后一屏，不能提前标记完成。
     expect(v.totalPages).toBe(10)
     expect(v.page).toBe(10)
     expect(v.page).toBeLessThanOrEqual(v.totalPages)
@@ -249,6 +250,13 @@ describe('高亮与 epub.js 标注表', () => {
     expect(await engine.getVisible()).toMatchObject({ page: 8, totalPages: 8 })
     await engine.setFontSize(20)
     expect(await engine.getVisible()).toMatchObject({ page: 12, totalPages: 12 })
+    expect((await engine.getVisible()).readProgress).toBe(v.readProgress)
+    const mock = hub.book as { renderTo(): { location: { atEnd?: boolean; atStart?: boolean } } }
+    mock.renderTo().location.atEnd = true
+    expect((await engine.getVisible()).readProgress).toBe(1)
+    mock.renderTo().location.atEnd = false
+    mock.renderTo().location.atStart = true
+    expect((await engine.getVisible()).readProgress).toBe(0)
     engine.destroy()
   })
 

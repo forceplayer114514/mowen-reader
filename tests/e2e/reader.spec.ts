@@ -40,7 +40,7 @@ test('导入一本书后书架上能看到书名和作者', async () => {
   // 所以这里用 class 定位到标题栏本身,而不是用 getByText 摸文字,否则会因为
   // 页面里同一段文字出现两次而撞上 strict mode violation。
   await expect(h.page.locator('.book-card__title')).toHaveText('测试之书')
-  await expect(h.page.locator('.book-card__author')).toHaveText('测试作者')
+  await expect(h.page.locator('.book-card__author')).toHaveText('测试作者 · EPUB')
 })
 
 test('书卡可用键盘打开，删除确认可用 Escape 取消', async () => {

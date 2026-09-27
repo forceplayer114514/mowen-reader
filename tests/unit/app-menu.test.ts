@@ -14,7 +14,8 @@ vi.mock('electron', () => ({
   Menu: { setApplicationMenu: mocks.setMenu },
   safeStorage: {}
 }))
-vi.mock('../../src/main/ipc', () => ({ registerIpc: vi.fn(), abortAllChats: vi.fn() }))
+vi.mock('../../src/main/ipc', () => ({ registerIpc: vi.fn(), abortAllChats: vi.fn(), database: vi.fn() }))
+vi.mock('../../src/main/reading-stats', () => ({ registerReadingStats: vi.fn(), attachReadingStats: vi.fn() }))
 vi.mock('../../src/main/paths', () => ({ initDataDir: vi.fn() }))
 vi.mock('../../src/main/secrets', () => ({ initSecrets: vi.fn() }))
 vi.mock('../../src/main/online-library', () => ({ attachOnlineLibrary: vi.fn() }))

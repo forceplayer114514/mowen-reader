@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
-import { access, copyFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { access, copyFile, readdir, rm, lstat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { bookFormat, supportedBookExtensions, type BookFormat } from '../../shared/book-format'
 import type { ImportedFile } from '../../shared/types'
 import { booksDir, coversDir } from '../paths'
 
@@ -11,25 +12,72 @@ function validateBookId(bookId: string): void {
   if (!BOOK_ID.test(bookId)) throw new Error(`无效的书籍标识:${bookId}`)
 }
 
-/** 由书籍 id 推导库内文件路径。id 不合法就抛错,渲染层因此无法指定任意路径。 */
-export function libraryFilePath(bookId: string): string {
+/**
+ * 由书籍 id 推导库内文件路径。id 不合法就抛错,渲染层因此无法指定任意路径。
+ * format 默认为 'epub',保持旧调用的兼容;PDF/TXT 导入时传入对应格式,
+ * 库内文件名保留原始扩展名(原始 TXT 字节原样保留,转 EPUB 只在渲染层做)。
+ */
+export function libraryFilePath(bookId: string, format: string = 'epub'): string {
   validateBookId(bookId)
-  return join(booksDir(), `${bookId}.epub`)
+  const normalized = format.toLowerCase()
+  if (!(supportedBookExtensions as readonly string[]).includes(normalized)) {
+    throw new Error(`不支持的书籍格式:${format}`)
+  }
+  return join(booksDir(), `${bookId}.${normalized}`)
+}
+
+/** 去掉文件名末尾的 .epub/.pdf/.txt(大小写不敏感),供导入标题兜底使用。 */
+export function stripBookExtension(name: string): string {
+  return name.replace(/\.(epub|pdf|txt)$/i, '')
+}
+
+/**
+ * 在库内目录里按 id 找出已暂存的文件,只认白名单内的扩展名。
+ * 调用方只给 id,给不出任意路径——和 libraryFilePath 是同一道边界。
+ * 找不到时抛错,让调用方走丢弃/报错流程。
+ */
+export async function resolveStagedFile(bookId: string): Promise<string> {
+  validateBookId(bookId)
+  for (const ext of supportedBookExtensions) {
+    const candidate = libraryFilePath(bookId, ext)
+    try {
+      const info = await lstat(candidate)
+      if (info.isFile() && !info.isSymbolicLink()) return candidate
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+  }
+  throw new Error(`找不到已暂存文件:${bookId}`)
 }
 
 /**
  * 把用户选中的 EPUB 复制进应用目录。
  * 每次导入生成新 id,同一本书导入两次会得到两条独立记录——
  * 判重留给上层(扫描时按源路径过滤),这里只负责复制。
+ * 兼容旧的 EPUB 调用;复制和失败清理仍只有一份实现。
  */
 export async function copyEpubIntoLibrary(sourcePath: string): Promise<ImportedFile> {
+  return copyIntoLibrary(sourcePath, 'epub')
+}
+
+/**
+ * 把用户选中的 EPUB/PDF/TXT 复制进应用目录,库内文件名保留原始扩展名。
+ * 格式只看扩展名推断,不读文件内容、不改 DB schema,filePath 照常持久化。
+ */
+export async function copyBookIntoLibrary(sourcePath: string): Promise<ImportedFile> {
+  const format = bookFormat(sourcePath)
+  if (!format) throw new Error(`只支持 EPUB、PDF、TXT 文件:${sourcePath}`)
+  return copyIntoLibrary(sourcePath, format)
+}
+
+async function copyIntoLibrary(sourcePath: string, format: BookFormat): Promise<ImportedFile> {
   try {
     await access(sourcePath)
   } catch {
     throw new Error(`找不到文件:${sourcePath}`)
   }
   const id = randomUUID()
-  const filePath = libraryFilePath(id)
+  const filePath = libraryFilePath(id, format)
   try { await copyFile(sourcePath, filePath) }
   catch (error) {
     await rm(filePath, { force: true }).catch(() => {})
@@ -115,11 +163,14 @@ export async function removeBookFiles(book: {
 
 /**
  * 导入某一步失败时,把已经复制进库、但还没写数据库记录的那份文件删掉。
- * id 推导 EPUB 路径的方式与 libraryFilePath 一致——不是重新拼一份逻辑。
+ * 只按 id 删除白名单扩展名内的库内文件,不接受渲染层传任意路径。
  * 封面路径未必知道真实扩展名,所以用 removeCoverIfAny() 按前缀查找,
  * 不能假设成 .png(否则真实格式不是 png 时会漏删,留下孤儿文件)。
  */
 export async function discardStagedFile(id: string): Promise<void> {
-  await removeFile(libraryFilePath(id))
+  validateBookId(id)
+  await Promise.all(
+    supportedBookExtensions.map((ext) => removeFile(libraryFilePath(id, ext)))
+  )
   await removeCoverIfAny(id)
 }

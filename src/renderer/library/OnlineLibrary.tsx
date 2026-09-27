@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { OnlineAction, OnlineSnapshot } from '@shared/types'
+import { bookFormat } from '@shared/book-format'
 import { extractMetadata } from '../reader/metadata'
 
 export function useOnlineLibrary() {
@@ -22,11 +23,12 @@ export function useOnlineLibrary() {
       const bytes = await window.api.prepareDownload(id)
       if (!bytes) return
       claimed = true
-      await window.api.finishDownload(id, await extractMetadata(bytes))
+      const task = snapshot.tasks.find((item) => item.id === id)
+      await window.api.finishDownload(id, await extractMetadata(bytes, bookFormat(task?.name ?? '') ?? 'epub'))
     } catch (cause) {
       if (claimed) await window.api.failDownload(id, cause instanceof Error ? cause.message : '入库失败').catch(() => {})
     } finally { running.current = false; setProcessing(false) }
-  }, [])
+  }, [snapshot.tasks])
   useEffect(() => {
     if (processing || !snapshot.autoImport) return
     const ready = snapshot.tasks.find(task => task.status === 'ready')
@@ -87,7 +89,7 @@ export default function OnlineLibrary({ snapshot, onBack, theme, onToggleTheme, 
     </div>}
     {(snapshot.error || actionError) && <div className="online__error" role="alert">{snapshot.error || actionError}</div>}
     <div className="online__site" ref={host} data-testid="online-site" />
-    <div className="online__hint">在网站自行搜索、登录并选择 EPUB 下载。网站保留原有外观；仅下载你有权使用的书籍。</div>
+    <div className="online__hint">在网站自行搜索、登录并选择 EPUB、PDF 或 TXT 下载。网站保留原有外观；仅下载你有权使用的书籍。</div>
   </section>
 }
 
@@ -99,7 +101,7 @@ export function DownloadTray({ snapshot, importDownload, processing, onBack, onC
   useEffect(() => setAutoImport(snapshot.autoImport), [snapshot.autoImport])
   const labels = { downloading: '下载中', validating: '校验中', ready: '待入库', importing: '入库中', imported: '已入库', error: '未完成', cancelled: '已取消' }
   return <aside className="downloads" data-testid="download-tray" aria-label="下载任务">
-    <div className="downloads__heading"><strong>下载与入库</strong><span>EPUB · 自动加入默认书库</span>
+    <div className="downloads__heading"><strong>下载与入库</strong><span>EPUB / PDF / TXT · 自动加入默认书库</span>
       <label><input type="checkbox" checked={autoImport} onChange={e => {
         setAutoImport(e.target.checked)
         void window.api.onlineAutoImport(e.target.checked).catch(() => { setAutoImport(snapshot.autoImport); setError('设置失败') })

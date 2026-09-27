@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { BookmarkRecord, BookRecord, QuoteRecord } from '@shared/types'
+import type { HighlightRecord } from '@shared/highlight-types'
 import TocPanel from './TocPanel'
 import { conversationsOnPage } from './anchor'
 import { createEngine } from './engine'
+import { createPdfEngine } from './pdf-engine'
+import { textToEpub } from './text-book'
+import { bookFormat } from '@shared/book-format'
 import { createSelectionStore, type SelectionStore } from './selection'
-import type { ReaderEngine, ThemeName, TocItem, VisibleRange } from './types'
+import type { ReaderEngine, ReadingTool, ThemeName, TocItem, VisibleRange } from './types'
 import Sidebar from '../chat/Sidebar'
 import ConfirmDialog from '../ConfirmDialog'
 
@@ -73,6 +77,8 @@ interface Props {
 }
 
 export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props) {
+  const format = bookFormat(book.filePath) ?? 'epub'
+  const isPdf = format === 'pdf'
   const hostRef = useRef<HTMLDivElement>(null)
   const engineRef = useRef<ReaderEngine | null>(null)
   const [visible, setVisible] = useState<VisibleRange | null>(null)
@@ -82,6 +88,7 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
   const themeRef = useRef(theme)
   themeRef.current = theme
   const [error, setError] = useState<string | null>(null)
+  const [statsError, setStatsError] = useState<string | null>(null)
   const [selectionStore, setSelectionStore] = useState<SelectionStore | null>(null)
   const [readerEngine, setReaderEngine] = useState<ReaderEngine | null>(null)
   const [spread, setSpread] = useState(false)
@@ -90,6 +97,17 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
   const [bookmarkError, setBookmarkError] = useState<string | null>(null)
   const [deletingBookmarkId, setDeletingBookmarkId] = useState<string | null>(null)
   const bookmarkDeletingRef = useRef(false)
+  // 持久荧光笔:工具三选一,存盘列表是真相,引擎只负责画出来。
+  const [readingTool, setReadingToolState] = useState<ReadingTool>('select')
+  const toolRef = useRef<ReadingTool>('select')
+  const [highlights, setHighlights] = useState<HighlightRecord[]>([])
+  const [highlightsReady, setHighlightsReady] = useState(false)
+  const highlightsRef = useRef<HighlightRecord[]>([])
+  const [highlightError, setHighlightError] = useState<string | null>(null)
+  const [lastErased, setLastErased] = useState<HighlightRecord | null>(null)
+  const lastErasedRef = useRef<HighlightRecord | null>(null)
+  // 高亮异步代际:开书/切书/卸载/每次存删时自增,在途的读写发现代际变了就丢弃结果。
+  const hlGenRef = useRef(0)
   const [annotationState, setAnnotationState] = useState({ dirty: false, saving: false })
   const [confirmLeave, setConfirmLeave] = useState(false)
   const updateAnnotationState = useCallback((dirty: boolean, saving: boolean) => {
@@ -100,6 +118,17 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
   const anchorCfiRef = useRef<string | null>(null)
   const targetFontRef = useRef<number>(18)
   const appliedFontRef = useRef<number>(18)
+
+  // 正文成功显示后计时；字号/位置等保存失败不代表用户停止阅读。
+  const readingReady = Boolean(visible && !restoring)
+  useEffect(() => {
+    const unsubscribe = window.api.onReadingStatsError(setStatsError)
+    void window.api.setReadingBook(readingReady ? book.id : null).catch(() => setStatsError('阅读计时启动失败，请重新打开本书'))
+    return () => {
+      unsubscribe()
+      void window.api.setReadingBook(null).catch(() => {})
+    }
+  }, [book.id, readingReady])
 
   useEffect(() => {
     readerEngine?.setTheme(theme)
@@ -168,6 +197,17 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
     let stuckTimer: ReturnType<typeof setTimeout> | null = null
     let hasVisible = false
 
+    // 切书时把上一本书的荧光笔状态清掉,并让上一本书在途的高亮读写失效。
+    hlGenRef.current++
+    highlightsRef.current = []
+    setHighlights([])
+    setHighlightsReady(false)
+    lastErasedRef.current = null
+    setLastErased(null)
+    setHighlightError(null)
+    toolRef.current = 'select'
+    setReadingToolState('select')
+
     function clearStuckTimer(): void {
       if (stuckTimer !== null) {
         clearTimeout(stuckTimer)
@@ -202,12 +242,13 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
     async function boot(): Promise<void> {
       if (!hostRef.current) return
       try {
-        const savedFont = Number((await window.api.getSetting('fontSize')) ?? 18)
+        const savedFont = isPdf ? 18 : Number((await window.api.getSetting('fontSize')) ?? 18)
         const savedLocations = await window.api.getLocations(book.id)
-        const data = await window.api.readBookFile(book.id)
+        const original = await window.api.readBookFile(book.id)
+        const data = format === 'txt' ? await textToEpub(original, book.title) : original
         if (cancelled) return
 
-        engine = createEngine(hostRef.current)
+        engine = isPdf ? createPdfEngine(hostRef.current) : createEngine(hostRef.current)
         engineRef.current = engine
 
         // 侧边栏与正文共用一个临时选区 store。端到端测试额外通过同一 store
@@ -217,12 +258,24 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
         // __E2E_FILES__,因此仍会创建真实 store；只有该回归用例的测试文件标记存在
         // 且没有主动 enableSelectionStore 时才保留无消费者路径。
         const shouldCreateStore = !hooks.__E2E_FILES__ || Boolean(hooks.__E2E_SELECTION__)
-        const store = shouldCreateStore ? createSelectionStore(engine) : null
+        const store = shouldCreateStore ? createSelectionStore(engine, () => toolRef.current === 'select') : null
         selectionStore = store
         setSelectionStore(store)
         if (store && hooks.__E2E_SELECTION__) {
           hooks.__E2E_QUOTES__ = () => store.list()
         }
+        engine.setReadingTool(toolRef.current)
+        // 存盘的完整列表和引擎渲染无关,并发去读;画页面由上面的 effect 整表推送。
+        // 普通划选与注释不受影响,新旧列表都只含本书记下的 CFI 范围。
+        const listGen = hlGenRef.current
+        void window.api.listHighlights(book.id).then((loaded) => {
+          if (cancelled || listGen !== hlGenRef.current) return
+          highlightsRef.current = loaded
+          setHighlights(loaded)
+          setHighlightsReady(true)
+        }).catch(() => {
+          if (!cancelled && listGen === hlGenRef.current) setHighlightError('荧光笔读取失败，请返回书架后重新打开本书重试')
+        })
         const initialFont = Number.isFinite(savedFont) ? savedFont : 18
         targetFontRef.current = initialFont
         appliedFontRef.current = initialFont
@@ -237,30 +290,29 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
         // 重新 open() 都不会清空 onRelocated 的订阅列表(teardown() 特意保留它),
         // 所以提前订阅是安全的。
         let locationsSaved = savedLocations !== null
+        let relocation = 0
         unsubscribeRelocated = engine.onRelocated(() => {
+          const request = ++relocation
           const completedRestore = restoreGate.consumeRelocation()
           if (completedRestore) setRestoring(false)
+          const cfi = completedRestore ? book.lastReadCfi : anchorCfiRef.current ?? engine!.currentCfi()
+          const canSave = !restoreGate.restoring
           void engine!.getVisible().then((v) => {
+            if (cancelled || request !== relocation) return
             handleVisible(v)
+            if (cfi && canSave && v.totalPages > 0) {
+              void window.api.saveProgress(book.id, cfi, v.readProgress).then(() => {
+                if (!cancelled) setError((old) => old === '阅读位置保存失败，请翻页后重试' ? null : old)
+              }).catch(() => {
+                if (!cancelled) setError('阅读位置保存失败，请翻页后重试')
+              })
+            }
           }).catch((error: unknown) => {
             // 书还没有打开时 getVisible() 会抛错。display() 运行前回调就可能被触发，
             // 此时没有任何内容可见，静默处理这个失败即可——如果书其实读不出来，
             // 下面的 stuckTimer 兜底会在几秒后把这个情况变成界面上的错误提示。
             if (!cancelled && engine!.currentCfi()) setError(error instanceof Error ? error.message : String(error))
           })
-          const cfi = anchorCfiRef.current ?? engine!.currentCfi()
-          if (cfi && !restoreGate.restoring && !completedRestore) {
-            // 失败必须可见，下次 relocate 用最新位置重试。
-            // restoreGate.restoring 为 true 时这次 relocate 是恢复流程内部的中间落点,
-            // 不是用户翻页翻出来的,不能当成新的阅读位置写回去(见上面变量声明处
-            // 的注释)。
-            void window.api.saveProgress(book.id, cfi).then(() => {
-              if (!cancelled) setError((old) => old === '阅读位置保存失败，请翻页后重试' ? null : old)
-            }).catch(() => {
-              if (!cancelled) setError('阅读位置保存失败，请翻页后重试')
-            })
-          }
-
           if (!locationsSaved) {
             const json = engine!.exportLocations()
             if (json) {
@@ -275,6 +327,11 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
         unsubscribeKey = engine.onKey((key) => {
           if (key === 'ArrowRight' || key === 'PageDown') next()
           else if (key === 'ArrowLeft' || key === 'PageUp') prev()
+          else if (key === 'Escape') {
+            toolRef.current = 'select'
+            setReadingToolState('select')
+            engine?.setReadingTool('select')
+          }
         })
 
         await engine.open(data, {
@@ -382,6 +439,8 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
     void boot()
     return () => {
       cancelled = true
+      // 高亮读写按代际失效:切书/卸载后回来的读取与保存一律丢弃,不写进新书。
+      hlGenRef.current++
       clearStuckTimer()
       fontChainRef.current = Promise.resolve()
       anchorCfiRef.current = null
@@ -398,7 +457,7 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
       engine?.destroy()
       engineRef.current = null
     }
-  }, [book, next, prev])
+  }, [book, format, isPdf, next, prev])
 
   // 按键翻页现在完全由 engine.onKey 驱动(见上面 boot effect 里的订阅):它同时接住
   // 外层 window 和书内容 iframe 文档里的 keydown,这里不再需要自己挂 window 监听器。
@@ -436,12 +495,12 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
 
       // 乐观更新了字号状态,写盘失败要在页脚提示,否则界面和存储的值会不一致却毫无提示。
       setError(null)
-      window.api.setSetting('fontSize', String(size)).catch(() => {
+      if (!isPdf) window.api.setSetting('fontSize', String(size)).catch(() => {
         setError('字号没有保存,下次打开可能会恢复默认')
       })
       return size
     })
-  }, [])
+  }, [isPdf])
 
   const removeBookmark = useCallback(async (id: string) => {
     if (bookmarkDeletingRef.current) return
@@ -484,6 +543,101 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
     })
   }, [])
 
+  // 阅读工具三选一、互斥切换;点已选中的工具回到普通划选,Esc 同样回到普通划选。
+  const setTool = useCallback((tool: ReadingTool): void => {
+    toolRef.current = tool
+    setReadingToolState(tool)
+    engineRef.current?.setReadingTool(tool)
+  }, [])
+
+  useEffect(() => {
+    if (!readerEngine || readingTool !== 'highlight') return
+    return readerEngine.onSelected((cfiRange, text, _point, startCfi) => {
+      if (toolRef.current !== 'highlight' || highlightsRef.current.some((item) => item.cfiRange === cfiRange)) return
+      const gen = hlGenRef.current
+      void window.api.addHighlight({ bookId: book.id, cfiRange, startCfi, quote: text.trim().slice(0, 200000) })
+        .then((saved) => {
+          if (gen !== hlGenRef.current || highlightsRef.current.some((item) => item.cfiRange === saved.cfiRange)) return
+          highlightsRef.current = [...highlightsRef.current, saved]
+          setHighlights([...highlightsRef.current])
+          setHighlightError(null)
+        }).catch(() => {
+          if (gen === hlGenRef.current) setHighlightError('荧光笔保存失败，请重新划选')
+        })
+    })
+  }, [readerEngine, readingTool, book.id])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.target instanceof Element && e.target.closest('input,textarea,[contenteditable]')) return
+      if (e.key === 'Escape') setTool('select')
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [setTool])
+
+  // 持久高亮被点:只有橡皮模式下才擦除整块,其它模式点它什么也不做。
+  // 擦除只删持久表这一条,注释与临时引用碰都不碰;删盘失败不清列表、不假装成功。
+  const eraseHighlight = useCallback(async (id: string): Promise<void> => {
+    if (toolRef.current !== 'erase') return
+    const target = highlightsRef.current.find((h) => h.id === id)
+    if (!target) return
+    const gen = hlGenRef.current
+    try {
+      await window.api.deleteHighlight(id)
+      if (gen !== hlGenRef.current) return
+      highlightsRef.current = highlightsRef.current.filter((h) => h.id !== id)
+      setHighlights([...highlightsRef.current])
+      lastErasedRef.current = target
+      setLastErased(target)
+      setHighlightError(null)
+    } catch {
+      if (gen !== hlGenRef.current) return
+      setHighlightError('擦除失败，请稍后重试')
+    }
+  }, [])
+
+  // 引擎回调要一个引用稳定的函数,里面永远走最新的 eraseHighlight。
+  const eraseRef = useRef((id: string): void => { void eraseHighlight(id) })
+  eraseRef.current = (id: string): void => { void eraseHighlight(id) }
+
+  // 存盘列表是真相,引擎只负责画:列表或引擎任一变化就整表推过去。
+  useEffect(() => {
+    if (!readerEngine) return
+    readerEngine.setReadingTool(toolRef.current)
+    readerEngine.setPersistentHighlights(
+      highlights.map((h) => ({ id: h.id, cfiRange: h.cfiRange })),
+      (id) => eraseRef.current(id)
+    )
+  }, [readerEngine, highlights])
+
+  // 撤销上一次擦除:按原 CFI 范围重新存一条(持久恢复),已存在同样范围时不复制。
+  const undoErase = useCallback(async (): Promise<void> => {
+    const target = lastErasedRef.current
+    if (!target) return
+    if (highlightsRef.current.some((h) => h.cfiRange === target.cfiRange)) {
+      lastErasedRef.current = null
+      setLastErased(null)
+      return
+    }
+    const gen = hlGenRef.current
+    try {
+      const restored = await window.api.addHighlight({
+        bookId: book.id, cfiRange: target.cfiRange, startCfi: target.startCfi, quote: target.quote
+      })
+      if (gen !== hlGenRef.current) return
+      if (lastErasedRef.current?.id === target.id) {
+        lastErasedRef.current = null
+        setLastErased(null)
+      }
+      highlightsRef.current = [...highlightsRef.current.filter((item) => item.cfiRange !== restored.cfiRange), restored]
+      setHighlights([...highlightsRef.current])
+      setHighlightError(null)
+    } catch {
+      if (gen === hlGenRef.current) setHighlightError('撤销失败，请稍后重试')
+    }
+  }, [book.id])
+
   // error 同时承载两类情况:书打不开(致命,此时 visible 还没被设置过,整页替换成
   // 错误提示)和设置写盘失败(非致命,阅读已经在正常进行,只在页脚提一句,不打断阅读)。
   // error && !visible 的判断依赖:当用户返回书架时,此组件会完全卸载，下一次打开书
@@ -518,17 +672,47 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
         >
           {currentBookmark ? '★ 已加书签' : '☆ 书签'}
         </button>
+        <button
+          className={`button--ghost${readingTool === 'highlight' ? ' reader__tool--active' : ''}`}
+          type="button"
+          data-testid="tool-highlight"
+          disabled={!readerEngine || !highlightsReady}
+          aria-pressed={readingTool === 'highlight'}
+          onClick={() => setTool(readingTool === 'highlight' ? 'select' : 'highlight')}
+        >
+          荧光笔
+        </button>
+        <button
+          className={`button--ghost${readingTool === 'erase' ? ' reader__tool--active' : ''}`}
+          type="button"
+          data-testid="tool-erase"
+          disabled={!readerEngine || !highlightsReady}
+          aria-pressed={readingTool === 'erase'}
+          onClick={() => setTool(readingTool === 'erase' ? 'select' : 'erase')}
+        >
+          橡皮
+        </button>
+        {lastErased && (
+          <button
+            className="button--ghost"
+            type="button"
+            data-testid="highlight-undo"
+            onClick={() => void undoErase()}
+          >
+            撤销擦除
+          </button>
+        )}
         <span className="reader__title">{book.title}</span>
         <span className="reader__spacer" />
         <div className="reader__controls" aria-label="阅读设置">
-        <button className="button--icon" onClick={() => changeFont(-2)} aria-label="缩小字号">
-          A−
+        <button className="button--icon" onClick={() => changeFont(-2)} aria-label={isPdf ? '缩小 PDF' : '缩小字号'}>
+          {isPdf ? '−' : 'A−'}
         </button>
         <span className="reader__fontsize" data-testid="font-size">
-          {fontSize}
+          {isPdf ? `${Math.round(fontSize / 18 * 100)}%` : fontSize}
         </span>
-        <button className="button--icon" onClick={() => changeFont(2)} aria-label="放大字号">
-          A+
+        <button className="button--icon" onClick={() => changeFont(2)} aria-label={isPdf ? '放大 PDF' : '放大字号'}>
+          {isPdf ? '＋' : 'A+'}
         </button>
         <button type="button" className="button--ghost" data-testid="toggle-theme" onClick={onToggleTheme}>{theme === 'light' ? '夜间模式' : '日间模式'}</button>
         </div>
@@ -557,15 +741,24 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
             </button>
           </div>
           <footer className="reader__foot" data-testid="reader-foot">
-            <span>{visible?.chapterLabel ?? ''}</span>
+            <span>{isPdf && visible && !visible.text.trim() ? '此页无可提取文字（扫描页）；暂不支持 OCR' : visible?.chapterLabel ?? ''}</span>
             <span data-testid="page-indicator">
               {visible && visible.totalPages > 0
-                ? `约第 ${visible.page} / ${visible.totalPages} 页`
+                ? `${isPdf ? '' : '约'}第 ${visible.page} / ${visible.totalPages} 页`
                 : '正在计算页码…'}
             </span>
-            {(error && visible) || bookmarkError ? (
+            {isPdf && visible && <form className="reader__page-jump" onSubmit={(event) => {
+              event.preventDefault()
+              const input = event.currentTarget.elements.namedItem('page') as HTMLInputElement
+              jump(`pdf-page-${input.value}`)
+            }}>
+              <label>跳页 <input key={visible.page} name="page" type="number" min="1" max={visible.totalPages}
+                defaultValue={visible.page} required aria-label="PDF 跳转页码" /></label>
+              <button type="submit" className="button--ghost">前往</button>
+            </form>}
+            {(error && visible) || bookmarkError || highlightError || statsError ? (
               <span className="reader__foot-error" data-testid="settings-error">
-                {error ?? bookmarkError}
+                {error ?? bookmarkError ?? highlightError ?? statsError}
               </span>
             ) : null}
           </footer>

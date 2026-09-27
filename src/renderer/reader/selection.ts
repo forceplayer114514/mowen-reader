@@ -7,7 +7,7 @@ import type { ReaderEngine } from './types'
  * 规则:拖选松开即高亮进列表,点击已高亮的句子取消,重复选中同一段等于取消。
  * 这些高亮不存盘、关书即消失——它不是笔记功能,只是一次提问的附件。
  */
-export function createSelectionStore(engine: ReaderEngine): {
+export function createSelectionStore(engine: ReaderEngine, acceptsSelection: () => boolean = () => true): {
   subscribe(cb: (quotes: QuoteRecord[]) => void): () => void
   list(): QuoteRecord[]
   toggle(cfiRange: string, text: string, startCfi?: string): void
@@ -45,6 +45,7 @@ export function createSelectionStore(engine: ReaderEngine): {
   }
 
   const offSelected = engine.onSelected((cfiRange, text, _point, startCfi) => {
+    if (!acceptsSelection()) return
     toggle(cfiRange, text, startCfi)
   })
 

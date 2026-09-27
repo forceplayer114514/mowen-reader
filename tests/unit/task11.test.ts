@@ -15,7 +15,7 @@ import type { SelectionStore } from '../../src/renderer/reader/selection'
 const first: VisibleRange = {
   text: '第一页正文', startCfi: 'epubcfi(/6/4!/4/2/2/1:0)', endCfi: 'epubcfi(/6/4!/4/2/8/1:0)',
   rangeCfi: 'epubcfi(/6/4!/4/2,/2/1:0,/8/1:0)', approximate: false,
-  chapterHref: 'Text/ch1.xhtml', chapterLabel: '第一章', page: 47, totalPages: 100
+  chapterHref: 'Text/ch1.xhtml', chapterLabel: '第一章', page: 47, totalPages: 100, readProgress: 0.47
 }
 const second: VisibleRange = { ...first,
   text: '第二页正文', startCfi: 'epubcfi(/6/4!/4/2/10/1:0)', endCfi: 'epubcfi(/6/4!/4/2/16/1:0)',

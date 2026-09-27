@@ -1,4 +1,5 @@
 import { resolve } from 'node:path'
+import { bookFormat, type BookFormat } from '../../shared/book-format'
 
 /**
  * 渲染层是沙箱化的不可信输入源(威胁模型:渲染层被攻破,而非恶意人类用户)。
@@ -32,6 +33,18 @@ export function assertEpub(path: string): void {
   if (!path.toLowerCase().endsWith('.epub')) {
     throw new Error('只支持 EPUB 文件:' + path)
   }
+}
+
+/**
+ * 本地导入的白名单校验:只接受 EPUB/PDF/TXT,大小写不敏感。
+ * assertEpub 为在线下载与旧测试保留,这里是本地三入口(选择器/扫描/拖拽)共用的闸门。
+ */
+export function assertSupportedBook(path: string): BookFormat {
+  const format = bookFormat(path)
+  if (!format) {
+    throw new Error('只支持 EPUB、PDF、TXT 文件:' + path)
+  }
+  return format
 }
 
 /** 仅供测试使用:清空已记录的路径,避免测试用例之间互相污染。 */

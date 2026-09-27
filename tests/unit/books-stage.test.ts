@@ -31,11 +31,50 @@ describe('stageOne', () => {
     await expect(stageOne(src)).rejects.toThrow(/未经用户选择的路径/)
   })
 
-  it('已允许但不是 .epub 后缀的路径抛错', async () => {
-    const src = join(workDir, '书.txt')
+  it('已允许的 pdf/txt 路径能被复制进库且保留扩展名', async () => {
+    const pdf = join(workDir, '书.pdf')
+    const txt = join(workDir, '笔记.txt')
+    writeFileSync(pdf, 'PDF')
+    writeFileSync(txt, 'TXT')
+    allowSource(pdf)
+    allowSource(txt)
+    const a = await stageOne(pdf)
+    const b = await stageOne(txt)
+    expect(a.filePath.endsWith('.pdf')).toBe(true)
+    expect(b.filePath.endsWith('.txt')).toBe(true)
+    expect(existsSync(a.filePath)).toBe(true)
+    expect(existsSync(b.filePath)).toBe(true)
+  })
+
+  it('已允许但白名单外的后缀抛错', async () => {
+    const src = join(workDir, '书.mobi')
     writeFileSync(src, 'X')
     allowSource(src)
-    await expect(stageOne(src)).rejects.toThrow(/只支持 EPUB 文件/)
+    await expect(stageOne(src)).rejects.toThrow(/只支持 EPUB、PDF、TXT 文件/)
+  })
+
+  it('目录被拒绝', async () => {
+    const sub = join(workDir, '子目录.epub')
+    const { mkdirSync } = await import('node:fs')
+    mkdirSync(sub)
+    allowSource(sub)
+    await expect(stageOne(sub)).rejects.toThrow()
+  })
+
+  it('超体积文件被拒绝', async () => {
+    const src = join(workDir, '大.txt')
+    writeFileSync(src, 'x')
+    allowSource(src)
+    const { truncateSync } = await import('node:fs')
+    // 把文件截断标记改大而不实际写 16MB:用稀疏方式只改大小位
+    // 为避免 CI 写大文件,这里 mock lstat 更轻——直接验证逻辑存在即可。
+    // 简单起见:写一个小文件,用 vi  mock? 这里改为直接检查小文件通过,
+    // 超体积逻辑由单元 mock 覆盖(见下)。
+    const result = await stageOne(src)
+    expect(existsSync(result.filePath)).toBe(true)
+    truncateSync(src, 16 * 1024 * 1024 + 1)
+    allowSource(src)
+    await expect(stageOne(src)).rejects.toThrow(/文件过大/)
   })
 })
 

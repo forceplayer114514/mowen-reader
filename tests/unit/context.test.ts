@@ -13,6 +13,7 @@ function visible(over: Partial<VisibleRange> = {}): VisibleRange {
     chapterLabel: '第三章 那个夏天',
     page: 47,
     totalPages: 300,
+    readProgress: 0,
     ...over
   }
 }

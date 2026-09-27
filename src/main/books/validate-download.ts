@@ -1,9 +1,23 @@
 import JSZip from 'jszip'
 import { crc32, inflateRaw } from 'node:zlib'
 import { promisify } from 'node:util'
+import { bookFormat, maxBookBytes } from '../../shared/book-format'
+import { decodeText } from '../../shared/book-text'
 
 export const MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
 const inflate = promisify(inflateRaw)
+
+export async function validateDownloadedBook(bytes: Buffer, filename: string): Promise<void> {
+  const format = bookFormat(filename)
+  if (!format || bytes.length > maxBookBytes[format]) throw new Error('仅支持 EPUB / PDF（64 MB 内）或 TXT（16 MB 内）')
+  if (format === 'epub') return validateDownloadedEpub(bytes)
+  if (format === 'txt') {
+    decodeText(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer)
+  } else if (!bytes.subarray(0, 1024).includes(Buffer.from('%PDF-')) || !bytes.subarray(-2048).includes(Buffer.from('%%EOF'))) {
+    throw new Error('下载文件不是完整 PDF（可能是登录或错误页面）')
+  }
+  // PDF structure/passwords are checked by PDF.js before finishDownload can commit it.
+}
 
 // Bound the central directory before JSZip allocates its entry table. ZIP64/spanned archives
 // are unnecessary for this reader's 64 MB / 2000-entry limit and are rejected here.

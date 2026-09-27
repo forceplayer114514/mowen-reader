@@ -72,6 +72,7 @@ function buildSystem(input: ContextInput, toc: TocItem[] | null, useEnhanced: bo
     ? '当前章节全文(可见范围跨章,这不是精确的一屏内容):'
     : '当前页内容:'
   parts.push('', heading, input.visible.text)
+  if (!input.visible.text.trim()) parts.push('当前页没有可提取文字，无法读取其图像内容。不要猜测原文。')
   return parts.join('\n')
 }
 

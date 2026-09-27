@@ -69,6 +69,7 @@ describe('数据库版本标记', () => {
       title: string
     }
     expect(row.title).toBe('旧书')
+    expect(getBook(db, '保留的书')?.readProgress).toBe(0)
     // 新表可用
     expect(() => db.prepare('SELECT COUNT(*) FROM conversations').get()).not.toThrow()
     expect(() => db.prepare('SELECT COUNT(*) FROM bookmarks').get()).not.toThrow()
@@ -83,7 +84,7 @@ describe('数据库版本标记', () => {
     const cfi = 'epubcfi(/6/4!/4/2/1:20)'
     insertBook(db, { id: 'b', title: '旧书', author: null, coverPath: null, filePath: '/b.epub',
       sourcePath: '', addedAt: 1, lastReadAt: null, lastReadCfi: null })
-    updateProgress(db, 'b', cfi)
+    updateProgress(db, 'b', cfi, 0.75)
     insertConversation(db, { id: 'c', bookId: 'b', startCfi: cfi, endCfi: cfi,
       mergedEndCfi: null, chapterLabel: '第二章', excerpt: '原文', createdAt: 1 })
     insertMessage(db, { id: 'm', conversationId: 'c', role: 'user', content: '旧对话', quotes: [], createdAt: 1 })
@@ -98,6 +99,7 @@ describe('数据库版本标记', () => {
     for (let i = 0; i < 3; i++) {
       db = openDatabase(file)
       expect(getBook(db, 'b')?.lastReadCfi).toBe(cfi)
+      expect(getBook(db, 'b')?.readProgress).toBe(0.75)
       expect(listMessages(db, 'c')).toMatchObject([{ id: 'm', content: '旧对话' }])
       expect(listAnnotations(db, 'b')).toEqual([note])
       expect(db.prepare('SELECT id FROM bookmarks').get()).toMatchObject({ id: 'mark' })

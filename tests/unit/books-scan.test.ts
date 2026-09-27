@@ -19,10 +19,22 @@ describe('扫描文件夹', () => {
     expect(found).toEqual([join(dir, 'a.epub'), join(dir, '子目录', 'b.epub')])
   })
 
-  it('忽略非 epub 文件', async () => {
+  it('找出 epub/pdf/txt 三类文件', async () => {
     writeFileSync(join(dir, 'a.epub'), '')
     writeFileSync(join(dir, 'b.pdf'), '')
     writeFileSync(join(dir, 'c.txt'), '')
+    expect(await scanFolder(dir, [])).toEqual([
+      join(dir, 'a.epub'),
+      join(dir, 'b.pdf'),
+      join(dir, 'c.txt')
+    ])
+  })
+
+  it('忽略白名单外的文件', async () => {
+    writeFileSync(join(dir, 'a.epub'), '')
+    writeFileSync(join(dir, 'b.mobi'), '')
+    writeFileSync(join(dir, 'c.exe'), '')
+    writeFileSync(join(dir, 'noext'), '')
     expect(await scanFolder(dir, [])).toEqual([join(dir, 'a.epub')])
   })
 
@@ -54,8 +66,15 @@ describe('扫描文件夹', () => {
     expect(found).toEqual([join(dir, '一', '二', '三', 'deep.epub')])
   })
 
-  it('忽略扩展名为 epub.txt 的文件', async () => {
+  it('多段扩展名按最后一段判定:book.epub.txt 是 txt,会被找出', async () => {
     writeFileSync(join(dir, 'book.epub.txt'), '')
+    writeFileSync(join(dir, 'actual.epub'), '')
+    const found = await scanFolder(dir, [])
+    expect(found).toEqual([join(dir, 'actual.epub'), join(dir, 'book.epub.txt')])
+  })
+
+  it('忽略白名单外的多段扩展名', async () => {
+    writeFileSync(join(dir, 'book.epub.bak'), '')
     writeFileSync(join(dir, 'actual.epub'), '')
     const found = await scanFolder(dir, [])
     expect(found).toEqual([join(dir, 'actual.epub')])

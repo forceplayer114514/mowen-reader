@@ -18,7 +18,8 @@ const visible: VisibleRange = {
   chapterHref: 'Text/ch1.xhtml',
   chapterLabel: '第一章',
   page: 1,
-  totalPages: 2
+  totalPages: 2,
+  readProgress: 0
 }
 
 function message(conversationId: string, role: 'user' | 'assistant', content: string): MessageRecord {
@@ -30,6 +31,7 @@ function apiHarness() {
   let done: ((id: string, result: ChatDoneResult) => void) | null = null
   const startInputs: { messages: { role: string; content: string }[] }[] = []
   const abortChat = vi.fn(async () => {})
+  const startTranslation = vi.fn(async (_input: { text: string; conversationId?: string }) => 'translation-1')
   const startChat = vi.fn(async (input: { messages: { role: string; content: string }[] }) => {
     startInputs.push(input)
     return `request-${startInputs.length}`
@@ -55,11 +57,12 @@ function apiHarness() {
     getSetting,
     appendMessage,
     startChat,
+    startTranslation,
     abortChat,
     onChatChunk: vi.fn((cb: typeof chunk) => { chunk = cb; return () => { chunk = null } }),
     onChatDone: vi.fn((cb: typeof done) => { done = cb; return () => { done = null } })
   }
-  return { api, createConversation, appendMessage, startChat, startInputs, abortChat, deleteConversations, listConversations, listMessages, getSetting, emitChunk: (id: string, text: string, messageId?: string) => chunk?.(id, text, messageId), emitDone: (id: string, result: ChatDoneResult = { status: 'finished' }) => done?.(id, result) }
+  return { api, createConversation, appendMessage, startChat, startTranslation, startInputs, abortChat, deleteConversations, listConversations, listMessages, getSetting, emitChunk: (id: string, text: string, messageId?: string) => chunk?.(id, text, messageId), emitDone: (id: string, result: ChatDoneResult = { status: 'finished' }) => done?.(id, result) }
 }
 
 function args(over: Partial<UseChatArgs> = {}): UseChatArgs {
@@ -139,7 +142,7 @@ describe('useChat 生命周期', () => {
     expect(h.startChat).toHaveBeenCalledTimes(1)
   })
 
-  it('翻译只发送指令和选文，结果落库后进入下一轮正常聊天上下文', async () => {
+  it('翻译只调用独立引擎发送选文，结果落库后进入下一轮正常聊天上下文', async () => {
     const h = apiHarness()
     window.api = h.api as never
     currentArgs = args({ conversationId: null })
@@ -153,19 +156,18 @@ describe('useChat 生命周期', () => {
     expect(h.createConversation).toHaveBeenCalledWith(expect.objectContaining({
       startCfi: quote.startCfi
     }))
-    expect(h.startInputs[0]?.messages).toEqual([
-      { role: 'user', content: '翻译：\nMillennium' }
-    ])
+    expect(h.startTranslation).toHaveBeenCalledWith({ text: 'Millennium', conversationId: 'conversation-new' })
+    expect(h.startChat).not.toHaveBeenCalled()
     await act(async () => {
-      h.emitChunk('request-1', '千禧年')
-      h.emitDone('request-1')
+      h.emitChunk('translation-1', '千禧年')
+      h.emitDone('translation-1')
       await Promise.resolve()
     })
     await vi.waitFor(() => expect(state.messages).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: 'assistant', content: '千禧年' })
     ])))
     await act(async () => { await state.send('它在这里是什么意思？'); await Promise.resolve() })
-    const next = h.startInputs[1]?.messages.map((item) => item.content).join('\n') ?? ''
+    const next = h.startInputs[0]?.messages.map((item) => item.content).join('\n') ?? ''
     expect(next).toContain('Millennium')
     expect(next).toContain('千禧年')
   })

@@ -11,6 +11,7 @@ interface Row {
   added_at: number
   last_read_cfi: string | null
   last_read_at: number | null
+  read_progress: number
 }
 
 function toRecord(row: Row): BookRecord {
@@ -23,16 +24,17 @@ function toRecord(row: Row): BookRecord {
     sourcePath: row.source_path,
     addedAt: row.added_at,
     lastReadCfi: row.last_read_cfi,
-    lastReadAt: row.last_read_at
+    lastReadAt: row.last_read_at,
+    readProgress: Math.max(0, Math.min(1, row.read_progress ?? 0))
   }
 }
 
-const SELECT = `SELECT id, title, author, cover_path, file_path, source_path, added_at, last_read_cfi, last_read_at FROM books`
+const SELECT = `SELECT id, title, author, cover_path, file_path, source_path, added_at, last_read_cfi, last_read_at, read_progress FROM books`
 
 export function insertBook(db: Db, book: BookRecord): void {
   db.prepare(
-    `INSERT INTO books (id, title, author, cover_path, file_path, source_path, added_at, last_read_cfi, last_read_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO books (id, title, author, cover_path, file_path, source_path, added_at, last_read_cfi, last_read_at, read_progress)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     book.id,
     book.title,
@@ -42,7 +44,8 @@ export function insertBook(db: Db, book: BookRecord): void {
     book.sourcePath,
     book.addedAt,
     book.lastReadCfi,
-    book.lastReadAt
+    book.lastReadAt,
+    book.readProgress ?? 0
   )
 }
 
@@ -68,12 +71,22 @@ export function deleteBook(db: Db, id: string): void {
   db.prepare('DELETE FROM books WHERE id = ?').run(id)
 }
 
-export function updateProgress(db: Db, id: string, cfi: string): void {
-  db.prepare('UPDATE books SET last_read_cfi = ?, last_read_at = ? WHERE id = ?').run(
+export function updateProgress(db: Db, id: string, cfi: string, progress = 0): void {
+  if (typeof id !== 'string' || typeof cfi !== 'string' || !cfi || !Number.isFinite(progress) || progress < 0 || progress > 1) {
+    throw new Error('阅读位置或进度无效')
+  }
+  // 已读进度保留最远位置；回翻和重排不撤销已读完状态，恢复位置仍跟随当前页。
+  db.prepare('UPDATE books SET last_read_cfi = ?, last_read_at = ?, read_progress = MAX(read_progress, ?) WHERE id = ?').run(
     cfi,
     Date.now(),
+    progress,
     id
   )
+}
+
+/** 正文已显示即记为最近阅读，不覆盖恢复中的 CFI，也不要求用户必须翻页。 */
+export function markBookRead(db: Db, id: string): void {
+  db.prepare('UPDATE books SET last_read_at = ? WHERE id = ?').run(Date.now(), id)
 }
 
 export function getLocations(db: Db, id: string): string | null {

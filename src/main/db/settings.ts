@@ -17,7 +17,11 @@ export const ALLOWED_SETTING_KEYS = [
   'llmModel',
   'llmSystemPrompt',
   'llmContextLimit',
-  'sidebarWidth'
+  'sidebarWidth',
+  'translation.mode',
+  'translation.onlineConsent',
+  'translation.source',
+  'translation.target'
 ] as const
 
 /** 键不在白名单里就抛出;错误信息带上键名,便于排查是哪一处写错了。 */
