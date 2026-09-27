@@ -189,3 +189,26 @@ test('读取书库或对话失败时不伪装成空库，重试后原记录恢�
   await expect(h.page.getByTestId('message-assistant')).toContainText('这是假的回答。')
   expect((await snapshot(h)).messages).toEqual(before.messages)
 })
+
+test('字号重排失败后释放锚点锁，后续翻页继续保存新位置', async () => {
+  const h = await launch()
+  await importFixture(h)
+  await open(h)
+  await h.page.getByRole('button', { name: '下一页', exact: true }).click()
+  await waitForStableIndicator(h)
+  const before = (await snapshot(h)).books[0].lastReadCfi
+  await h.page.evaluate(() => {
+    const r = (window as any).__readerRendition
+    const original = r.display.bind(r)
+    r.display = () => {
+      r.display = original
+      return Promise.reject(new Error('test layout failure'))
+    }
+  })
+  await h.page.getByRole('button', { name: '放大字号' }).click()
+  await expect(h.page.getByText('字号调整失败，请重试', { exact: true })).toBeVisible()
+  await waitForStableIndicator(h)
+  await h.page.getByRole('button', { name: '下一页', exact: true }).click()
+  await waitForStableIndicator(h)
+  await expect.poll(async () => (await snapshot(h)).books[0].lastReadCfi).not.toBe(before)
+})

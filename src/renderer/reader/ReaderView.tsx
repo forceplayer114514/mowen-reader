@@ -425,10 +425,10 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
           await engine.setFontSize(target, anchor ?? undefined)
           appliedFontRef.current = target
         } catch {
-          // 容错处理
+          setError('字号调整失败，请重试')
         } finally {
-          // 如果当前队列已追上最新目标字号,释放锚点锁
-          if (targetFontRef.current === appliedFontRef.current) {
+          // 最后一次重排失败也必须释放锁，不能让之后翻页一直保存旧位置。
+          if (targetFontRef.current === target) {
             anchorCfiRef.current = null
           }
         }
