@@ -3,6 +3,7 @@ import { makeRangeCfi } from './cfi'
 import { normalizeChapterHref, resolveNavigationHref } from './href'
 import type {
   OpenOptions,
+  AnnotationMarker,
   ReaderEngine,
   SelectionPoint,
   ThemeName,
@@ -77,8 +78,82 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   // 当前主题。加高亮时要按它取配色,所以不能只交给 rendition.themes 自己记。
   let theme: ThemeName = 'light'
   let locationsReady = false
+  let locationsError: Error | null = null
   let currentFontSize = 18
   let sectionLocationCounts: number[] = []
+  let annotationMarkers: AnnotationMarker[] = []
+  let onAnnotationClick: (id: string) => void = () => {}
+  let annotationFrame: number | null = null
+  const annotationElements: HTMLElement[] = []
+
+  function drawAnnotations(): void {
+    annotationElements.splice(0).forEach((marker) => marker.remove())
+    if (!rendition || annotationMarkers.length === 0) return
+    type AnnotationView = {
+      index: number
+      element: HTMLElement
+      iframe: HTMLIFrameElement
+      contents?: Contents
+    }
+    const rendered = rendition.views() as unknown as AnnotationView[] | { all?: () => AnnotationView[] }
+    const views = Array.isArray(rendered) ? rendered : rendered.all?.() ?? []
+    for (const view of views) {
+      if (!view.contents || !view.iframe) continue
+      const occupied = new Map<string, number>()
+      for (const item of annotationMarkers) {
+        try {
+          if (new EpubCFI(item.cfiRange).spinePos !== view.index) continue
+          const range = view.contents.range(item.cfiRange)
+          const rects = Array.from(range.getClientRects()).filter((r) => r.width > 0 && r.height > 0)
+          const rect = rects.at(-1)
+          if (!rect) continue
+          // 覆盖层不改 EPUB 的文本节点，字号重排后用原始 CFI 重新定位。
+          for (const line of rects) {
+            const underline = document.createElement('span')
+            underline.className = 'annotation-underline'
+            underline.dataset.annotationId = item.id
+            underline.dataset.testid = 'annotation-underline'
+            underline.setAttribute('aria-hidden', 'true')
+            underline.style.left = `${view.iframe.offsetLeft + line.left}px`
+            underline.style.top = `${view.iframe.offsetTop + line.bottom - 1}px`
+            underline.style.width = `${line.width}px`
+            view.element.append(underline)
+            annotationElements.push(underline)
+          }
+          const key = `${Math.round(rect.right)}:${Math.round(rect.top)}`
+          const shift = occupied.get(key) ?? 0
+          occupied.set(key, shift + 14)
+          const marker = document.createElement('button')
+          marker.type = 'button'
+          marker.className = 'annotation-marker'
+          marker.dataset.annotationId = item.id
+          marker.dataset.testid = 'annotation-marker'
+          marker.setAttribute('aria-label', `查看注释 ${item.number}`)
+          marker.title = `注释 ${item.number}`
+          const sup = document.createElement('sup')
+          sup.textContent = String(item.number)
+          marker.append(sup)
+          marker.style.left = `${view.iframe.offsetLeft + rect.right + shift}px`
+          marker.style.top = `${view.iframe.offsetTop + rect.top - 6}px`
+          marker.addEventListener('click', (event) => {
+            event.stopPropagation()
+            onAnnotationClick(item.id)
+          })
+          view.element.append(marker)
+          annotationElements.push(marker)
+        } catch { /* 单条损坏的历史定位不应阻塞阅读。 */ }
+      }
+    }
+  }
+
+  function scheduleAnnotations(): void {
+    if (annotationMarkers.length === 0 && annotationElements.length === 0) return
+    if (annotationFrame !== null) cancelAnimationFrame(annotationFrame)
+    annotationFrame = requestAnimationFrame(() => {
+      annotationFrame = null
+      drawAnnotations()
+    })
+  }
 
   function countSectionLocations(source: Book): void {
     const counts = Array<number>(spineHrefs.length).fill(0)
@@ -113,6 +188,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
         pendingSize.height,
         cfi
       )
+      scheduleAnnotations()
     })
   })
   resizeObserver?.observe(container)
@@ -246,6 +322,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   }
 
   function handleRelocated(loc: { start?: { href?: string; cfi?: string }; end?: { cfi?: string } }): void {
+    scheduleAnnotations()
     const href = loc?.start?.href
     if (
       !targetLocation ||
@@ -406,6 +483,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   function handleRendered(): void {
     pruneClickSwallows()
     syncHighlights()
+    scheduleAnnotations()
   }
 
   /**
@@ -554,6 +632,8 @@ export function createEngine(container: HTMLElement): ReaderEngine {
    * book/rendition 无关,所以不放在 open() 里注册。
    */
   function handleWindowKeydown(e: KeyboardEvent): void {
+    const target = e.target as HTMLElement | null
+    if (target && (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable)) return
     notifyKey(e.key)
   }
 
@@ -634,6 +714,11 @@ export function createEngine(container: HTMLElement): ReaderEngine {
    * onRelocated 订阅者应当继续收到新书的通知。
    */
   function teardown(): void {
+    if (annotationFrame !== null) cancelAnimationFrame(annotationFrame)
+    annotationFrame = null
+    annotationElements.splice(0).forEach((marker) => marker.remove())
+    annotationMarkers = []
+    onAnnotationClick = () => {}
     // 挂在旧章节文档上的那个"吞掉下一下 click"要先摘掉:文档马上就跟着 rendition
     // 一起没了,监听器本身会跟着消失,但 disarmClickSwallow 这个引用留在这里,
     // 下一次划选时 swallowNextClick() 会先调它一次,对着一份已经销毁的文档做事。
@@ -695,6 +780,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     // 只会对着不存在的范围做删除。
     pendingRemovals.clear()
     locationsReady = false
+    locationsError = null
     sectionLocationCounts = []
     if (resizeFrame !== null) {
       cancelAnimationFrame(resizeFrame)
@@ -802,8 +888,12 @@ export function createEngine(container: HTMLElement): ReaderEngine {
             destroyStale(nextBook, nextRendition)
             return
           }
-          locationsReady = true
           countSectionLocations(nextBook)
+          locationsReady = true
+          notify()
+        }).catch(() => {
+          if (epoch !== generation) return
+          locationsError = new Error('本书位置索引计算失败，请返回书架后重试；已保存的阅读位置未清除')
           notify()
         })
       }
@@ -906,6 +996,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
       }
       syncHighlights()
+      scheduleAnnotations()
       notify()
     },
 
@@ -914,10 +1005,12 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       rendition?.themes.select(name)
       // 配色跟着主题走,见 syncHighlights() 的注释。
       syncHighlights()
+      scheduleAnnotations()
     },
 
     async getVisible(): Promise<VisibleRange> {
       if (!book || !rendition?.location) throw new Error('书还没打开')
+      if (locationsError) throw locationsError
       const { start, end } = rendition.location
 
       let text = ''
@@ -1063,6 +1156,12 @@ export function createEngine(container: HTMLElement): ReaderEngine {
         detachHighlight(cfiRange)
       }
       highlights.clear()
+    },
+
+    setAnnotations(items: AnnotationMarker[], onClick: (id: string) => void): void {
+      annotationMarkers = items
+      onAnnotationClick = onClick
+      scheduleAnnotations()
     },
 
     destroy(): void {

@@ -6,6 +6,7 @@ import { createEngine } from './engine'
 import { createSelectionStore, type SelectionStore } from './selection'
 import type { ReaderEngine, ThemeName, TocItem, VisibleRange } from './types'
 import Sidebar from '../chat/Sidebar'
+import ConfirmDialog from '../ConfirmDialog'
 
 const FONT_MIN = 14
 const FONT_MAX = 28
@@ -87,6 +88,13 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
   const [restoring, setRestoring] = useState(Boolean(book.lastReadCfi))
   const [bookmarks, setBookmarks] = useState<BookmarkRecord[]>([])
   const [bookmarkError, setBookmarkError] = useState<string | null>(null)
+  const [deletingBookmarkId, setDeletingBookmarkId] = useState<string | null>(null)
+  const bookmarkDeletingRef = useRef(false)
+  const [annotationState, setAnnotationState] = useState({ dirty: false, saving: false })
+  const [confirmLeave, setConfirmLeave] = useState(false)
+  const updateAnnotationState = useCallback((dirty: boolean, saving: boolean) => {
+    setAnnotationState({ dirty, saving })
+  }, [])
   const spreadRef = useRef(false)
   const fontChainRef = useRef<Promise<void>>(Promise.resolve())
   const anchorCfiRef = useRef<string | null>(null)
@@ -234,19 +242,23 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
           if (completedRestore) setRestoring(false)
           void engine!.getVisible().then((v) => {
             handleVisible(v)
-          }).catch(() => {
+          }).catch((error: unknown) => {
             // 书还没有打开时 getVisible() 会抛错。display() 运行前回调就可能被触发，
             // 此时没有任何内容可见，静默处理这个失败即可——如果书其实读不出来，
             // 下面的 stuckTimer 兜底会在几秒后把这个情况变成界面上的错误提示。
+            if (!cancelled && engine!.currentCfi()) setError(error instanceof Error ? error.message : String(error))
           })
-          const cfi = engine!.currentCfi()
+          const cfi = anchorCfiRef.current ?? engine!.currentCfi()
           if (cfi && !restoreGate.restoring && !completedRestore) {
-            // 存阅读进度失败先静默处理:偶发失败不值得打断阅读体验,下次翻页/
-            // relocate 触发时会用最新位置重试,不会残留未处理的 rejection。
+            // 失败必须可见，下次 relocate 用最新位置重试。
             // restoreGate.restoring 为 true 时这次 relocate 是恢复流程内部的中间落点,
             // 不是用户翻页翻出来的,不能当成新的阅读位置写回去(见上面变量声明处
             // 的注释)。
-            void window.api.saveProgress(book.id, cfi).catch(() => {})
+            void window.api.saveProgress(book.id, cfi).then(() => {
+              if (!cancelled) setError((old) => old === '阅读位置保存失败，请翻页后重试' ? null : old)
+            }).catch(() => {
+              if (!cancelled) setError('阅读位置保存失败，请翻页后重试')
+            })
           }
 
           if (!locationsSaved) {
@@ -255,7 +267,7 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
               locationsSaved = true
               // 位置索引写入失败同样静默:损失的只是下次开书时重新计算索引的时间,
               // 不影响当前阅读,但仍要接住 rejection,不能变成未处理的 promise 拒绝。
-              void window.api.saveLocations(book.id, json).catch(() => {})
+              void window.api.saveLocations(book.id, json).catch(() => { locationsSaved = false })
             }
           }
         })
@@ -332,7 +344,7 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
           const json = engine.exportLocations()
           if (json) {
             locationsSaved = true
-            void window.api.saveLocations(book.id, json).catch(() => {})
+            void window.api.saveLocations(book.id, json).catch(() => { locationsSaved = false })
           }
         }
 
@@ -431,26 +443,39 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
     })
   }, [])
 
-  const toggleBookmark = useCallback(async () => {
-    if (!visible) return
+  const removeBookmark = useCallback(async (id: string) => {
+    if (bookmarkDeletingRef.current) return
+    bookmarkDeletingRef.current = true
+    setDeletingBookmarkId(id)
     setBookmarkError(null)
     try {
-      if (currentBookmark) {
-        await window.api.deleteBookmark(currentBookmark.id)
-        setBookmarks((items) => items.filter((item) => item.id !== currentBookmark.id))
-      } else {
-        const created = await window.api.addBookmark({
-          bookId: book.id,
-          startCfi: visible.startCfi,
-          chapterLabel: visible.chapterLabel,
-          excerpt: visible.text.replace(/\s+/g, ' ').trim().slice(0, 80)
-        })
-        setBookmarks((items) => [...items, created])
-      }
+      await window.api.deleteBookmark(id)
+      setBookmarks((items) => items.filter((item) => item.id !== id))
     } catch {
-      setBookmarkError(currentBookmark ? '书签删除失败，请稍后重试' : '书签保存失败，请稍后重试')
+      setBookmarkError('书签删除失败，请稍后重试')
+    } finally {
+      bookmarkDeletingRef.current = false
+      setDeletingBookmarkId(null)
     }
-  }, [book.id, currentBookmark, visible])
+  }, [])
+
+  const toggleBookmark = useCallback(async () => {
+    if (!visible) return
+    if (currentBookmark) { await removeBookmark(currentBookmark.id); return }
+    if (bookmarkDeletingRef.current) return
+    setBookmarkError(null)
+    try {
+      const created = await window.api.addBookmark({
+        bookId: book.id,
+        startCfi: visible.startCfi,
+        chapterLabel: visible.chapterLabel,
+        excerpt: visible.text.replace(/\s+/g, ' ').trim().slice(0, 80)
+      })
+      setBookmarks((items) => [...items, created])
+    } catch {
+      setBookmarkError('书签保存失败，请稍后重试')
+    }
+  }, [book.id, currentBookmark, removeBookmark, visible])
 
   const jump = useCallback((href: string) => {
     setShowToc(false)
@@ -476,7 +501,10 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
   return (
     <div className="reader">
       <header className="reader__bar">
-        <button className="button--ghost" onClick={onBack}>← 书架</button>
+        <button className="button--ghost" disabled={annotationState.saving} onClick={() => {
+          if (annotationState.dirty) setConfirmLeave(true)
+          else onBack()
+        }}>← 书架</button>
         <button className="button--ghost" onClick={() => setShowToc((v) => !v)} data-testid="toggle-toc">
           目录
         </button>
@@ -485,7 +513,7 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
           type="button"
           data-testid="bookmark-toggle"
           aria-pressed={Boolean(currentBookmark)}
-          disabled={!visible}
+          disabled={!visible || !!deletingBookmarkId}
           onClick={() => void toggleBookmark()}
         >
           {currentBookmark ? '★ 已加书签' : '☆ 书签'}
@@ -512,6 +540,8 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
             items={toc}
             currentHref={visible?.chapterHref ?? ''}
             bookmarks={bookmarks}
+            deletingBookmarkId={deletingBookmarkId}
+            onDeleteBookmark={(id) => void removeBookmark(id)}
             onJump={jump}
             onClose={() => setShowToc(false)}
           />
@@ -549,8 +579,12 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
           restoring={restoring}
           spread={spread}
           onSetSpread={setSpreadMode}
+          onAnnotationState={updateAnnotationState}
         />
       </div>
+      {confirmLeave && <ConfirmDialog title="注释还未提交" message="返回书架会丢弃当前注释草稿。可以取消返回，先提交保存。"
+        confirmLabel="放弃并返回书架" onCancel={() => setConfirmLeave(false)} onConfirm={onBack}
+        testId="confirm-note-leave" />}
 
     </div>
   )

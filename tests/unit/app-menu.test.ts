@@ -17,6 +17,7 @@ vi.mock('electron', () => ({
 vi.mock('../../src/main/ipc', () => ({ registerIpc: vi.fn(), abortAllChats: vi.fn() }))
 vi.mock('../../src/main/paths', () => ({ initDataDir: vi.fn() }))
 vi.mock('../../src/main/secrets', () => ({ initSecrets: vi.fn() }))
+vi.mock('../../src/main/online-library', () => ({ attachOnlineLibrary: vi.fn() }))
 
 const platform = process.platform
 afterEach(() => {

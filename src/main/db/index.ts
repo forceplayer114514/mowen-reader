@@ -61,42 +61,51 @@ CREATE TABLE IF NOT EXISTS bookmarks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_bookmarks_book ON bookmarks(book_id, created_at);
+
+CREATE TABLE IF NOT EXISTS annotations (
+  id TEXT PRIMARY KEY,
+  book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  start_cfi TEXT NOT NULL,
+  cfi_range TEXT NOT NULL,
+  quote TEXT NOT NULL,
+  chapter_label TEXT,
+  content TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(book_id, cfi_range)
+);
+CREATE INDEX IF NOT EXISTS idx_annotations_book ON annotations(book_id);
 `
 
 export type Db = DatabaseSync
 
-/**
- * 当前 schema 的版本号,存在 SQLite 自带的 `PRAGMA user_version` 里。
- * v0.1.0 发布之后用户机器上会有真实数据库文件,下一阶段要加两张新表时,
- * 迁移代码需要靠这个数字分辨"这是一个从来没升级过的旧库"还是"已经跑过某次
- * 迁移的库",而不是靠猜表结构。schema 目前从未迁移过,这里先只留一个整数
- * 版本和下面 openDatabase() 里写好的插槽,不为此建一整套迁移框架。
- */
-export const SCHEMA_VERSION = 3
+/** SQLite user_version：v2 对话、v3 书签、v4 注释。 */
+export const SCHEMA_VERSION = 4
 
 /** 打开数据库并确保表结构存在。传 ':memory:' 得到一个测试用的临时库。 */
 export function openDatabase(file: string): Db {
   const db = new DatabaseSync(file)
   db.exec('PRAGMA journal_mode = WAL')
+  db.exec('PRAGMA synchronous = FULL')
+  db.exec('PRAGMA busy_timeout = 5000')
   db.exec('PRAGMA foreign_keys = ON')
-  db.exec(SCHEMA)
-
   const { user_version: version } = db.prepare('PRAGMA user_version').get() as {
     user_version: number
   }
-  if (version === 0) {
-    // user_version 是全新数据库的默认值(SQLite 本身也拿 0 当"从没设置过"),
-    // 这个分支只会在真正第一次创建这个文件时进入一次:盖上当前 schema 版本号。
-    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
-  } else if (version < SCHEMA_VERSION) {
-    if (version < 2) {
-      // v1 的库没有 conversations / messages 两张表。上面的 SCHEMA 用的是
-      // CREATE TABLE IF NOT EXISTS,已经把它们建好了,这里只需把版本号推上去。
-      db.exec('PRAGMA user_version = 2')
-    }
-    // bookmarks 表已由上面的幂等 schema 补齐。
-    db.exec('PRAGMA user_version = 3')
+  if (version > SCHEMA_VERSION) {
+    db.close()
+    throw new Error('数据库来自更新版本的墨问，请使用新版打开；原有数据未修改')
   }
-
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    db.exec(SCHEMA)
+    // 幂等 schema 补齐新增表，所有迁移成功后才升级版本号。
+    if (version < SCHEMA_VERSION) db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    db.close()
+    throw error
+  }
   return db
 }

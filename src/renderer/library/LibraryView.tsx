@@ -10,13 +10,18 @@ interface Props {
   onOpenBook: (book: BookRecord) => void
   onOpenSettings?: () => void
   onOpenConversations?: () => void
+  onOpenOnline?: () => void
+  onOpenDownloads?: () => void
+  downloadCount?: number
+  downloadsOpen?: boolean
+  revision?: string
   theme: ThemeName
   onToggleTheme: () => void
 }
 
 type Stager = (sourcePaths: string[]) => Promise<ImportedFile[]>
 
-export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversations, theme, onToggleTheme }: Props) {
+export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversations, onOpenOnline, onOpenDownloads, downloadCount, downloadsOpen, revision, theme, onToggleTheme }: Props) {
   const [books, setBooks] = useState<BookRecord[]>([])
   const [busy, setBusy] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
@@ -28,12 +33,17 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
   const [deleting, setDeleting] = useState(false)
 
   const refresh = useCallback(async () => {
-    setBooks(await window.api.listBooks())
+    try {
+      setBooks(await window.api.listBooks())
+      setError((old) => old === '书库读取失败，已保存的书籍未删除，请重试' ? null : old)
+    } catch {
+      setError('书库读取失败，已保存的书籍未删除，请重试')
+    }
   }, [])
 
   useEffect(() => {
     void refresh()
-  }, [refresh])
+  }, [refresh, revision])
 
   // 每本书独立完成"复制进库 -> 读元数据 -> 落库"这一整套动作,失败了
   // 只清理这一本自己复制出来的文件,不影响其它书——这样一批里有几本
@@ -201,12 +211,11 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
             扫描文件夹
           </button>
           <button type="button" className="button--secondary" data-testid="download-books"
-            title="在浏览器中打开 Z-Library" onClick={() => {
-              setError(null)
-              void window.api.openDownloadSite().catch(() => setError('无法打开下载网站，请检查默认浏览器'))
-            }}>
-            下载电子书 ↗
+            title="在墨问内打开在线书库" onClick={onOpenOnline}>
+            下载电子书
           </button>
+          {!!downloadCount && <button type="button" className="button--ghost" data-testid="open-downloads"
+            aria-expanded={downloadsOpen} onClick={onOpenDownloads}>下载记录 ({downloadCount})</button>}
           <button type="button" className="button--primary" onClick={onPickFiles} data-testid="pick-files">
             ＋ 添加 EPUB
           </button>
@@ -225,14 +234,17 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
       {(busy || error) && (
         <div className={`library__notice${error ? ' library__notice--error' : ''}`} role="status">
           {error ?? `${busy}…`}
+          {error === '书库读取失败，已保存的书籍未删除，请重试' && (
+            <button type="button" onClick={() => void refresh()}>重新读取书库</button>
+          )}
         </div>
       )}
 
       {books.length === 0 ? (
         <div className="empty">
           <span className="empty__icon">＋</span>
-          <strong>书架是空的</strong>
-          <p>把第一本书拖进来，或点击右上角的「添加 EPUB」。</p>
+          <strong>{error === '书库读取失败，已保存的书籍未删除，请重试' ? '书库暂时无法读取' : '书架是空的'}</strong>
+          <p>{error === '书库读取失败，已保存的书籍未删除，请重试' ? '请先重试，不需要重新导入原有书籍。' : '把第一本书拖进来，或点击右上角的「添加 EPUB」。'}</p>
         </div>
       ) : (
         <div className="library__grid">

@@ -1,4 +1,26 @@
 import { compareCfi } from './cfi'
+import { EpubCFI } from 'epubjs'
+
+/** 原文范围与当前屏幕相交即显示，包括从上一页延续过来的注释。 */
+export function annotationsOnPage<T extends { cfiRange: string }>(
+  all: T[], pageStartCfi: string, pageEndCfi: string
+): T[] {
+  try {
+    const reversed = compareCfi(pageStartCfi, pageEndCfi) > 0
+    const lo = reversed ? pageEndCfi : pageStartCfi
+    const hi = reversed ? pageStartCfi : pageEndCfi
+    return all.filter((item) => {
+      try {
+        const start = new EpubCFI(item.cfiRange)
+        const end = new EpubCFI(item.cfiRange)
+        start.collapse(true)
+        end.collapse(false)
+        // DOM Range 的终点不包含字符，仅碰到页边界不算当页有原文。
+        return compareCfi(start.toString(), hi) < 0 && compareCfi(end.toString(), lo) > 0
+      } catch { return false }
+    })
+  } catch { return [] }
+}
 
 /**
  * 挑出起点落在当前页文字范围内的对话。

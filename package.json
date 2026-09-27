@@ -1,6 +1,6 @@
 {
   "name": "mowen-reader",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "墨问——带 AI 对话功能的 EPUB 桌面阅读器",
   "main": "./out/main/index.js",
   "type": "module",
@@ -21,6 +21,7 @@
   "dependencies": {
     "dompurify": "^3.4.15",
     "epubjs": "^0.3.93",
+    "jszip": "^3.10.1",
     "marked": "^18.0.13"
   },
   "devDependencies": {
@@ -33,7 +34,6 @@
     "electron-builder": "^26.15.3",
     "electron-vite": "^2.3.0",
     "jsdom": "^30.0.1",
-    "jszip": "^3.10.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "tsx": "^4.19.2",

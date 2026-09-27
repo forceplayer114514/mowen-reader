@@ -4,6 +4,8 @@ import { basename } from 'node:path'
 import { dialog, ipcMain, shell } from 'electron'
 import type {
   AppendMessageInput,
+  AnnotationRecord,
+  CreateAnnotationInput,
   BookmarkRecord,
   BookRecord,
   ChatDoneResult,
@@ -35,14 +37,17 @@ import {
 } from './db/books'
 import {
   deleteConversations,
+  getConversation,
   insertConversation,
   insertMessage,
   listAllConversations,
   listConversations,
   listMessages,
-  updateConversationMerge
+  updateConversationMerge,
+  updateMessageContent
 } from './db/conversations'
 import { assertAllowedSettingKey, getSetting, setSetting } from './db/settings'
+import { createAnnotation, deleteAnnotation, listAnnotations, updateAnnotation } from './db/annotations'
 import {
   assertKeyBoundToEndpoint,
   assertSafeLlmEndpoint,
@@ -55,7 +60,7 @@ import { clearApiKey, readApiKey, setApiKey } from './secrets'
 
 let db: Db | null = null
 
-function database(): Db {
+export function database(): Db {
   if (!db) db = openDatabase(dbFile())
   return db
 }
@@ -64,12 +69,61 @@ function database(): Db {
 // 拿到同一份登记表去中止所有还在跑的请求——见下面的 abortAllChats()。
 const sessions = createSessionRegistry()
 
+function annotationId(value: unknown): asserts value is string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 200) throw new Error('注释 id 无效')
+}
+
+function annotationContent(value: unknown): asserts value is string {
+  if (typeof value !== 'string' || !value.trim() || value.length > 20000) throw new Error('注释不能为空，且最多 20000 字')
+}
+
 /** 应用即将退出时调用:中止所有还在跑的模型请求。见 src/main/index.ts 的 before-quit。 */
 export function abortAllChats(): void {
   sessions.abortAll()
 }
 
+export async function finishBookImport(input: FinishImportInput): Promise<BookRecord> {
+  const cover = input.coverBytes ? await writeCover(input.id, new Uint8Array(input.coverBytes)) : null
+  const record: BookRecord = {
+    id: input.id, title: input.title || basename(input.sourcePath, '.epub'), author: input.author,
+    coverPath: cover, filePath: libraryFilePath(input.id), sourcePath: input.sourcePath,
+    addedAt: Date.now(), lastReadCfi: null, lastReadAt: null
+  }
+  try { insertBook(database(), record) }
+  catch (error) {
+    if (cover) await rm(cover, { force: true }).catch(() => {})
+    throw error
+  }
+  return record
+}
+
 export function registerIpc(): void {
+  ipcMain.handle('annotations:list', (_e, bookId: string): AnnotationRecord[] => {
+    annotationId(bookId)
+    return listAnnotations(database(), bookId)
+  })
+  ipcMain.handle('annotations:create', (_e, input: CreateAnnotationInput): AnnotationRecord => {
+    if (!input || typeof input !== 'object') throw new Error('注释参数无效')
+    annotationId(input.bookId)
+    annotationContent(input.content)
+    if (!getBook(database(), input.bookId)) throw new Error('书籍不存在')
+    if (
+      typeof input.startCfi !== 'string' || input.startCfi.length > 4096 || !/^epubcfi\([^,]+![^,]+\)$/.test(input.startCfi) ||
+      typeof input.cfiRange !== 'string' || input.cfiRange.length > 4096 || !/^epubcfi\(.+!.+,.+,.+\)$/.test(input.cfiRange) ||
+      typeof input.quote !== 'string' || !input.quote.trim() || input.quote.length > 200000 ||
+      (input.chapterLabel !== null && (typeof input.chapterLabel !== 'string' || input.chapterLabel.length > 2000))
+    ) throw new Error('注释原文位置无效，请重新划选')
+    return createAnnotation(database(), { ...input, content: input.content.trim() })
+  })
+  ipcMain.handle('annotations:update', (_e, id: string, content: string): AnnotationRecord => {
+    annotationId(id)
+    annotationContent(content)
+    return updateAnnotation(database(), id, content.trim())
+  })
+  ipcMain.handle('annotations:delete', (_e, id: string): void => {
+    annotationId(id)
+    deleteAnnotation(database(), id)
+  })
   // 固定目标，不提供可被渲染层滥用的任意 URL / 本地协议打开能力。
   ipcMain.handle('books:openDownloadSite', (): Promise<void> =>
     shell.openExternal('https://z-library.bz/')
@@ -130,44 +184,8 @@ export function registerIpc(): void {
 
   ipcMain.handle(
     'books:finishImport',
-    async (_e, input: FinishImportInput): Promise<BookRecord> => {
-      // coverBytes 走 ArrayBuffer 而不是 number[](见 shared/types.ts 的注释),
-      // 这里用 Uint8Array 视图直接包一层,不需要逐元素转换。
-      const coverPathResult = input.coverBytes
-        ? await writeCover(input.id, new Uint8Array(input.coverBytes))
-        : null
-      const record: BookRecord = {
-        id: input.id,
-        title: input.title || basename(input.sourcePath, '.epub'),
-        author: input.author,
-        coverPath: coverPathResult,
-        filePath: libraryFilePath(input.id),
-        sourcePath: input.sourcePath,
-        addedAt: Date.now(),
-        lastReadCfi: null,
-        lastReadAt: null
-      }
-      try {
-        insertBook(database(), record)
-      } catch (error) {
-        // 如果 insertBook 失败,删掉已写入的封面,避免孤儿文件。直接用
-        // writeCover() 已经返回的真实路径删除,不能重新用 coverPath(input.id)
-        // 拼一份默认扩展名的路径去猜——真实扩展名是按封面字节的魔数推导出来的,
-        // 猜错了会删不掉刚写入的那份,留下孤儿文件(两处必须用同一个路径来源)。
-        // 保留原错误,不掩盖它,也不让删除失败遮挡原错误。
-        if (coverPathResult) {
-          try {
-            await rm(coverPathResult, { force: true })
-          } catch {
-            // 删除封面失败不重新抛错,已有的 insertBook 错误更重要
-          }
-        }
-        throw error
-      }
-      return record
-    }
+    async (_e, input: FinishImportInput): Promise<BookRecord> => finishBookImport(input)
   )
-
   ipcMain.handle('books:readFile', async (_e, id: string): Promise<ArrayBuffer> => {
     const book = getBook(database(), id)
     if (!book) throw new Error(`书不存在:${id}`)
@@ -202,17 +220,25 @@ export function registerIpc(): void {
   ipcMain.handle('books:delete', async (_e, id: string): Promise<void> => {
     const book = getBook(database(), id)
     if (!book) return
-    await removeBookFiles(book)
     deleteBook(database(), id)
+    // 先原子删除记录及级联数据；中途退出最多留下未引用文件，不留下打不开的书。
+    await removeBookFiles(book).catch(() => { console.warn('已删除书籍记录，但库内文件清理失败', id) })
   })
 
   ipcMain.handle('books:saveProgress', (_e, id: string, cfi: string): void => {
     updateProgress(database(), id, cfi)
   })
 
-  ipcMain.handle('books:getLocations', (_e, id: string): string | null =>
-    getLocations(database(), id)
-  )
+  ipcMain.handle('books:getLocations', (_e, id: string): string | null => {
+    const cached = getLocations(database(), id)
+    if (!cached) return null
+    try {
+      const entries: unknown = JSON.parse(cached)
+      if (Array.isArray(entries) && entries.length > 0 && entries.every((value) =>
+        typeof value === 'string' && /^epubcfi\(.+!.+\)$/.test(value))) return cached
+    } catch { /* 可重建的索引损坏不能让整本书打不开。 */ }
+    return null
+  })
 
   ipcMain.handle('books:saveLocations', (_e, id: string, json: string): void => {
     setLocations(database(), id, json)
@@ -362,6 +388,10 @@ export function registerIpc(): void {
 
   ipcMain.handle('chat:start', async (event, input: StartChatInput): Promise<string> => {
     const db = database()
+    if (input.conversationId !== undefined &&
+      (typeof input.conversationId !== 'string' || !getConversation(db, input.conversationId))) {
+      throw new Error('对话不存在，无法保存回答')
+    }
     const endpoint = getSetting(db, 'llmEndpoint') ?? ''
     const model = getSetting(db, 'llmModel') ?? ''
 
@@ -385,6 +415,9 @@ export function registerIpc(): void {
     const apiKey = stored.key
 
     const session = sessions.start()
+    let savedMessage: MessageRecord | null = null
+    const persisted = (result: ChatDoneResult): ChatDoneResult => input.conversationId
+      ? { ...result, savedMessage } : result
 
     // 生命周期中止过之后,这个 WebContents 上跑的已经不是发起这次请求的那个
     // 页面了。刷新不销毁 WebContents,isDestroyed() 仍然是 false,消息照样
@@ -429,7 +462,22 @@ export function registerIpc(): void {
         apiKey,
         messages: input.messages,
         signal: session.signal,
-        onChunk: (text) => send('chat:chunk', session.id, text)
+        onChunk: (text) => {
+          if (input.conversationId && text) {
+            // 先同步落盘再显示；关窗、刷新或进程退出不依赖渲染层补写。
+            if (!savedMessage) {
+              const message: MessageRecord = { id: randomUUID(), conversationId: input.conversationId,
+                role: 'assistant', content: text, quotes: [], createdAt: Date.now() }
+              insertMessage(db, message)
+              savedMessage = message
+            } else {
+              const content = savedMessage.content + text
+              updateMessageContent(db, savedMessage.id, content)
+              savedMessage = { ...savedMessage, content }
+            }
+          }
+          send('chat:chunk', session.id, text, savedMessage?.id)
+        }
       })
         .then(() => {
           // streamChat 对"模型正常说完"和"用户中途点了停止"一视同仁地
@@ -439,14 +487,14 @@ export function registerIpc(): void {
           const result: ChatDoneResult = session.signal.aborted
             ? { status: 'stopped' }
             : { status: 'finished' }
-          send('chat:done', session.id, result)
+          send('chat:done', session.id, persisted(result))
         })
         .catch((err: unknown) => {
           const result: ChatDoneResult = {
             status: 'error',
             message: err instanceof Error ? err.message : '请求失败'
           }
-          send('chat:done', session.id, result)
+          send('chat:done', session.id, persisted(result))
         })
         .finally(() => {
           dispose()

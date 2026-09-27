@@ -399,7 +399,7 @@ test('主页主题与阅读同步，开书期间切换不会被旧设置覆盖',
   expect(await h.page.evaluate(() => document.documentElement.dataset.theme)).toBe('dark')
 })
 
-test('下载电子书只在默认浏览器打开指定网站，失败有提示', async () => {
+test('在线书库提供默认浏览器后备入口，失败有提示', async () => {
   const h = await launch()
   await h.app.evaluate(({ shell }) => {
     shell.openExternal = async (url: string) => {
@@ -407,14 +407,16 @@ test('下载电子书只在默认浏览器打开指定网站，失败有提示',
     }
   })
   await h.page.getByTestId('download-books').click()
+  await expect(h.page.getByTestId('online-library')).toBeVisible()
+  await h.page.getByRole('button', { name: '用浏览器打开 ↗' }).click()
   await expect.poll(() => h.app.evaluate(() =>
     (globalThis as unknown as { downloadSiteUrl?: string }).downloadSiteUrl))
     .toBe('https://z-library.bz/')
   await h.app.evaluate(({ shell }) => {
     shell.openExternal = async () => { throw new Error('No default browser') }
   })
-  await h.page.getByTestId('download-books').click()
-  await expect(h.page.getByRole('status')).toContainText('无法打开下载网站')
+  await h.page.getByRole('button', { name: '用浏览器打开 ↗' }).click()
+  await expect(h.page.getByRole('alert')).toContainText('操作失败')
 })
 
 test('夜间模式同时更新阅读外壳和书内正文', async () => {
@@ -509,6 +511,48 @@ test('书签会显示在目录中并跨重启保留,再次点击可删除', asyn
   await second.page.getByTestId('toggle-toc').click()
   await second.page.getByTestId('bookmark-toggle').click()
   await expect(second.page.getByTestId('bookmark-toggle')).toHaveAttribute('aria-pressed', 'false')
+})
+
+test('目录可直接删除其他页的书签，不跳页；失败保留记录可重试，删除跨重启生效', async () => {
+  const h = await launch()
+  await importFixture(h)
+  await h.page.getByTestId('book-card').first().click()
+  await waitForLocationsReady(h)
+  await h.page.getByTestId('bookmark-toggle').click()
+  await h.page.getByTestId('toggle-toc').click()
+  await h.page.getByRole('button', { name: '第二章' }).click()
+  await waitForStableIndicator(h)
+  await h.page.getByTestId('bookmark-toggle').click()
+  await h.page.getByTestId('toggle-toc').click()
+  await expect(h.page.getByTestId('bookmark-entry')).toHaveCount(2)
+  const before = await waitForStableIndicator(h)
+  await h.app.evaluate(({ ipcMain }) => {
+    const handler = (ipcMain as any)._invokeHandlers.get('bookmarks:delete')
+    let fail = true
+    ipcMain.removeHandler('bookmarks:delete')
+    ipcMain.handle('bookmarks:delete', (...args: unknown[]) => {
+      if (fail) { fail = false; throw new Error('test disk failure') }
+      return handler(...args)
+    })
+  })
+  const removeFirst = h.page.getByRole('button', { name: '删除书签：第一章 开端', exact: true })
+  await removeFirst.click()
+  await expect(h.page.getByTestId('settings-error')).toContainText('书签删除失败')
+  await expect(h.page.getByTestId('bookmark-entry')).toHaveCount(2)
+  await removeFirst.click()
+  await expect(h.page.getByTestId('bookmark-entry')).toHaveCount(1)
+  await expect(h.page.getByTestId('toc')).toBeVisible()
+  await expect(h.page.getByTestId('bookmark-toggle')).toHaveAttribute('aria-pressed', 'true')
+  expect(await waitForStableIndicator(h)).toBe(before)
+  await h.page.getByTestId('bookmark-delete').click()
+  await expect(h.page.getByTestId('bookmark-entry')).toHaveCount(0)
+  await expect(h.page.getByTestId('bookmark-toggle')).toHaveAttribute('aria-pressed', 'false')
+  await h.app.close()
+  const restarted = await launch(h.userData)
+  await restarted.page.getByTestId('book-card').first().click()
+  await waitForLocationsReady(restarted)
+  await restarted.page.getByTestId('toggle-toc').click()
+  await expect(restarted.page.getByTestId('bookmark-entry')).toHaveCount(0)
 })
 
 test('最小窗口收起对话栏会真正释放阅读空间并可再次展开', async () => {

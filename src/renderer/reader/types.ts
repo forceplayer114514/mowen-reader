@@ -47,6 +47,12 @@ export interface SelectionPoint {
   y: number
 }
 
+export interface AnnotationMarker {
+  id: string
+  cfiRange: string
+  number: number
+}
+
 export interface ReaderEngine {
   open(data: ArrayBuffer, opts: OpenOptions): Promise<void>
   display(target?: string): Promise<void>
@@ -85,5 +91,7 @@ export interface ReaderEngine {
   removeHighlight(cfiRange: string): void
   /** 抹掉当前这本书上所有由本引擎加过的高亮。 */
   clearHighlights(): void
+  /** 正文外的上标覆盖层，不插入 EPUB 文本、不改变 CFI 或分页。 */
+  setAnnotations(items: AnnotationMarker[], onClick: (id: string) => void): void
   destroy(): void
 }

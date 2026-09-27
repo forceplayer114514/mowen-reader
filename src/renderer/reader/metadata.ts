@@ -1,4 +1,4 @@
-import ePub from 'epubjs'
+import { Book } from 'epubjs'
 
 /**
  * 在渲染进程里解析 EPUB 元数据。
@@ -18,16 +18,22 @@ export async function extractMetadata(data: ArrayBuffer): Promise<{
   author: string | null
   coverBytes: ArrayBuffer | null
 }> {
-  const book = ePub(data)
+  const book = new Book({ replacements: 'none', requestMethod: async () => { throw new Error('元数据解析不允许访问网络') } })
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error('电子书解析超时，请检查 EPUB 文件')), 15000)
+  })
   try {
-    await book.ready
-    const meta = await book.loaded.metadata
+    // Explicit open rejects on bad containers; constructor + ready alone swallows that error.
+    await Promise.race([book.open(data).then(() => book.ready), timeout])
+    const meta = await Promise.race([book.loaded.metadata, timeout])
     let coverBytes: ArrayBuffer | null = null
     try {
-      const url = await book.coverUrl()
-      if (url) {
-        const blob = await fetch(url).then((r) => r.blob())
-        coverBytes = await blob.arrayBuffer()
+      const url = await Promise.race([book.coverUrl(), timeout])
+      if (url?.startsWith('blob:')) {
+        const blob = await Promise.race([fetch(url).then((r) => r.blob()), timeout])
+        if (blob.size > 5 * 1024 * 1024) throw new Error('封面过大')
+        coverBytes = await Promise.race([blob.arrayBuffer(), timeout])
       }
     } catch {
       coverBytes = null
@@ -38,6 +44,7 @@ export async function extractMetadata(data: ArrayBuffer): Promise<{
       coverBytes
     }
   } finally {
+    clearTimeout(timer)
     book.destroy()
   }
 }

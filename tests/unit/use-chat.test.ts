@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useChat, type ChatState, type UseChatArgs } from '../../src/renderer/chat/useChat'
 import Sidebar, { mergeLoadedMessages } from '../../src/renderer/chat/Sidebar'
-import type { ConversationWithCount, MessageRecord } from '../../src/shared/types'
+import type { ChatDoneResult, ConversationWithCount, MessageRecord } from '../../src/shared/types'
 import type { VisibleRange } from '../../src/renderer/reader/types'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -26,8 +26,8 @@ function message(conversationId: string, role: 'user' | 'assistant', content: st
 }
 
 function apiHarness() {
-  let chunk: ((id: string, text: string) => void) | null = null
-  let done: ((id: string, result: { status: 'finished' | 'error'; message?: string }) => void) | null = null
+  let chunk: ((id: string, text: string, messageId?: string) => void) | null = null
+  let done: ((id: string, result: ChatDoneResult) => void) | null = null
   const startInputs: { messages: { role: string; content: string }[] }[] = []
   const abortChat = vi.fn(async () => {})
   const startChat = vi.fn(async (input: { messages: { role: string; content: string }[] }) => {
@@ -47,6 +47,7 @@ function apiHarness() {
     quotes: input.quotes ?? []
   }))
   const api = {
+    listAnnotations: vi.fn(async () => []),
     createConversation,
     deleteConversations,
     listConversations,
@@ -58,7 +59,7 @@ function apiHarness() {
     onChatChunk: vi.fn((cb: typeof chunk) => { chunk = cb; return () => { chunk = null } }),
     onChatDone: vi.fn((cb: typeof done) => { done = cb; return () => { done = null } })
   }
-  return { api, createConversation, appendMessage, startChat, startInputs, abortChat, deleteConversations, listConversations, listMessages, getSetting, emitChunk: (id: string, text: string) => chunk?.(id, text), emitDone: (id: string) => done?.(id, { status: 'finished' }) }
+  return { api, createConversation, appendMessage, startChat, startInputs, abortChat, deleteConversations, listConversations, listMessages, getSetting, emitChunk: (id: string, text: string, messageId?: string) => chunk?.(id, text, messageId), emitDone: (id: string, result: ChatDoneResult = { status: 'finished' }) => done?.(id, result) }
 }
 
 function args(over: Partial<UseChatArgs> = {}): UseChatArgs {
@@ -94,6 +95,26 @@ describe('useChat 生命周期', () => {
   afterEach(() => {
     act(() => root?.unmount())
     host.remove()
+  })
+
+  it('主进程已落盘的回答不再追加，重复完成事件不产生重复消息', async () => {
+    const h = apiHarness()
+    window.api = h.api as never
+    currentArgs = args()
+    await act(async () => { root = createRoot(host); root.render(createElement(Harness)) })
+    await act(async () => { await state.send('问题') })
+    expect(h.startChat).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'conversation-a' }))
+    const saved = message('conversation-a', 'assistant', '已保存的回答')
+    await act(async () => {
+      h.emitChunk('request-1', saved.content, saved.id)
+      h.emitDone('request-1', { status: 'finished', savedMessage: saved })
+      await Promise.resolve()
+      h.emitDone('request-1', { status: 'finished', savedMessage: saved })
+    })
+    expect(h.appendMessage).toHaveBeenCalledTimes(1)
+    expect(state.messages.filter((m) => m.role === 'assistant')).toEqual([saved])
+    const partial = { ...saved, content: '已保存' }
+    expect(mergeLoadedMessages([partial], [saved], 'conversation-a')).toEqual([saved])
   })
 
   it('回答落库使用请求绑定的对话,不读取切换后的 ref', async () => {

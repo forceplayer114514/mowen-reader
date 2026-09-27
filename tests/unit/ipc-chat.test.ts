@@ -36,7 +36,8 @@ vi.mock('../../src/main/llm/client', () => ({
   listModels: (options: unknown) => mocks.listModels(options)
 }))
 
-import { registerIpc } from '../../src/main/ipc'
+import { database, registerIpc } from '../../src/main/ipc'
+import { insertBook } from '../../src/main/db/books'
 import { __setSafeStorageForTests, clearApiKey, keyFilePath } from '../../src/main/secrets'
 
 /** 可逆的字节反转冒充加密,和 secrets 的单元测试用的是同一个假实现。 */
@@ -120,6 +121,64 @@ beforeEach(() => {
   mocks.listModels.mockResolvedValue({ models: ['gpt-test'], endpoint: 'https://api.openai.com/v1' })
   call('settings:set', null, 'llmEndpoint', 'https://api.openai.com/v1')
   call('settings:set', null, 'llmModel', 'gpt-4o-mini')
+})
+
+it('回答每块先落库再发送，关闭渲染器仍保留且只保存一条助手消息', async () => {
+  insertBook(database(), { id: 'stream-book', title: '流式保存书', author: null, coverPath: null,
+    filePath: '', sourcePath: '', addedAt: 0, lastReadAt: null, lastReadCfi: null })
+  const conv = call('chat:createConversation', null, { bookId: 'stream-book',
+    startCfi: 'epubcfi(/6/2!/4/2/1:0)', endCfi: 'epubcfi(/6/2!/4/2/1:12)', chapterLabel: '第一章', excerpt: '原文' }) as { id: string }
+  call('secrets:setApiKey', null, 'test-stream-key')
+  const sender = fakeSender()
+  let release!: () => void
+  const pending = new Promise<void>((resolve) => { release = resolve })
+  mocks.streamChat.mockImplementation(async ({ onChunk }: { onChunk: (text: string) => void }) => {
+    onChunk('第一块')
+    expect(database().prepare('SELECT content FROM messages WHERE conversation_id = ?').get(conv.id)).toMatchObject({ content: '第一块' })
+    onChunk('第二块')
+    await pending
+  })
+  call('chat:start', sender, { conversationId: conv.id, messages: [{ role: 'user', content: '问题' }] })
+  await flush()
+  expect(call('chat:listMessages', null, conv.id)).toMatchObject([{ role: 'assistant', content: '第一块第二块' }])
+  sender.fire('destroyed')
+  release()
+  await flush()
+  expect(call('chat:listMessages', null, conv.id)).toHaveLength(1)
+  expect(call('chat:listMessages', null, conv.id)).toMatchObject([{ content: '第一块第二块' }])
+})
+
+it('不存在的对话拒绝请求；损坏的位置缓存自动回退为重新计算', async () => {
+  await expect(call('chat:start', fakeSender(), { conversationId: 'missing', messages: [] })).rejects.toThrow('对话不存在')
+  expect(mocks.streamChat).not.toHaveBeenCalled()
+  insertBook(database(), { id: 'cache-book', title: '缓存书', author: null, coverPath: null,
+    filePath: '', sourcePath: '', addedAt: 0, lastReadAt: null, lastReadCfi: null })
+  for (const invalid of ['{broken', 'null', '[]', '["bad-cfi"]']) {
+    call('books:saveLocations', null, 'cache-book', invalid)
+    expect(call('books:getLocations', null, 'cache-book')).toBeNull()
+  }
+  const valid = '["epubcfi(/6/2!/4/2/1:0)"]'
+  call('books:saveLocations', null, 'cache-book', valid)
+  expect(call('books:getLocations', null, 'cache-book')).toBe(valid)
+})
+
+it('注释 IPC 校验空内容/超长内容/非法定位，并提供可重试的更新错误', () => {
+  insertBook(database(), { id: 'note-book', title: '笔记书', author: null, coverPath: null, filePath: '', sourcePath: '',
+    addedAt: 0, lastReadAt: null, lastReadCfi: null })
+  const input = { bookId: 'note-book', startCfi: 'epubcfi(/6/2!/4/2/1:0)',
+    cfiRange: 'epubcfi(/6/2!/4/2,/1:0,/1:12)', quote: '原文', chapterLabel: null, content: '  注释  ' }
+  for (const bad of [null, { ...input, content: '' }, { ...input, content: 'x'.repeat(20001) },
+    { ...input, startCfi: 'bad' }, { ...input, cfiRange: 'bad' }, { ...input, quote: '' },
+    { ...input, chapterLabel: 7 }, { ...input, bookId: 'missing' }]) {
+    expect(() => call('annotations:create', null, bad)).toThrow()
+  }
+  const saved = call('annotations:create', null, input) as { id: string; content: string }
+  expect(saved.content).toBe('注释')
+  expect(() => call('annotations:update', null, saved.id, ' ')).toThrow()
+  expect(() => call('annotations:update', null, 'missing', '内容')).toThrow('不存在')
+  expect(call('annotations:update', null, saved.id, ' 重试成功 ')).toMatchObject({ id: saved.id, content: '重试成功' })
+  call('annotations:delete', null, saved.id)
+  expect(call('annotations:list', null, 'note-book')).toEqual([])
 })
 
 describe('settings:set 只接受白名单里的键', () => {

@@ -12,6 +12,7 @@ export default defineConfig({
     resolve: { alias: { '@shared': resolve('src/shared') } },
     build: {
       rollupOptions: {
+        input: { index: resolve('src/preload/index.ts'), 'online-site': resolve('src/preload/online-site.ts') },
         output: {
           // The sandboxed preload loader cannot parse ESM `import` syntax, and
           // package.json has "type": "module" so a plain `.js` extension would

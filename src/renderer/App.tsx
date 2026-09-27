@@ -5,14 +5,21 @@ import ConversationsView from './library/ConversationsView'
 import ReaderView from './reader/ReaderView'
 import SettingsView from './settings/SettingsView'
 import type { ThemeName } from './reader/types'
+import OnlineLibrary, { DownloadTray, useOnlineLibrary } from './library/OnlineLibrary'
 
 export default function App() {
   const [reading, setReading] = useState<BookRecord | null>(null)
-  const [page, setPage] = useState<'library' | 'settings' | 'conversations'>('library')
+  const [page, setPage] = useState<'library' | 'settings' | 'conversations' | 'online'>('library')
+  const online = useOnlineLibrary()
+  const [downloadsOpen, setDownloadsOpen] = useState(false)
+  const libraryRevision = online.snapshot.tasks.filter(task => task.status === 'imported').map(task => task.bookId).join(',')
+  const showDownloads = !reading && downloadsOpen && (page === 'online' || page === 'library')
   const [theme, setTheme] = useState<ThemeName>(() =>
     document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'
   )
   const [themeError, setThemeError] = useState<string | null>(null)
+
+  function backToLibrary(): void { setReading(null); setDownloadsOpen(false); setPage('library') }
 
   function toggleTheme(): void {
     const next: ThemeName = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'
@@ -25,17 +32,26 @@ export default function App() {
     })
   }
 
-  const view = reading ? <ReaderView book={reading} onBack={() => setReading(null)} theme={theme} onToggleTheme={toggleTheme} />
-    : page === 'settings' ? <SettingsView onBack={() => setPage('library')} />
-    : page === 'conversations' ? <ConversationsView onBack={() => setPage('library')} />
+  const view = reading ? <ReaderView book={reading} onBack={backToLibrary} theme={theme} onToggleTheme={toggleTheme} />
+    : page === 'settings' ? <SettingsView onBack={backToLibrary} />
+    : page === 'conversations' ? <ConversationsView onBack={backToLibrary} />
+    : page === 'online' ? <OnlineLibrary snapshot={online.snapshot} onBack={backToLibrary} theme={theme} onToggleTheme={toggleTheme}
+      downloadsOpen={downloadsOpen} onToggleDownloads={() => setDownloadsOpen(!downloadsOpen)} />
     : (
     <LibraryView
       onOpenBook={setReading}
       onOpenSettings={() => setPage('settings')}
       onOpenConversations={() => setPage('conversations')}
+      onOpenOnline={() => { setDownloadsOpen(true); setPage('online') }}
+      onOpenDownloads={() => setDownloadsOpen(!downloadsOpen)}
+      downloadCount={online.snapshot.tasks.length}
+      downloadsOpen={downloadsOpen}
+      revision={libraryRevision}
       theme={theme}
       onToggleTheme={toggleTheme}
     />
   )
-  return <>{view}{themeError && <div className="app__notice" role="alert">{themeError}</div>}</>
+  return <div className={`app${showDownloads ? ' app--downloads' : ''}`}><div className="app__view">{view}</div>
+    {showDownloads && <DownloadTray {...online} onBack={backToLibrary} onClose={() => setDownloadsOpen(false)} />}
+    {themeError && <div className="app__notice" role="alert">{themeError}</div>}</div>
 }

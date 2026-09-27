@@ -35,7 +35,8 @@ function makeHarness() {
     onSelected: vi.fn(() => () => {}),
     clearHighlights: vi.fn(),
     addHighlight: vi.fn(),
-    removeHighlight: vi.fn()
+    removeHighlight: vi.fn(),
+    setAnnotations: vi.fn()
   } as unknown as ReaderEngine
   const conversation: ConversationWithCount = {
     id: 'old', bookId: 'book', startCfi: first.startCfi, endCfi: first.endCfi,
@@ -43,6 +44,7 @@ function makeHarness() {
     createdAt: 1, messageCount: 1
   }
   const api = {
+    listAnnotations: vi.fn(async () => []),
     listConversations: vi.fn(async () => [conversation]),
     listMessages: vi.fn(async () => [message('old-user')]),
     getSetting: vi.fn(async () => null),

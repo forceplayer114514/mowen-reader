@@ -6,11 +6,13 @@ interface Props {
   items: TocItem[]
   currentHref: string
   bookmarks?: BookmarkRecord[]
+  deletingBookmarkId?: string | null
+  onDeleteBookmark: (id: string) => void
   onJump: (href: string) => void
   onClose: () => void
 }
 
-export default function TocPanel({ items, currentHref, bookmarks = [], onJump, onClose }: Props) {
+export default function TocPanel({ items, currentHref, bookmarks = [], deletingBookmarkId, onDeleteBookmark, onJump, onClose }: Props) {
   return (
     <div className="toc" data-testid="toc">
       <div className="toc__head">
@@ -25,16 +27,22 @@ export default function TocPanel({ items, currentHref, bookmarks = [], onJump, o
           <span className="eyebrow">BOOKMARKS</span>
           <strong>书签</strong>
           {bookmarks.map((bookmark) => (
-            <button
-              type="button"
-              className="toc__bookmark"
-              data-testid="bookmark-entry"
-              key={bookmark.id}
-              onClick={() => onJump(bookmark.startCfi)}
-            >
-              <span>{bookmark.chapterLabel ?? '未命名章节'}</span>
-              <small>{bookmark.excerpt || '书页开头'}</small>
-            </button>
+            <div className="toc__bookmark-row" key={bookmark.id}>
+              <button
+                type="button"
+                className="toc__bookmark"
+                data-testid="bookmark-entry"
+                onClick={() => onJump(bookmark.startCfi)}
+              >
+                <span>{bookmark.chapterLabel ?? '未命名章节'}</span>
+                <small>{bookmark.excerpt || '书页开头'}</small>
+              </button>
+              <button type="button" className="button--ghost toc__bookmark-delete" data-testid="bookmark-delete"
+                aria-label={`删除书签：${bookmark.chapterLabel ?? '未命名章节'}`} title="删除书签"
+                disabled={!!deletingBookmarkId} onClick={() => onDeleteBookmark(bookmark.id)}>
+                {deletingBookmarkId === bookmark.id ? '删除中…' : '删除'}
+              </button>
+            </div>
           ))}
         </section>
       )}

@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
   AppendMessageInput,
+  AnnotationRecord,
+  CreateAnnotationInput,
   BookmarkRecord,
   BookRecord,
   ChatDoneResult,
@@ -12,10 +14,27 @@ import type {
   FinishImportInput,
   ImportedFile,
   MessageRecord,
+  OnlineBounds,
+  OnlineSnapshot,
+  OnlineAction,
+  DownloadMetadata,
   StartChatInput
 } from '../shared/types'
 
 const api = {
+  onlineSnapshot: (): Promise<OnlineSnapshot> => ipcRenderer.invoke('online:snapshot'),
+  onlineBounds: (bounds: OnlineBounds | null): Promise<void> => ipcRenderer.invoke('online:bounds', bounds),
+  onlineAction: (action: OnlineAction, approvedOrigin?: string): Promise<void> => ipcRenderer.invoke('online:action', action, approvedOrigin),
+  onlineAutoImport: (value: boolean): Promise<void> => ipcRenderer.invoke('online:auto', value),
+  removeDownload: (id: string): Promise<void> => ipcRenderer.invoke('online:remove', id),
+  prepareDownload: (id: string): Promise<ArrayBuffer | null> => ipcRenderer.invoke('online:prepare', id),
+  finishDownload: (id: string, meta: DownloadMetadata): Promise<void> => ipcRenderer.invoke('online:finish', id, meta),
+  failDownload: (id: string, message: string): Promise<void> => ipcRenderer.invoke('online:fail', id, message),
+  onOnlineChanged: (cb: (snapshot: OnlineSnapshot) => void): (() => void) => {
+    const handler = (_event: unknown, snapshot: OnlineSnapshot): void => cb(snapshot)
+    ipcRenderer.on('online:changed', handler)
+    return () => ipcRenderer.off('online:changed', handler)
+  },
   openDownloadSite: (): Promise<void> => ipcRenderer.invoke('books:openDownloadSite'),
   listBooks: (): Promise<BookRecord[]> => ipcRenderer.invoke('books:list'),
   pickEpubFiles: (): Promise<string[]> => ipcRenderer.invoke('books:pickFiles'),
@@ -50,6 +69,10 @@ const api = {
   addBookmark: (input: CreateBookmarkInput): Promise<BookmarkRecord> =>
     ipcRenderer.invoke('bookmarks:add', input),
   deleteBookmark: (id: string): Promise<void> => ipcRenderer.invoke('bookmarks:delete', id),
+  listAnnotations: (bookId: string): Promise<AnnotationRecord[]> => ipcRenderer.invoke('annotations:list', bookId),
+  createAnnotation: (input: CreateAnnotationInput): Promise<AnnotationRecord> => ipcRenderer.invoke('annotations:create', input),
+  updateAnnotation: (id: string, content: string): Promise<AnnotationRecord> => ipcRenderer.invoke('annotations:update', id, content),
+  deleteAnnotation: (id: string): Promise<void> => ipcRenderer.invoke('annotations:delete', id),
   getSetting: (key: string): Promise<string | null> => ipcRenderer.invoke('settings:get', key),
   setSetting: (key: string, value: string): Promise<void> =>
     ipcRenderer.invoke('settings:set', key, value),
@@ -83,8 +106,8 @@ const api = {
   startChat: (input: StartChatInput): Promise<string> => ipcRenderer.invoke('chat:start', input),
   abortChat: (requestId: string): Promise<void> => ipcRenderer.invoke('chat:abort', requestId),
   // 事件订阅返回取消函数,不把 ipcRenderer 的原始 event 对象透给渲染层。
-  onChatChunk: (cb: (requestId: string, text: string) => void): (() => void) => {
-    const handler = (_e: unknown, requestId: string, text: string): void => cb(requestId, text)
+  onChatChunk: (cb: (requestId: string, text: string, messageId?: string) => void): (() => void) => {
+    const handler = (_e: unknown, requestId: string, text: string, messageId?: string): void => cb(requestId, text, messageId)
     ipcRenderer.on('chat:chunk', handler)
     return () => ipcRenderer.off('chat:chunk', handler)
   },

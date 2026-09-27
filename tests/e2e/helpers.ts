@@ -60,7 +60,7 @@ export async function configureLlm(
 const launchedApps: ElectronApplication[] = []
 
 /** 每次启动都用全新的数据目录,测试之间互不影响。传入 userData 可复用上一次的数据。 */
-export async function launch(userData?: string): Promise<Harness> {
+export async function launch(userData?: string, extraEnv: Record<string, string> = {}): Promise<Harness> {
   const dir = userData ?? mkdtempSync(join(tmpdir(), 'reader-e2e-'))
   const workDir = mkdtempSync(join(tmpdir(), 'reader-e2e-src-'))
   const fixturePath = join(workDir, '测试之书.epub')
@@ -74,7 +74,7 @@ export async function launch(userData?: string): Promise<Harness> {
 
   const app = await electron.launch({
     args: [resolve('out/main/index.js')],
-    env: { ...process.env, READER_USER_DATA: dir, READER_E2E: '1', NODE_ENV: 'test' }
+    env: { ...process.env, ...extraEnv, READER_USER_DATA: dir, READER_E2E: '1', NODE_ENV: 'test' }
   })
   launchedApps.push(app)
   const page = await app.firstWindow()

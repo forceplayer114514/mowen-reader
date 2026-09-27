@@ -61,6 +61,20 @@ export interface CreateBookmarkInput {
   excerpt: string
 }
 
+export interface AnnotationRecord {
+  id: string
+  bookId: string
+  startCfi: string
+  cfiRange: string
+  quote: string
+  chapterLabel: string | null
+  content: string
+  createdAt: number
+  updatedAt: number
+}
+
+export type CreateAnnotationInput = Omit<AnnotationRecord, 'id' | 'createdAt' | 'updatedAt'>
+
 export interface MessageRecord {
   id: string
   conversationId: string
@@ -95,6 +109,7 @@ export interface AppendMessageInput {
 
 export interface StartChatInput {
   messages: { role: string; content: string }[]
+  conversationId?: string
 }
 
 /**
@@ -105,7 +120,33 @@ export interface StartChatInput {
  * 点了停止,和模型自己把话说完,界面上应该是完全不同的呈现(比如要不要显示
  * "已停止"字样),不能都用同一个 null 打包糊弄过去。
  */
-export type ChatDoneResult =
+export type ChatDoneResult = (
   | { status: 'finished' }
   | { status: 'stopped' }
   | { status: 'error'; message: string }
+) & { savedMessage?: MessageRecord | null }
+export interface DownloadTask {
+  id: string
+  name: string
+  status: 'downloading' | 'validating' | 'ready' | 'importing' | 'imported' | 'error' | 'cancelled'
+  received: number
+  total: number
+  message?: string
+  bookId?: string
+  canImport?: boolean
+}
+
+export interface OnlineSnapshot {
+  blockedNavigation: { origin: string; reason: 'popup' | 'external' } | null
+  url: string
+  loading: boolean
+  canGoBack: boolean
+  error: string | null
+  autoImport: boolean
+  tasks: DownloadTask[]
+}
+
+export type OnlineAction = 'back' | 'refresh' | 'home' | 'external' | 'allow-site' | 'dismiss-navigation'
+
+export interface OnlineBounds { x: number; y: number; width: number; height: number }
+export interface DownloadMetadata { title: string; author: string | null; coverBytes: ArrayBuffer | null }

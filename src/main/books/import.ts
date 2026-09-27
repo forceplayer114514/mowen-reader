@@ -30,7 +30,11 @@ export async function copyEpubIntoLibrary(sourcePath: string): Promise<ImportedF
   }
   const id = randomUUID()
   const filePath = libraryFilePath(id)
-  await copyFile(sourcePath, filePath)
+  try { await copyFile(sourcePath, filePath) }
+  catch (error) {
+    await rm(filePath, { force: true }).catch(() => {})
+    throw error
+  }
   return { id, filePath }
 }
 

@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import type { QuoteRecord } from '@shared/types'
 import type { ChatState } from './useChat'
 import { renderMarkdown } from './markdown'
+import QuoteChips from './QuoteChips'
 
 interface Props {
   chat: ChatState
@@ -9,6 +10,9 @@ interface Props {
   onRemoveQuote: (cfiRange: string) => void
   onTranslateQuote: (quote: QuoteRecord) => void
   onNewConversation: () => void
+  onAnnotateQuote?: (quote: QuoteRecord) => void
+  annotationBusy?: boolean
+  annotationEditor?: ReactNode
 }
 
 export default function ConversationView({
@@ -16,6 +20,9 @@ export default function ConversationView({
   quotes,
   onRemoveQuote,
   onTranslateQuote,
+  onAnnotateQuote,
+  annotationBusy,
+  annotationEditor,
   onNewConversation
 }: Props) {
   const [text, setText] = useState('')
@@ -38,7 +45,7 @@ export default function ConversationView({
             <p>选中文字可引用或翻译，也可以直接询问当前内容。</p>
           </div>
         )}
-        {chat.messages.map((message) => (
+        {chat.messages.filter((message) => !busy || message.id !== chat.streamingMessageId).map((message) => (
           <article
             key={message.id}
             className={`message message--${message.role}`}
@@ -73,35 +80,11 @@ export default function ConversationView({
         )}
       </div>
 
-      {quotes.length > 0 && (
-        <div className="conversation__quotes" aria-label="已选引用">
-          {quotes.map((quote) => (
-            <span className="quote-chip-wrap" key={quote.cfiRange}>
-              <button
-                type="button"
-                className="quote-chip"
-                data-testid="quote-chip"
-                aria-label={`移除引用「${quote.text}」`}
-                onClick={() => onRemoveQuote(quote.cfiRange)}
-              >
-                「{quote.text}」 ×
-              </button>
-              <button
-                type="button"
-                className="selection-translate button--primary"
-                data-testid="quote-translate"
-                aria-label={`翻译「${quote.text}」`}
-                disabled={busy}
-                onClick={() => onTranslateQuote(quote)}
-              >
-                翻译
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
+      <QuoteChips quotes={quotes} busy={busy} annotationBusy={annotationBusy} onRemove={onRemoveQuote}
+        onTranslate={onTranslateQuote} onAnnotate={onAnnotateQuote} />
 
-      <div className="conversation__composer">
+      {annotationEditor}
+      <div className="conversation__composer" hidden={!!annotationEditor}>
         <textarea
           data-testid="chat-input"
           value={text}

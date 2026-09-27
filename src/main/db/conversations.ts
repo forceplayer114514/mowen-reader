@@ -162,7 +162,7 @@ export function listMessages(db: Db, conversationId: string): MessageRecord[] {
   const rows = db
     .prepare(
       `SELECT id, conversation_id, role, content, quotes, created_at
-         FROM messages WHERE conversation_id = ? ORDER BY created_at ASC`
+         FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC`
     )
     .all(conversationId) as unknown as MsgRow[]
   return rows.map((row) => ({
@@ -173,4 +173,9 @@ export function listMessages(db: Db, conversationId: string): MessageRecord[] {
     quotes: parseQuotes(row.quotes),
     createdAt: row.created_at
   }))
+}
+
+export function updateMessageContent(db: Db, id: string, content: string): void {
+  const result = db.prepare('UPDATE messages SET content = ? WHERE id = ?').run(content, id)
+  if (!result.changes) throw new Error('对话已删除，回答无法继续保存')
 }

@@ -194,6 +194,20 @@ beforeEach(() => {
   })
 })
 
+it('位置索引生成失败可见且不产生未处理拒绝，不删除当前位置', async () => {
+  createFakeEpub()
+  const book = hub.book as { locations: { generate?: () => Promise<void> } }
+  book.locations.generate = async () => { throw new Error('invalid EPUB') }
+  const { createEngine } = await import('../../src/renderer/reader/engine')
+  const engine = createEngine(CONTAINER)
+  await engine.open(new ArrayBuffer(0), { fontSize: 18, theme: 'light', savedLocations: null })
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  await expect(engine.getVisible()).rejects.toThrow('位置索引计算失败')
+  expect(engine.currentCfi()).toBeTruthy()
+  expect(engine.exportLocations()).toBeNull()
+  engine.destroy()
+})
+
 afterEach(() => {
   Reflect.deleteProperty(globalThis, 'window')
 })

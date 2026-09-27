@@ -1,7 +1,7 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   copyEpubIntoLibrary,
   coverExtension,
@@ -15,6 +15,17 @@ import {
 let dataDir: string
 let workDir: string
 
+vi.mock('node:fs/promises', async () => {
+  const fs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
+  return { ...fs, copyFile: async (source: string, destination: string, mode?: number) => {
+    if (String(source).endsWith('injected-copy-failure.epub')) {
+      await fs.writeFile(destination, 'partial')
+      throw new Error('copy failed')
+    }
+    return fs.copyFile(source, destination, mode)
+  } }
+})
+
 beforeEach(() => {
   dataDir = mkdtempSync(join(tmpdir(), 'reader-data-'))
   workDir = mkdtempSync(join(tmpdir(), 'reader-work-'))
@@ -22,6 +33,12 @@ beforeEach(() => {
 })
 
 describe('导入文件', () => {
+  it('复制中途失败时清理未入库的残缺文件', async () => {
+    const source = join(workDir, 'injected-copy-failure.epub')
+    writeFileSync(source, 'EPUB')
+    await expect(copyEpubIntoLibrary(source)).rejects.toThrow('copy failed')
+    expect(readdirSync(join(dataDir, 'books'))).toHaveLength(0)
+  })
   it('把源文件复制进库,内容一致', async () => {
     const src = join(workDir, '测试书.epub')
     writeFileSync(src, 'EPUB-CONTENT')

@@ -3,12 +3,11 @@ import { app, BrowserWindow, Menu, safeStorage } from 'electron'
 import { abortAllChats, registerIpc } from './ipc'
 import { initDataDir } from './paths'
 import { initSecrets } from './secrets'
+import { attachOnlineLibrary } from './online-library'
 
 // 改应用显示名不能顺带换掉用户数据目录，否则旧书库会像被清空一样。
 // 保留 v0.1 起一直使用的目录；品牌名仍由下面的 setName 控制。
-if (!process.env.READER_USER_DATA) {
-  app.setPath('userData', join(app.getPath('appData'), 'ai-reader'))
-}
+app.setPath('userData', process.env.READER_USER_DATA || join(app.getPath('appData'), 'ai-reader'))
 app.setName('墨问')
 
 function createWindow(): void {
@@ -26,6 +25,8 @@ function createWindow(): void {
       sandbox: true
     }
   })
+
+  attachOnlineLibrary(win)
 
   if (!process.env.READER_E2E) win.once('ready-to-show', () => win.show())
 

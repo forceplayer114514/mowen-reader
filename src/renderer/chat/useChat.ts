@@ -20,6 +20,7 @@ export interface UseChatArgs {
 export interface ChatState {
   messages: MessageRecord[]
   streaming: string | null
+  streamingMessageId?: string | null
   error: string | null
   send: (text: string) => Promise<void>
   translate: (quotes: QuoteRecord[]) => Promise<void>
@@ -65,6 +66,7 @@ function chatError(error: unknown, fallback: string): string {
 export function useChat(args: UseChatArgs): ChatState {
   const [messages, setMessages] = useState<MessageRecord[]>([])
   const [streaming, setStreaming] = useState<string | null>(null)
+  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const conversationRef = useRef<string | null>(args.conversationId)
   const lastAttemptRef = useRef<Attempt | null>(null)
@@ -141,23 +143,24 @@ export function useChat(args: UseChatArgs): ChatState {
     conversationRef.current = args.conversationId
   }, [args.conversationId, cancelActive])
 
-  const commitAssistant = useCallback(async (request: RequestState): Promise<void> => {
+  const commitAssistant = useCallback(async (request: RequestState, persisted?: MessageRecord | null): Promise<void> => {
     const text = request.accumulated
     request.accumulated = ''
     if (text.length === 0) return
     try {
-      const saved = await window.api.appendMessage({
+      const saved = persisted === undefined ? await window.api.appendMessage({
         conversationId: request.conversationId,
         role: 'assistant',
         content: text,
         quotes: []
-      })
+      }) : persisted
+      if (!saved) return
       if (
         request.current &&
         conversationRef.current === request.conversationId &&
         !disposedRef.current
       ) {
-        setMessages((old) => [...old, saved])
+        setMessages((old) => [...old.filter((item) => item.id !== saved.id), saved])
       }
     } catch (error) {
       if (request.current && !disposedRef.current) {
@@ -167,11 +170,14 @@ export function useChat(args: UseChatArgs): ChatState {
   }, [])
 
   useEffect(() => {
-    const offChunk = window.api.onChatChunk((requestId, text) => {
+    const offChunk = window.api.onChatChunk((requestId, text, messageId) => {
       const request = requestsRef.current.get(requestId)
       if (!request) return
       request.accumulated += text
-      if (request.current && !request.owner.canceled) setStreaming(request.accumulated)
+      if (request.current && !request.owner.canceled) {
+        setStreaming(request.accumulated)
+        setStreamingMessageId(messageId ?? null)
+      }
     })
     const offDone = window.api.onChatDone((requestId, result) => {
       const request = requestsRef.current.get(requestId)
@@ -183,7 +189,7 @@ export function useChat(args: UseChatArgs): ChatState {
         currentRef.current = null
         setStreaming(null)
       }
-      void commitAssistant(request).finally(() => {
+      void commitAssistant(request, result.savedMessage).finally(() => {
         if (wasCurrent) release(request.owner)
       })
     })
@@ -213,7 +219,7 @@ export function useChat(args: UseChatArgs): ChatState {
     const pending: PendingStart = { conversationId, current: true, owner }
     pendingRef.current = pending
     try {
-      const requestId = await window.api.startChat({ messages: messagesToSend })
+      const requestId = await window.api.startChat({ messages: messagesToSend, conversationId })
       const request: RequestState = {
         id: requestId,
         conversationId,
@@ -228,6 +234,7 @@ export function useChat(args: UseChatArgs): ChatState {
         return
       }
       currentRef.current = request
+      setStreamingMessageId(null)
       setStreaming('')
     } catch (error) {
       const current = isOwner(pending.owner)
@@ -404,7 +411,7 @@ export function useChat(args: UseChatArgs): ChatState {
     cancelActive(true)
   }, [cancelActive])
 
-  return { messages, streaming, error, send, translate, stop, retry, setMessages }
+  return { messages, streaming, streamingMessageId, error, send, translate, stop, retry, setMessages }
 }
 
 function toHistoryMessage(message: MessageRecord): ChatMessage {
