@@ -1,5 +1,9 @@
 name: CI
 
+# 离线翻译仅用 CPU；CPU 二进制随 npm 包自带，不下载未使用的 CUDA 组件。
+env:
+  ONNXRUNTIME_NODE_INSTALL: skip
+
 on:
   push:
     branches: [main]
