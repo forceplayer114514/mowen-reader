@@ -3,7 +3,10 @@ import { TextLayer, type PDFDocumentProxy, type RenderTask } from 'pdfjs-dist'
 import pdfStyles from 'pdfjs-dist/web/pdf_viewer.css?inline'
 import { loadPdf, pdfError } from './pdf'
 import { makeRangeCfi } from './cfi'
-import type { AnnotationMarker, PersistentHighlightItem, ReaderEngine, ReadingTool, SelectionPoint, ThemeName, TocItem, VisibleRange } from './types'
+import type { AnnotationMarker, BookSearchResult, PersistentHighlightItem, ReaderEngine, ReadingTool, SelectionPoint, ThemeName, TocItem, VisibleRange } from './types'
+import { MAX_SEARCH_RESULTS, normalizeSearchQuery, searchPdfPages } from './types'
+
+export { searchPdfPages, pdfExcerptForMatch } from './types'
 
 interface PageView {
   number: number
@@ -53,12 +56,19 @@ export function createPdfEngine(container: HTMLElement): ReaderEngine {
   const relocated = new Set<() => void>()
   const keys = new Set<(key: string) => void>()
   const selections = new Set<(range: string, text: string, point: SelectionPoint | null, start: string) => void>()
+  let readPosition: ((text: string) => void) | null = null
   container.classList.add('pdf-reader')
 
   function emit(): void { if (!destroyed) relocated.forEach((cb) => cb()) }
   function onKey(event: KeyboardEvent): void {
     const el = event.target as HTMLElement | null
     if (el?.closest('input, textarea, [contenteditable="true"]')) return
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+      event.preventDefault()
+      keys.forEach((cb) => cb('Find'))
+      return
+    }
+    if (event.ctrlKey || event.metaKey || event.altKey) return
     if (['ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown'].includes(event.key)) event.preventDefault()
     keys.forEach((cb) => cb(event.key))
   }
@@ -224,6 +234,17 @@ export function createPdfEngine(container: HTMLElement): ReaderEngine {
         doc.addEventListener('touchend', consume)
         doc.addEventListener('click', (event) => {
           if (swallowClick) { swallowClick = false; event.preventDefault(); return }
+          if (readPosition && event.button === 0) {
+            const caret = doc.caretRangeFromPoint(event.clientX, event.clientY)
+            if (caret?.startContainer.nodeType === Node.TEXT_NODE && layer.contains(caret.startContainer)) {
+              const remaining = doc.createRange()
+              remaining.selectNodeContents(layer)
+              remaining.setStart(caret.startContainer, caret.startOffset)
+              const text = [remaining.toString(), ...views.filter((v) => v.number > number).map((v) => v.text)]
+                .join(' ').replace(/\s+/g, ' ').trim()
+              if (text) { event.preventDefault(); readPosition(text); return }
+            }
+          }
           // 持久层优先:同一片文字上两层都有时,点的那一下归持久层(擦除整块),
           // 临时引用不受影响。
           for (const [cfi, id] of persistent) {
@@ -305,6 +326,8 @@ export function createPdfEngine(container: HTMLElement): ReaderEngine {
     async prev() { if (currentPage > 1) { currentPage--; targetCfi = null; await redraw() } },
     async setSpread(on) { spread = on; await redraw() },
     async setFontSize(px) { zoom = px / 18; await redraw() },
+    // PDF 是固定版式:行距/边距/字体预设不适用,空实现,界面侧直接隐藏排版面板。
+    setTypography() {},
     setTheme(name) { theme = name; views.forEach((v) => v.doc.documentElement.classList.toggle('dark', name === 'dark')); drawMarks() },
     async getVisible(): Promise<VisibleRange> {
       if (!views.length || !pdf) throw new Error('PDF 尚未显示')
@@ -319,9 +342,48 @@ export function createPdfEngine(container: HTMLElement): ReaderEngine {
     toc: () => [...outline],
     currentCfi: () => targetCfi,
     exportLocations: () => null,
+    /**
+     * 当前 PDF 的文本层全文搜索。逐页 getTextContent() 取文本后复用
+     * searchPdfPages() 做大小写不敏感匹配,只读:不改当前页/缩放/高亮/注释。
+     * 扫描页(无文本层)自然无命中;单页损坏时跳过该页而不是整本报错。
+     */
+    async search(query: string): Promise<BookSearchResult[]> {
+      const q = normalizeSearchQuery(query)
+      const source = pdf
+      if (!q || !source || destroyed) return []
+      const labelForPage = (page: number): string =>
+        outline.find((i) => i.href === `pdf-page-${page}`)?.label ?? `第 ${page} 页`
+      const results: BookSearchResult[] = []
+      const total = source.numPages
+      for (let pageNo = 1; pageNo <= total; pageNo++) {
+        if (results.length >= MAX_SEARCH_RESULTS || destroyed || pdf !== source) break
+        try {
+          const page = await source.getPage(pageNo)
+          try {
+            const content = await page.getTextContent()
+            const text = content.items
+              .map((item) => 'str' in item ? `${item.str}${item.hasEOL ? '\n' : ' '}` : '')
+              .join('')
+            for (const hit of searchPdfPages([{ page: pageNo, text }], q, labelForPage, MAX_SEARCH_RESULTS)) {
+              if (results.length >= MAX_SEARCH_RESULTS) break
+              results.push(hit)
+            }
+          } finally {
+            try {
+              // 把该页的渲染缓存还回去,搜一遍大书不至于把内存顶满。
+              await (page as unknown as { cleanup?: () => unknown }).cleanup?.()
+            } catch { /* 单页清理失败不影响已拿到的命中。 */ }
+          }
+        } catch {
+          // 单页损坏(文本层取不出来)只跳过该页,整本搜索继续。
+        }
+      }
+      return results
+    },
     onRelocated(cb) { relocated.add(cb); return () => { relocated.delete(cb) } },
     onKey(cb) { keys.add(cb); return () => { keys.delete(cb) } },
     onSelected(cb) { selections.add(cb); return () => { selections.delete(cb) } },
+    onReadPosition(cb) { readPosition = cb; return () => { if (readPosition === cb) readPosition = null } },
     addHighlight(cfi, onClick) { highlights.set(cfi, onClick); drawMarks() },
     removeHighlight(cfi) { highlights.delete(cfi); drawMarks() },
     clearHighlights() { highlights.clear(); drawMarks() },
@@ -343,6 +405,7 @@ export function createPdfEngine(container: HTMLElement): ReaderEngine {
       views.forEach((v) => v.frame.remove()); marks.forEach((m) => m.remove())
       views = []; marks = []
       relocated.clear(); keys.clear(); selections.clear(); highlights.clear()
+      readPosition = null
       persistent.clear(); persistentClick = () => {}; readingTool = 'select'
       container.classList.remove('pdf-reader')
       void loading?.destroy().catch(() => {})

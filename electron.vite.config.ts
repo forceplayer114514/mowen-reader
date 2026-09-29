@@ -8,7 +8,8 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
     resolve: { alias: { '@shared': resolve('src/shared') } },
     build: { rollupOptions: { input: { index: resolve('src/main/index.ts'),
-      'translation-worker': resolve('src/main/translation-worker.ts') } } }
+      'translation-worker': resolve('src/main/translation-worker.ts'),
+      'dictionary-worker': resolve('src/main/dictionary-worker.ts') } } }
   },
   preload: {
     plugins: [externalizeDepsPlugin()],

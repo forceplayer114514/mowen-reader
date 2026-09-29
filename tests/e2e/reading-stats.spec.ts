@@ -43,6 +43,9 @@ test('空统计、失败重试、7/30天图表、单书排行、两种主题及�
   await h.page.getByRole('button', { name: '重试', exact: true }).click()
   await expect(h.page.getByRole('alert')).toHaveCount(0)
   await expect(h.page.getByTestId('stats-today')).toHaveText('1 分钟')
+  await h.page.getByTestId('reading-goal').selectOption('10')
+  await expect(h.page.getByTestId('reading-goal-progress')).toHaveText('已完成 10%')
+  await expect(h.page.getByRole('progressbar', { name: '今日阅读目标' })).toHaveAttribute('aria-valuenow', '10')
   await expect(h.page.getByTestId('stats-week')).toHaveText('28 分钟')
   await expect(h.page.getByTestId('stats-total')).toHaveText('28 分钟')
   await expect(h.page.getByTestId('stats-book')).toContainText('测试之书')
@@ -68,6 +71,7 @@ test('空统计、失败重试、7/30天图表、单书排行、两种主题及�
   await h.page.getByTestId('open-stats').click()
   await expect(h.page.getByTestId('stats-total')).toHaveText('28 分钟')
   await expect(h.page.getByTestId('stats-book')).toHaveCount(1)
+  await expect(h.page.getByTestId('reading-goal')).toHaveValue('10')
 })
 
 test('隐藏测试窗口的阅读与重载均不计时，非法书籍拒绝', async () => {

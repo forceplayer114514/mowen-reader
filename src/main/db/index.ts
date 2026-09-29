@@ -95,12 +95,27 @@ CREATE TABLE IF NOT EXISTS reading_time (
   milliseconds INTEGER NOT NULL CHECK(typeof(milliseconds) = 'integer' AND milliseconds > 0),
   PRIMARY KEY(book_id, day)
 );
+
+CREATE TABLE IF NOT EXISTS vocabularies (
+  id TEXT PRIMARY KEY,
+  book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  start_cfi TEXT NOT NULL,
+  cfi_range TEXT NOT NULL,
+  source_text TEXT NOT NULL,
+  translation TEXT NOT NULL,
+  chapter_label TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(book_id, cfi_range)
+);
+
+CREATE INDEX IF NOT EXISTS idx_vocabularies_book ON vocabularies(book_id);
 `
 
 export type Db = DatabaseSync
 
-/** SQLite user_version：v2 对话、v3 书签、v4 注释、v5 高亮、v6 阅读时长、v7 阅读进度。 */
-export const SCHEMA_VERSION = 7
+/** SQLite user_version：v2 对话、v3 书签、v4 注释、v5 高亮、v6 阅读时长、v7 阅读进度、v8 生词收藏。 */
+export const SCHEMA_VERSION = 8
 
 /** 打开数据库并确保表结构存在。传 ':memory:' 得到一个测试用的临时库。 */
 export function openDatabase(file: string): Db {

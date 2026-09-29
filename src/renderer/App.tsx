@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { BookRecord } from '@shared/types'
 import LibraryView from './library/LibraryView'
 import ConversationsView from './library/ConversationsView'
+import ExcerptsView from './library/ExcerptsView'
 import ReadingStatsView from './library/ReadingStatsView'
 import ReaderView from './reader/ReaderView'
 import SettingsView from './settings/SettingsView'
@@ -10,7 +11,7 @@ import OnlineLibrary, { DownloadTray, useOnlineLibrary } from './library/OnlineL
 
 export default function App() {
   const [reading, setReading] = useState<BookRecord | null>(null)
-  const [page, setPage] = useState<'library' | 'settings' | 'conversations' | 'online' | 'stats'>('library')
+  const [page, setPage] = useState<'library' | 'settings' | 'conversations' | 'excerpts' | 'online' | 'stats'>('library')
   const online = useOnlineLibrary()
   const [downloadsOpen, setDownloadsOpen] = useState(false)
   const libraryRevision = online.snapshot.tasks.filter(task => task.status === 'imported').map(task => task.bookId).join(',')
@@ -35,7 +36,8 @@ export default function App() {
 
   const view = reading ? <ReaderView key={reading.id} book={reading} onBack={backToLibrary} theme={theme} onToggleTheme={toggleTheme} />
     : page === 'settings' ? <SettingsView onBack={backToLibrary} />
-    : page === 'conversations' ? <ConversationsView onBack={backToLibrary} />
+    : page === 'conversations' ? <ConversationsView onBack={backToLibrary} onOpenAt={(book, cfi) => setReading({ ...book, lastReadCfi: cfi })} />
+    : page === 'excerpts' ? <ExcerptsView onBack={backToLibrary} onOpenAt={(book, cfi) => setReading({ ...book, lastReadCfi: cfi })} />
     : page === 'stats' ? <ReadingStatsView onBack={backToLibrary} onOpenBook={setReading} theme={theme} onToggleTheme={toggleTheme} />
     : page === 'online' ? <OnlineLibrary snapshot={online.snapshot} onBack={backToLibrary} theme={theme} onToggleTheme={toggleTheme}
       downloadsOpen={downloadsOpen} onToggleDownloads={() => setDownloadsOpen(!downloadsOpen)} />
@@ -44,6 +46,7 @@ export default function App() {
       onOpenBook={setReading}
       onOpenSettings={() => setPage('settings')}
       onOpenConversations={() => setPage('conversations')}
+      onOpenExcerpts={() => setPage('excerpts')}
       onOpenStats={() => setPage('stats')}
       onOpenOnline={() => { setDownloadsOpen(true); setPage('online') }}
       onOpenDownloads={() => setDownloadsOpen(!downloadsOpen)}

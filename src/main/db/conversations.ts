@@ -114,6 +114,20 @@ export function listAllConversations(db: Db): ConversationWithBook[] {
   }))
 }
 
+export function searchConversationIds(db: Db, query: string): string[] {
+  const term = query.trim().slice(0, 200)
+  if (!term) return []
+  const rows = db.prepare(`SELECT c.id FROM conversations c
+    JOIN books b ON b.id = c.book_id
+    WHERE instr(lower(b.title), lower(?)) > 0
+       OR instr(lower(coalesce(c.chapter_label, '')), lower(?)) > 0
+       OR instr(lower(c.excerpt), lower(?)) > 0
+       OR EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id
+         AND (instr(lower(m.content), lower(?)) > 0 OR instr(lower(m.quotes), lower(?)) > 0))`)
+    .all(term, term, term, term, term) as { id: string }[]
+  return rows.map(row => row.id)
+}
+
 export function countConversations(db: Db, bookId: string): number {
   const row = db
     .prepare('SELECT COUNT(*) AS n FROM conversations WHERE book_id = ?')

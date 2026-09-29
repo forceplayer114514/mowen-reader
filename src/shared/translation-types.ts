@@ -21,7 +21,7 @@ export interface TranslationSnapshot {
 
 export interface TranslationResult {
   text: string
-  engine: 'online' | 'offline'
+  engine: 'online' | 'offline' | 'online-dictionary' | 'offline-dictionary'
 }
 
 export interface PackFileEntry {
@@ -60,4 +60,6 @@ export interface TranslationServiceDeps {
   translateOffline?: (text: string, opts: { modelDir: string; signal: AbortSignal }) => Promise<string>
   /** 仅测试缩短期限；生产单 chunk 最多等待 15s。 */
   timeoutMs?: number
+  /** Single-word lookup; omitted by legacy tests that exercise sentence translation only. */
+  lookupWord?: (word: string, mode: TranslationMode, signal?: AbortSignal) => Promise<string>
 }

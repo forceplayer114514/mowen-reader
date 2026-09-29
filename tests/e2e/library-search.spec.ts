@@ -7,6 +7,37 @@ import { compareCfi } from '../../src/renderer/reader/cfi'
 
 test.afterEach(closeAllApps)
 
+test('重复导入同一路径会说明原因，不复制第二本', async () => {
+  const h = await launch()
+  await importFixture(h)
+  await h.page.getByTestId('pick-files').click()
+  await expect(h.page.getByTestId('book-card')).toHaveCount(1)
+  await expect(h.page.locator('.library__notice--error')).toContainText('已有来自同一路径的书籍')
+})
+
+test('书架按阅读状态筛选并按书名排序', async () => {
+  const h = await launch()
+  await importFixture(h)
+  await importRealisticFixture(h)
+  const status = h.page.getByTestId('library-status')
+  await status.selectOption('unread')
+  await expect(h.page.getByTestId('book-card')).toHaveCount(2)
+  await status.selectOption('reading')
+  await expect(h.page.getByTestId('book-card')).toHaveCount(0)
+  await status.selectOption('all')
+  await h.page.getByTestId('library-sort').selectOption('title')
+  const titles = await h.page.locator('.book-card__title').allTextContents()
+  expect(titles).toEqual([...titles].sort((a, b) => a.localeCompare(b, 'zh-Hans-CN')))
+  await h.page.getByRole('button', { name: '打开《测试之书》' }).click()
+  await waitForLocationsReady(h)
+  await h.page.getByRole('button', { name: '← 书架' }).click()
+  await status.selectOption('reading')
+  await expect(h.page.getByTestId('book-card')).toHaveCount(1)
+  await expect(h.page.getByTestId('library-count')).toHaveText('1 / 2 本书')
+  await h.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(900, 600))
+  expect(await h.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+})
+
 test('书架按书名/作者实时搜索，大小写和空白兼容；清空、无匹配、主题及空书库', async () => {
   const h = await launch()
   await expect(h.page.getByTestId('continue-reading')).toBeDisabled()

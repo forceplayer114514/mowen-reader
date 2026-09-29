@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('electron', () => ({
+  webContents: { getAllWebContents: () => [] },
   ipcMain: {
     handle: (channel: string, fn: (event: unknown, ...args: never[]) => unknown): void => {
       mocks.handlers.set(channel, fn)
@@ -190,6 +191,13 @@ describe('settings:set 只接受白名单里的键', () => {
   it('名单外的键被拒绝,值也没写进去', () => {
     expect(() => call('settings:set', null, '随便什么键', '值')).toThrow(/随便什么键/)
     expect(call('settings:get', null, '随便什么键')).toBeNull()
+  })
+
+  it('阅读目标只接受界面提供的分钟数', () => {
+    call('settings:set', null, 'readingGoalMinutes', '30')
+    expect(call('settings:get', null, 'readingGoalMinutes')).toBe('30')
+    expect(() => call('settings:set', null, 'readingGoalMinutes', '-1')).toThrow(/阅读目标无效/)
+    expect(call('settings:get', null, 'readingGoalMinutes')).toBe('30')
   })
 })
 

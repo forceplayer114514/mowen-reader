@@ -50,6 +50,7 @@ function apiHarness() {
   }))
   const api = {
     listAnnotations: vi.fn(async () => []),
+    listVocab: vi.fn(async () => []),
     createConversation,
     deleteConversations,
     listConversations,

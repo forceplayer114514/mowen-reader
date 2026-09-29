@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
-import { readFile, rm } from 'node:fs/promises'
+import { readFile, rm, writeFile } from 'node:fs/promises'
 import { basename } from 'node:path'
-import { dialog, ipcMain, shell } from 'electron'
+import { app, dialog, ipcMain, shell } from 'electron'
 import type {
   AppendMessageInput,
   AnnotationRecord,
@@ -50,11 +50,14 @@ import {
   listAllConversations,
   listConversations,
   listMessages,
+  searchConversationIds,
   updateConversationMerge,
   updateMessageContent
 } from './db/conversations'
 import { assertAllowedSettingKey, getSetting, setSetting } from './db/settings'
 import { createAnnotation, deleteAnnotation, listAnnotations, updateAnnotation } from './db/annotations'
+import { createVocab, deleteVocab, listVocab } from './db/vocab'
+import type { CreateVocabInput } from '../shared/vocab-types'
 import {
   assertKeyBoundToEndpoint,
   assertSafeLlmEndpoint,
@@ -67,12 +70,26 @@ import { clearApiKey, readApiKey, setApiKey } from './secrets'
 import { abortTranslation, disposeTranslation, registerTranslationIpc } from './translation-ipc'
 import { addHighlight, deleteHighlight, listHighlights } from './db/highlights'
 import type { CreateHighlightInput } from '../shared/highlight-types'
+import { sanitizeExcerptFilename } from '../shared/excerpts'
+import { createBackup, installRestore, prepareRestore, readBackupConfig, RestoreRollbackError, writeBackupConfig } from './backup'
 
 let db: Db | null = null
+let backupBusy = false
+
+async function withBackupLock<T>(work: () => Promise<T>): Promise<T> {
+  if (backupBusy) throw new Error('已有备份或恢复操作正在进行')
+  backupBusy = true
+  try { return await work() } finally { backupBusy = false }
+}
 
 export function database(): Db {
   if (!db) db = openDatabase(dbFile())
   return db
+}
+
+function closeDatabase(): void {
+  db?.close()
+  db = null
 }
 
 // 挂在模块作用域而不是 registerIpc() 内部,好让 index.ts 能在应用真正退出前
@@ -112,6 +129,44 @@ export async function finishBookImport(input: FinishImportInput): Promise<BookRe
 }
 
 export function registerIpc(): void {
+  ipcMain.handle('backup:status', () => readBackupConfig())
+  ipcMain.handle('backup:chooseFolder', async () => {
+    const result = await dialog.showOpenDialog({ title: '选择云同步文件夹', properties: ['openDirectory', 'createDirectory'] })
+    if (result.canceled || !result.filePaths[0]) return readBackupConfig()
+    const config = { folder: result.filePaths[0], lastBackup: null }
+    await writeBackupConfig(config)
+    return config
+  })
+  ipcMain.handle('backup:create', () => withBackupLock(async () => {
+    const config = await readBackupConfig()
+    if (!config.folder) throw new Error('请先选择 iCloud、OneDrive 或其他云同步文件夹')
+    const path = await createBackup(config.folder, database())
+    const updated = { ...config, lastBackup: path }
+    await writeBackupConfig(updated)
+    return updated
+  }))
+  ipcMain.handle('backup:restore', () => withBackupLock(async () => {
+    const result = await dialog.showOpenDialog({ title: '选择“墨问备份-…”文件夹', properties: ['openDirectory'] })
+    if (result.canceled || !result.filePaths[0]) return { restored: false }
+    const stage = await prepareRestore(result.filePaths[0])
+    try {
+      abortAllChats()
+      closeDatabase()
+      await installRestore(stage)
+      app.relaunch()
+      app.exit(0)
+      return { restored: true }
+    } catch (error) {
+      if (error instanceof RestoreRollbackError) {
+        dialog.showErrorBox('恢复未完成', error.message)
+        app.exit(1)
+        throw error
+      }
+      // 只有真正切换数据时才关闭数据库；回滚成功后仍可继续使用原书库。
+      database()
+      throw error
+    }
+  }))
   registerTranslationIpc(database)
   ipcMain.handle('highlights:list', (_event, bookId: string) => {
     annotationId(bookId)
@@ -154,6 +209,50 @@ export function registerIpc(): void {
   ipcMain.handle('annotations:delete', (_e, id: string): void => {
     annotationId(id)
     deleteAnnotation(database(), id)
+  })
+  // 生词收藏：纯本地读写，不触碰密钥与模型通道；原文/译文来自已有的翻译结果。
+  ipcMain.handle('vocab:list', (_e, bookId: string) => {
+    annotationId(bookId)
+    return listVocab(database(), bookId)
+  })
+  ipcMain.handle('vocab:add', (_e, input: CreateVocabInput) => {
+    if (!input || typeof input !== 'object') throw new Error('生词参数无效')
+    annotationId(input.bookId)
+    if (!getBook(database(), input.bookId)) throw new Error('书籍不存在')
+    if (
+      typeof input.startCfi !== 'string' || input.startCfi.length > 4096 || !/^epubcfi\([^,]+![^,]+\)$/.test(input.startCfi) ||
+      typeof input.cfiRange !== 'string' || input.cfiRange.length > 4096 || !/^epubcfi\(.+!.+,.+,.+\)$/.test(input.cfiRange) ||
+      typeof input.sourceText !== 'string' || !input.sourceText.trim() || input.sourceText.length > 10000 ||
+      typeof input.translation !== 'string' || !input.translation.trim() || input.translation.length > 20000 ||
+      (input.chapterLabel !== null && (typeof input.chapterLabel !== 'string' || input.chapterLabel.length > 2000))
+    ) throw new Error('生词原文位置无效，请重新翻译后收藏')
+    return createVocab(database(), { ...input,
+      sourceText: input.sourceText.trim(), translation: input.translation.trim() })
+  })
+  ipcMain.handle('vocab:delete', (_e, id: string): void => {
+    annotationId(id)
+    deleteVocab(database(), id)
+  })
+  // 摘录导出:Markdown 正文由渲染层按统一排版生成,落盘路径只取自用户在
+  // 原生保存框里亲手确认的位置——渲染层传的 suggestedName 仅做默认文件名,
+  // 进 dialog 前先清洗,拼不出目录穿越,也决定不了最终落点。
+  ipcMain.handle('excerpts:export', async (_e, input: { suggestedName?: string; markdown?: string }): Promise<{ saved: boolean }> => {
+    if (!input || typeof input !== 'object') throw new Error('导出参数无效')
+    const { suggestedName, markdown } = input
+    if (typeof markdown !== 'string' || !markdown.trim() || markdown.length > 2_000_000) {
+      throw new Error('导出内容无效')
+    }
+    const base = sanitizeExcerptFilename(
+      typeof suggestedName === 'string' ? suggestedName.replace(/\.md$/i, '') : ''
+    )
+    const result = await dialog.showSaveDialog({
+      title: '导出摘录为 Markdown',
+      defaultPath: `${base}.md`,
+      filters: [{ name: 'Markdown', extensions: ['md'] }]
+    })
+    if (result.canceled || !result.filePath) return { saved: false }
+    await writeFile(result.filePath, markdown, 'utf-8')
+    return { saved: true }
   })
   // 固定目标，不提供可被渲染层滥用的任意 URL / 本地协议打开能力。
   ipcMain.handle('books:openDownloadSite', (): Promise<void> =>
@@ -314,6 +413,7 @@ export function registerIpc(): void {
   ipcMain.handle('settings:set', (_e, key: string, value: string): void => {
     assertAllowedSettingKey(key)
     if (typeof value !== 'string') throw new Error(`设置项 ${key} 的值必须是字符串`)
+    if (key === 'readingGoalMinutes' && !['0', '10', '20', '30', '60'].includes(value)) throw new Error('阅读目标无效')
     setSetting(database(), key, value)
   })
 
@@ -323,6 +423,10 @@ export function registerIpc(): void {
   })
 
   ipcMain.handle('chat:listAllConversations', () => listAllConversations(database()))
+  ipcMain.handle('chat:search', (_e, query: string): string[] => {
+    if (typeof query !== 'string' || query.length > 200) throw new Error('搜索词无效')
+    return searchConversationIds(database(), query)
+  })
 
   ipcMain.handle(
     'chat:createConversation',

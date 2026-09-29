@@ -6,6 +6,7 @@ import { useBookCovers } from './useBookCovers'
 
 interface Props {
   onBack: () => void
+  onOpenAt: (book: BookRecord, cfi: string) => void
 }
 
 function relativeDate(createdAt: number): string {
@@ -17,7 +18,7 @@ function relativeDate(createdAt: number): string {
   return `${Math.floor(days / 365)}年前`
 }
 
-export default function ConversationsView({ onBack }: Props) {
+export default function ConversationsView({ onBack, onOpenAt }: Props) {
   const [books, setBooks] = useState<BookRecord[]>([])
   const [conversations, setConversations] = useState<ConversationWithBook[]>([])
   const [activeBookId, setActiveBookId] = useState<string | null>(null)
@@ -26,6 +27,9 @@ export default function ConversationsView({ onBack }: Props) {
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(true)
   const [confirming, setConfirming] = useState(false)
+  const [query, setQuery] = useState('')
+  const [matches, setMatches] = useState<Set<string> | null>(null)
+  const [searching, setSearching] = useState(false)
   const requestSequence = useRef(0)
   const mounted = useRef(true)
   const coverUrls = useBookCovers(books)
@@ -62,11 +66,28 @@ export default function ConversationsView({ onBack }: Props) {
     }
   }, [refresh])
 
+  useEffect(() => {
+    const term = query.trim()
+    if (!term) { setMatches(null); setSearching(false); return }
+    let cancelled = false
+    setMatches(new Set())
+    setSearching(true)
+    const timer = setTimeout(() => {
+      void window.api.searchConversations(term).then(ids => {
+        if (!cancelled) { setMatches(new Set(ids)); setSearching(false) }
+      }).catch(() => {
+        if (!cancelled) { setError('搜索对话失败，请重试'); setSearching(false) }
+      })
+    }, 150)
+    return () => { cancelled = true; clearTimeout(timer) }
+  }, [query])
+
   const activeBook = books.find((book) => book.id === activeBookId)
   const bookRows = useMemo(
-    () => conversations.filter((row) => row.bookId === activeBookId),
-    [activeBookId, conversations]
+    () => conversations.filter((row) => row.bookId === activeBookId && (!query.trim() || matches?.has(row.id))),
+    [activeBookId, conversations, query, matches]
   )
+  const shelfBooks = books.filter(book => !query.trim() || conversations.some(row => row.bookId === book.id && matches?.has(row.id)))
   const chapters = useMemo(() => {
     const sorted = [...bookRows].sort((a, b) => {
       try { return compareCfi(a.startCfi, b.startCfi) }
@@ -153,16 +174,22 @@ export default function ConversationsView({ onBack }: Props) {
         </button>}
       </header>
       {error && <p className="conversations__error" data-testid="conversations-error">{error}</p>}
+      <div className="conversations__search">
+        <input type="search" data-testid="conversation-search" aria-label="搜索对话" placeholder="搜索书名、章节、提问或回答…" value={query}
+          onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') setQuery('') }} />
+        {query && <button type="button" className="button--ghost" onClick={() => setQuery('')}>清空</button>}
+        {searching && <span role="status">搜索中…</span>}
+      </div>
       {!activeBook ? (
         <section className="conversations__shelf" aria-label="按书管理对话">
           <div className="conversations__shelf-intro">
             <p>选择一本书，查看按章节整理的对话。</p>
             <span className="library__count">{books.length} 本书 · {conversations.length} 个对话</span>
           </div>
-          {loading ? <div className="empty">正在整理书架…</div> : books.length === 0 ? <div className="empty">书架是空的，先添加一本书吧。</div> : (
+          {loading ? <div className="empty">正在整理书架…</div> : books.length === 0 ? <div className="empty">书架是空的，先添加一本书吧。</div> : shelfBooks.length === 0 ? <div className="empty">没有找到匹配的对话。</div> : (
             <div className="library__grid">
-              {books.map((book) => {
-                const count = conversations.filter((row) => row.bookId === book.id).length
+              {shelfBooks.map((book) => {
+                const count = conversations.filter((row) => row.bookId === book.id && (!query.trim() || matches?.has(row.id))).length
                 return <div className="book-card" data-testid="conversation-book" key={book.id}>
                   <button type="button" className="book-card__open" aria-label={`管理《${book.title}》的对话`} onClick={() => openBook(book.id)}>
                     <div className="book-card__cover">
@@ -178,7 +205,7 @@ export default function ConversationsView({ onBack }: Props) {
           )}
         </section>
       ) : <div className="conversations__detail">
-        {bookRows.length === 0 ? <div className="empty">这本书还没有对话。</div> : (
+        {bookRows.length === 0 ? <div className="empty">{query.trim() ? '没有找到匹配的对话。' : '这本书还没有对话。'}</div> : (
           <>
             <div className="conversations__toolbar">
               <label className="conversations__select-all">
@@ -199,13 +226,12 @@ export default function ConversationsView({ onBack }: Props) {
                   选择本章
                 </label>
                 {group.rows.map((conversation) => (
-                  <label className={`conversation-row${selected.has(conversation.id) ? ' conversation-row--selected' : ''}`} data-testid="conversation-row" key={conversation.id}>
-                    <input type="checkbox" checked={selected.has(conversation.id)} onChange={() => toggle(conversation.id)} />
-                    <span className="conversation-row__text">
-                      <span>「{conversation.excerpt}」{conversation.mergedEndCfi ? ' · 含下一屏' : ''}</span>
-                      <small>{conversation.messageCount} 条消息 · {relativeDate(conversation.createdAt)}</small>
-                    </span>
-                  </label>
+                  <div className={`conversation-row${selected.has(conversation.id) ? ' conversation-row--selected' : ''}`} data-testid="conversation-row" key={conversation.id}>
+                    <label className="conversation-row__choice"><input type="checkbox" checked={selected.has(conversation.id)} onChange={() => toggle(conversation.id)} />
+                      <span className="conversation-row__text"><span>「{conversation.excerpt}」{conversation.mergedEndCfi ? ' · 含下一屏' : ''}</span>
+                        <small>{conversation.messageCount} 条消息 · {relativeDate(conversation.createdAt)}</small></span></label>
+                    <button type="button" className="button--ghost" onClick={() => onOpenAt(activeBook, conversation.startCfi)}>定位原文</button>
+                  </div>
                 ))}
               </details>
             })}</div>

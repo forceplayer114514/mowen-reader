@@ -11,10 +11,12 @@ import {
   pressUntilPageChanges,
   slowDragSelectInChapter,
   waitForLocationsReady,
+  waitForStableIndicator,
   type Harness
 } from './helpers'
 import { closeAllFakeLlms, startFakeLlm, type FakeLlm } from './fake-llm'
 import { closeFakeTranslations, startFakeTranslation } from './fake-translation'
+import { compareCfi } from '../../src/renderer/reader/cfi'
 
 test.afterEach(async () => {
   await closeAllApps()
@@ -212,6 +214,8 @@ test('改字号并翻回原文位置后,CFI 锚定的对话仍出现', async () 
   await ask(h, '这段文字的对话应跟随 CFI')
   await h.page.getByRole('button', { name: '放大字号' }).click()
   await expect(h.page.getByTestId('message-assistant').last()).toContainText('这是假的回答。')
+  // 字号点击会异步重排；先等页码稳定，再把后续变化归因于方向键。
+  await waitForStableIndicator(h)
   await pressUntilPageChanges(h, 'ArrowRight')
   await pressUntilPageChanges(h, 'ArrowLeft')
   await expect(h.page.getByTestId('message-assistant').last()).toContainText('这是假的回答。', { timeout: 20_000 })
@@ -284,6 +288,29 @@ test('对话管理页能看到全部对话并批量删除,侧边栏历史随之�
   await h.page.getByRole('button', { name: '← 返回书架' }).click()
   await h.page.getByTestId('book-card').first().click()
   await expect(h.page.getByTestId('page-conversations-summary')).toContainText('0 个对话', { timeout: 20_000 })
+})
+
+test('对话管理可搜索消息并跳回对应原文', async () => {
+  const h = await launch()
+  const fake = await startFakeLlm()
+  await openBook(h, fake)
+  await ask(h, '第一段独特问题')
+  await pressUntilPageChanges(h, 'ArrowRight')
+  await h.page.getByTestId('new-conversation').click()
+  await ask(h, '第二段独特问题')
+  const target = await h.page.evaluate(async () => (await window.api.listConversations((await window.api.listBooks())[0].id)).at(-1)!.startCfi)
+  await h.page.getByRole('button', { name: '← 书架' }).click()
+  await h.page.getByTestId('open-conversations').click()
+  await h.page.getByTestId('conversation-search').fill('第二段独特问题')
+  await expect(h.page.getByTestId('conversation-book')).toHaveCount(1)
+  await h.page.getByTestId('conversation-book').click()
+  await expect(h.page.getByTestId('conversation-row')).toHaveCount(1)
+  await h.page.getByRole('button', { name: '定位原文' }).click()
+  await waitForLocationsReady(h)
+  await expect(h.page.getByTestId('reader-page')).toBeVisible()
+  const range = await h.page.evaluate(() => (window as any).__readerRendition.location)
+  expect(compareCfi(range.start.cfi, target)).toBeLessThanOrEqual(0)
+  expect(compareCfi(range.end.cfi, target)).toBeGreaterThanOrEqual(0)
 })
 
 test('对话书架按书进入，章节可以展开和收起', async () => {

@@ -8,9 +8,18 @@ import { createPdfEngine } from './pdf-engine'
 import { textToEpub } from './text-book'
 import { bookFormat } from '@shared/book-format'
 import { createSelectionStore, type SelectionStore } from './selection'
-import type { ReaderEngine, ReadingTool, ThemeName, TocItem, VisibleRange } from './types'
+import type { BookSearchResult, FontFamilyName, PageMarginName, ReaderEngine, ReadingTool, ThemeName, TocItem, TypographyOptions, VisibleRange } from './types'
+import {
+  DEFAULT_SHORTCUTS,
+  DEFAULT_TYPOGRAPHY,
+  LINE_HEIGHT_PRESETS,
+  normalizeShortcutKey,
+  normalizeTypography,
+  validateShortcutMapping
+} from './types'
 import Sidebar from '../chat/Sidebar'
 import ConfirmDialog from '../ConfirmDialog'
+import ReadAloud from './ReadAloud'
 
 const FONT_MIN = 14
 const FONT_MAX = 28
@@ -84,7 +93,35 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
   const [visible, setVisible] = useState<VisibleRange | null>(null)
   const [toc, setToc] = useState<TocItem[]>([])
   const [showToc, setShowToc] = useState(false)
+  // 书内全文搜索:面板开关、查询、命中列表与当前高亮下标。
+  // 只读操作,分页/进度/高亮/注释一概不动,跳转复用 engine.display()。
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<BookSearchResult[]>([])
+  const [searchIndex, setSearchIndex] = useState(0)
+  const [searchBusy, setSearchBusy] = useState(false)
+  const [searchError, setSearchError] = useState<string | null>(null)
+  const [searchTouched, setSearchTouched] = useState(false)
+  // 搜索异步代际:切书/关面板/改查询时自增,在途的旧查询回来自觉丢弃。
+  const searchGenRef = useRef(0)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  const searchToggleRef = useRef<HTMLButtonElement>(null)
   const [fontSize, setFontSize] = useState(18)
+  // 排版预设(EPUB/TXT 三档小面板):行距/页边距/字体;PDF 固定版式不受影响,面板直接隐藏。
+  // 存盘键见 db/settings.ts 白名单(lineHeight/pageMargin/fontFamily),读回非法值退回默认。
+  const [typography, setTypographyState] = useState<TypographyOptions>({ ...DEFAULT_TYPOGRAPHY })
+  const [showTypography, setShowTypography] = useState(false)
+  const targetTypoRef = useRef<TypographyOptions>({ ...DEFAULT_TYPOGRAPHY })
+  const appliedTypoRef = useRef<TypographyOptions>({ ...DEFAULT_TYPOGRAPHY })
+  // 快捷键帮助与两项可配置映射(目录/书签开关,无修饰单键,不占 Ctrl/方向键/Esc)。
+  const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  const [shortcutToc, setShortcutToc] = useState<string>(DEFAULT_SHORTCUTS.toggleToc)
+  const [shortcutBookmark, setShortcutBookmark] = useState<string>(DEFAULT_SHORTCUTS.toggleBookmark)
+  const [shortcutError, setShortcutError] = useState<string | null>(null)
+  const shortcutTocRef = useRef<string>(DEFAULT_SHORTCUTS.toggleToc)
+  const shortcutBookmarkRef = useRef<string>(DEFAULT_SHORTCUTS.toggleBookmark)
+  const shortcutTocInputRef = useRef<HTMLInputElement>(null)
+  const shortcutBookmarkInputRef = useRef<HTMLInputElement>(null)
   const themeRef = useRef(theme)
   themeRef.current = theme
   const [error, setError] = useState<string | null>(null)
@@ -100,6 +137,8 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
   // 持久荧光笔:工具三选一,存盘列表是真相,引擎只负责画出来。
   const [readingTool, setReadingToolState] = useState<ReadingTool>('select')
   const toolRef = useRef<ReadingTool>('select')
+  // 快捷键回调要一个引用稳定的书签切换,里面永远走最新的 visible(见 eraseRef 同例)。
+  const toggleBookmarkRef = useRef<() => Promise<void>>(async () => {})
   const [highlights, setHighlights] = useState<HighlightRecord[]>([])
   const [highlightsReady, setHighlightsReady] = useState(false)
   const highlightsRef = useRef<HighlightRecord[]>([])
@@ -116,6 +155,11 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
   const spreadRef = useRef(false)
   const fontChainRef = useRef<Promise<void>>(Promise.resolve())
   const anchorCfiRef = useRef<string | null>(null)
+  const layoutAnchorCfiRef = useRef<string | null>(null)
+  const clearLayoutAnchor = useCallback(() => {
+    layoutAnchorCfiRef.current = null
+    anchorCfiRef.current = null
+  }, [])
   const targetFontRef = useRef<number>(18)
   const appliedFontRef = useRef<number>(18)
 
@@ -134,6 +178,107 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
     readerEngine?.setTheme(theme)
   }, [readerEngine, theme])
 
+  // 切书时搜索状态清零,在途的旧书查询回来直接丢弃,不混进新书。
+  useEffect(() => {
+    searchGenRef.current++
+    setSearchOpen(false)
+    setSearchQuery('')
+    setSearchResults([])
+    setSearchIndex(0)
+    setSearchBusy(false)
+    setSearchError(null)
+    setSearchTouched(false)
+  }, [book.id])
+
+  const closeSearch = useCallback(() => {
+    searchGenRef.current++
+    setSearchOpen(false)
+    setSearchBusy(false)
+    setSearchError(null)
+    // 焦点回到打开面板的那个按钮,键盘用户不至于丢位置。
+    searchToggleRef.current?.focus()
+  }, [])
+
+  const openSearch = useCallback(() => {
+    setSearchOpen(true)
+  }, [])
+
+  // Ctrl/Cmd+F 打开书内搜索,代替浏览器默认的页面查找(阅读区是 iframe 分页,
+  // 浏览器自带查找跨页即失效,必须由引擎按 CFI/页码定位)。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault()
+        setSearchOpen(true)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  // 面板打开即把焦点送进输入框;关闭由 closeSearch 负责送回,不在这里抢。
+  useEffect(() => {
+    if (!searchOpen) return
+    const frame = requestAnimationFrame(() => {
+      searchInputRef.current?.focus()
+      searchInputRef.current?.select()
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [searchOpen])
+
+  // 查询变化后防抖搜索:引擎就绪前输入的内容等引擎就绪自动跑一次,不吞查询。
+  useEffect(() => {
+    if (!searchOpen) return
+    const q = searchQuery.trim()
+    if (!q) {
+      searchGenRef.current++
+      setSearchResults([])
+      setSearchIndex(0)
+      setSearchBusy(false)
+      setSearchError(null)
+      setSearchTouched(false)
+      return
+    }
+    setSearchBusy(true)
+    setSearchResults([])
+    setSearchIndex(0)
+    const gen = ++searchGenRef.current
+    const timer = setTimeout(() => {
+      const engine = engineRef.current
+      if (!engine) return
+      engine.search(q).then((hits) => {
+        if (gen !== searchGenRef.current) return
+        setSearchResults(hits)
+        setSearchIndex(0)
+        setSearchBusy(false)
+        setSearchError(null)
+        setSearchTouched(true)
+      }).catch(() => {
+        if (gen !== searchGenRef.current) return
+        setSearchBusy(false)
+        setSearchError('书内搜索失败,请稍后重试')
+        setSearchTouched(true)
+      })
+    }, 250)
+    return () => clearTimeout(timer)
+  }, [searchOpen, searchQuery, readerEngine])
+
+  const goToSearchResult = useCallback((idx: number) => {
+    const hit = searchResults[idx]
+    if (!hit) return
+    setSearchIndex(idx)
+    setSearchError(null)
+    clearLayoutAnchor()
+    engineRef.current?.display(hit.cfiRange).catch(() => {
+      setSearchError('跳转到搜索结果失败,目标位置可能已移动')
+    })
+  }, [searchResults, clearLayoutAnchor])
+
+  const stepSearch = useCallback((delta: number) => {
+    if (searchResults.length === 0) return
+    goToSearchResult((searchIndex + delta + searchResults.length) % searchResults.length)
+  }, [searchResults, searchIndex, goToSearchResult])
+
   useEffect(() => {
     let cancelled = false
     void window.api.listBookmarks(book.id).then((loaded) => {
@@ -151,15 +296,17 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
   const setSpreadMode = useCallback(async (on: boolean): Promise<void> => {
     const current = engineRef.current
     if (!current) return
+    clearLayoutAnchor()
     await current.setSpread(on)
     spreadRef.current = on
     setSpread(on)
-  }, [])
+  }, [clearLayoutAnchor])
 
   const next = useCallback(() => {
     const current = engineRef.current
     if (!current) return
     if (spreadRef.current) {
+      clearLayoutAnchor()
       void current.setSpread(false).then(() => current.next()).then(() => {
         spreadRef.current = false
         setSpread(false)
@@ -167,14 +314,16 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
       return
     }
     fontChainRef.current = fontChainRef.current.then(async () => {
+      clearLayoutAnchor()
       await current.next()
     }).catch(() => {})
-  }, [])
+  }, [clearLayoutAnchor])
 
   const prev = useCallback(() => {
     const current = engineRef.current
     if (!current) return
     if (spreadRef.current) {
+      clearLayoutAnchor()
       void current.setSpread(false).then(() => {
         spreadRef.current = false
         setSpread(false)
@@ -182,9 +331,10 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
       return
     }
     fontChainRef.current = fontChainRef.current.then(async () => {
+      clearLayoutAnchor()
       await current.prev()
     }).catch(() => {})
-  }, [])
+  }, [clearLayoutAnchor])
 
   // 开书:读设置 → 读文件 → 渲染 → 跳到上次位置
   useEffect(() => {
@@ -243,6 +393,24 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
       if (!hostRef.current) return
       try {
         const savedFont = isPdf ? 18 : Number((await window.api.getSetting('fontSize')) ?? 18)
+        // 排版预设只对 EPUB/TXT 读盘:PDF 固定版式不受影响,也不让旧脏数据污染界面。
+        const savedTypo: TypographyOptions = isPdf ? { ...DEFAULT_TYPOGRAPHY } : normalizeTypography({
+          lineHeight: await window.api.getSetting('lineHeight'),
+          margin: await window.api.getSetting('pageMargin'),
+          fontFamily: await window.api.getSetting('fontFamily')
+        })
+        let savedTocKey = normalizeShortcutKey(await window.api.getSetting('shortcutToc'), DEFAULT_SHORTCUTS.toggleToc)
+        let savedBmKey = normalizeShortcutKey(await window.api.getSetting('shortcutBookmark'), DEFAULT_SHORTCUTS.toggleBookmark)
+        // 存盘的两项撞键(历史脏数据)时书签退回备用键,保证开书即用、不等用户先修。
+        if (savedTocKey === savedBmKey) savedBmKey = savedTocKey === 'b' ? 'n' : 'b'
+        if (cancelled) return
+        targetTypoRef.current = { ...savedTypo }
+        appliedTypoRef.current = { ...savedTypo }
+        setTypographyState(savedTypo)
+        shortcutTocRef.current = savedTocKey
+        shortcutBookmarkRef.current = savedBmKey
+        setShortcutToc(savedTocKey)
+        setShortcutBookmark(savedBmKey)
         const savedLocations = await window.api.getLocations(book.id)
         const original = await window.api.readBookFile(book.id)
         const data = format === 'txt' ? await textToEpub(original, book.title) : original
@@ -324,20 +492,32 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
           }
         })
 
+        // 按键翻页与快捷键统一走 engine.onKey:它同时接住外层 window 和书内容
+        // iframe 里的 keydown(EPUB 经 epub.js 转发,PDF 在各页 iframe 里直挂),
+        // 所以同一套映射在两种版式下都生效;输入框内按键由引擎侧直接过滤,不进这里。
         unsubscribeKey = engine.onKey((key) => {
-          if (key === 'ArrowRight' || key === 'PageDown') next()
+          if (key === 'Find') setSearchOpen(true)
+          else if (key === 'ArrowRight' || key === 'PageDown') next()
           else if (key === 'ArrowLeft' || key === 'PageUp') prev()
           else if (key === 'Escape') {
             toolRef.current = 'select'
             setReadingToolState('select')
             engine?.setReadingTool('select')
+            // Esc 顺手收起小面板:只关,不报错,不吞翻页。
+            setShowTypography(false)
+            setShortcutsOpen(false)
           }
+          else if (key === '?') setShortcutsOpen(true)
+          else if (key.toLowerCase() === shortcutTocRef.current) setShowToc((v) => !v)
+          else if (key.toLowerCase() === shortcutBookmarkRef.current) void toggleBookmarkRef.current()
         })
 
         await engine.open(data, {
           fontSize: Number.isFinite(savedFont) ? savedFont : 18,
           theme: themeRef.current,
-          savedLocations
+          savedLocations,
+          // PDF 引擎忽略该字段(固定版式不受影响),EPUB 首屏即按预设排。
+          typography: isPdf ? undefined : savedTypo
         })
         if (cancelled) return
         // 打开期间也可能切主题；发布引擎后由上面的 effect 应用最新主题。
@@ -469,9 +649,8 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
 
       // 锁定锚点 CFI: 若当前尚未锁定,从当前稳定的阅读位置锁定,
       // 避免连续快速点击时因为排版临时滚动到 0 而把阅读位置重置回本章第 1 页。
-      if (!anchorCfiRef.current) {
-        anchorCfiRef.current = engineRef.current?.currentCfi() ?? null
-      }
+      if (!layoutAnchorCfiRef.current) layoutAnchorCfiRef.current = engineRef.current?.currentCfi() ?? null
+      if (!anchorCfiRef.current) anchorCfiRef.current = layoutAnchorCfiRef.current
 
       // 将最新字号应用排进串行队列,合流连续点击,避免并发渲染与死锁
       fontChainRef.current = fontChainRef.current.then(async () => {
@@ -479,7 +658,7 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
         if (!engine) return
         if (targetFontRef.current === appliedFontRef.current) return
         const target = targetFontRef.current
-        const anchor = anchorCfiRef.current
+        const anchor = layoutAnchorCfiRef.current
         try {
           await engine.setFontSize(target, anchor ?? undefined)
           appliedFontRef.current = target
@@ -536,12 +715,103 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
     }
   }, [book.id, currentBookmark, removeBookmark, visible])
 
+  // 快捷键回调走这个引用,永远拿到最新的 visible(见上面 eraseRef 同例)。
+  toggleBookmarkRef.current = toggleBookmark
+
+  /**
+   * 排版预设切换(EPUB/TXT):与 changeFont 同一套并发与落盘策略——锚定当前 CFI、
+   * 串行进 fontChainRef 队列避免并发重排死锁,display(anchor) 保证 CFI 位置与进度
+   * 不变,高亮/注释由引擎按原 CFI 重画重定位。写盘失败只在页脚提示,不回滚界面。
+   */
+  const applyTypography = useCallback((patch: Partial<TypographyOptions>): void => {
+    if (isPdf) return
+    const next: TypographyOptions = { ...targetTypoRef.current, ...patch }
+    targetTypoRef.current = next
+    setTypographyState(next)
+
+    if (!layoutAnchorCfiRef.current) layoutAnchorCfiRef.current = engineRef.current?.currentCfi() ?? null
+    if (!anchorCfiRef.current) anchorCfiRef.current = layoutAnchorCfiRef.current
+
+    fontChainRef.current = fontChainRef.current.then(async () => {
+      const engine = engineRef.current
+      if (!engine) return
+      const target = targetTypoRef.current
+      const applied = appliedTypoRef.current
+      if (
+        target.lineHeight === applied.lineHeight &&
+        target.margin === applied.margin &&
+        target.fontFamily === applied.fontFamily
+      ) return
+      const anchor = layoutAnchorCfiRef.current
+      try {
+        await engine.setTypography(target, anchor ?? undefined)
+        appliedTypoRef.current = { ...target }
+      } catch {
+        setError('排版调整失败,请重试')
+      } finally {
+        // 最后一次重排之后没有更新的补丁,才释放锚点(见 changeFont 同例)。
+        const latest = targetTypoRef.current
+        if (
+          latest.lineHeight === target.lineHeight &&
+          latest.margin === target.margin &&
+          latest.fontFamily === target.fontFamily
+        ) {
+          anchorCfiRef.current = null
+        }
+      }
+    }).catch(() => {})
+
+    setError(null)
+    const saves: [string, string][] = []
+    if (patch.lineHeight !== undefined) saves.push(['lineHeight', String(next.lineHeight)])
+    if (patch.margin !== undefined) saves.push(['pageMargin', next.margin])
+    if (patch.fontFamily !== undefined) saves.push(['fontFamily', next.fontFamily])
+    for (const [key, value] of saves) {
+      window.api.setSetting(key, value).catch(() => {
+        setError('排版没有保存,下次打开可能会恢复默认')
+      })
+    }
+  }, [isPdf])
+
+  /**
+   * 保存两项可配置快捷键:先校验(单字母数字、非保留键、互不相同),不过直接报错、
+   * 不写盘不改映射;通过才更新引用与界面并落盘。
+   */
+  const saveShortcutMapping = useCallback((rawToc: string, rawBookmark: string): void => {
+    const next = {
+      toggleToc: rawToc.trim().toLowerCase(),
+      toggleBookmark: rawBookmark.trim().toLowerCase()
+    }
+    const problem = validateShortcutMapping(next)
+    if (problem) {
+      setShortcutError(problem)
+      return
+    }
+    setShortcutError(null)
+    shortcutTocRef.current = next.toggleToc
+    shortcutBookmarkRef.current = next.toggleBookmark
+    setShortcutToc(next.toggleToc)
+    setShortcutBookmark(next.toggleBookmark)
+    window.api.setSetting('shortcutToc', next.toggleToc).catch(() => {
+      setError('快捷键没有保存,下次打开可能会恢复默认')
+    })
+    window.api.setSetting('shortcutBookmark', next.toggleBookmark).catch(() => {
+      setError('快捷键没有保存,下次打开可能会恢复默认')
+    })
+  }, [])
+
+  const resetShortcuts = useCallback((): void => {
+    setShortcutError(null)
+    saveShortcutMapping(DEFAULT_SHORTCUTS.toggleToc, DEFAULT_SHORTCUTS.toggleBookmark)
+  }, [saveShortcutMapping])
+
   const jump = useCallback((href: string) => {
     setShowToc(false)
+    clearLayoutAnchor()
     engineRef.current?.display(href).catch(() => {
       setError('跳转失败,目标章节可能已被移动')
     })
-  }, [])
+  }, [clearLayoutAnchor])
 
   // 阅读工具三选一、互斥切换;点已选中的工具回到普通划选,Esc 同样回到普通划选。
   const setTool = useCallback((tool: ReadingTool): void => {
@@ -570,7 +840,11 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.target instanceof Element && e.target.closest('input,textarea,[contenteditable]')) return
-      if (e.key === 'Escape') setTool('select')
+      if (e.key === 'Escape') {
+        setTool('select')
+        setShowTypography(false)
+        setShortcutsOpen(false)
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -659,8 +933,42 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
           if (annotationState.dirty) setConfirmLeave(true)
           else onBack()
         }}>← 书架</button>
-        <button className="button--ghost" onClick={() => setShowToc((v) => !v)} data-testid="toggle-toc">
+        <button className="button--ghost" onClick={() => setShowToc((v) => !v)} data-testid="toggle-toc" title={`目录 (${shortcutToc})`}>
           目录
+        </button>
+        <button
+          ref={searchToggleRef}
+          className="button--ghost"
+          type="button"
+          data-testid="toggle-search"
+          aria-expanded={searchOpen}
+          disabled={!readerEngine}
+          title="书内搜索 (Ctrl/Cmd+F)"
+          onClick={() => { if (searchOpen) closeSearch(); else openSearch() }}
+        >
+          搜索
+        </button>
+        {!isPdf && (
+          <button
+            className="button--ghost"
+            type="button"
+            data-testid="toggle-typography"
+            aria-expanded={showTypography}
+            title="排版预设:行距 / 页边距 / 字体"
+            disabled={!readerEngine}
+            onClick={() => setShowTypography((v) => !v)}
+          >
+            排版
+          </button>
+        )}
+        <button
+          className="button--ghost"
+          type="button"
+          data-testid="toggle-shortcuts"
+          title="键盘快捷键 (?)"
+          onClick={() => { setShortcutError(null); setShortcutsOpen(true) }}
+        >
+          快捷键
         </button>
         <button
           className={`button--ghost reader__bookmark${currentBookmark ? ' reader__bookmark--active' : ''}`}
@@ -668,6 +976,7 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
           data-testid="bookmark-toggle"
           aria-pressed={Boolean(currentBookmark)}
           disabled={!visible || !!deletingBookmarkId}
+          title={`书签 (${shortcutBookmark})`}
           onClick={() => void toggleBookmark()}
         >
           {currentBookmark ? '★ 已加书签' : '☆ 书签'}
@@ -704,6 +1013,7 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
         )}
         <span className="reader__title">{book.title}</span>
         <span className="reader__spacer" />
+        <ReadAloud key={book.id} visible={visible} onNext={next} engine={readerEngine} />
         <div className="reader__controls" aria-label="阅读设置">
         <button className="button--icon" onClick={() => changeFont(-2)} aria-label={isPdf ? '缩小 PDF' : '缩小字号'}>
           {isPdf ? '−' : 'A−'}
@@ -717,6 +1027,226 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
         <button type="button" className="button--ghost" data-testid="toggle-theme" onClick={onToggleTheme}>{theme === 'light' ? '夜间模式' : '日间模式'}</button>
         </div>
       </header>
+
+      {searchOpen && (
+        <div className="reader__search" role="search" aria-label="书内搜索">
+          <form
+            className="reader__search-bar"
+            onSubmit={(event) => {
+              event.preventDefault()
+              // 回车直接跳到当前高亮的命中,列表为空时什么也不做。
+              if (!searchBusy && searchResults.length > 0) goToSearchResult(searchIndex)
+            }}
+          >
+            <input
+              ref={searchInputRef}
+              data-testid="inbook-search-input"
+              type="search"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.stopPropagation()
+                  closeSearch()
+                }
+              }}
+              placeholder="在本书内搜索…"
+              aria-label="在本书内搜索"
+              autoComplete="off"
+            />
+            <span data-testid="inbook-search-count" aria-live="polite">
+              {searchBusy
+                ? '正在搜索…'
+                : searchTouched
+                  ? searchResults.length === 0
+                    ? (searchQuery.trim() ? '无结果' : '')
+                    : `${searchIndex + 1} / ${searchResults.length}`
+                  : isPdf ? '支持文本层 PDF' : ''}
+            </span>
+            <button
+              type="button"
+              className="button--ghost"
+              data-testid="inbook-search-prev"
+              disabled={searchResults.length === 0}
+              aria-label="上一个搜索结果"
+              onClick={() => stepSearch(-1)}
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              className="button--ghost"
+              data-testid="inbook-search-next"
+              disabled={searchResults.length === 0}
+              aria-label="下一个搜索结果"
+              onClick={() => stepSearch(1)}
+            >
+              ↓
+            </button>
+            <button
+              type="button"
+              className="button--ghost"
+              data-testid="inbook-search-close"
+              aria-label="关闭书内搜索"
+              onClick={closeSearch}
+            >
+              ✕
+            </button>
+          </form>
+          {searchError && (
+            <div className="reader__search-error" role="alert" data-testid="inbook-search-error">
+              {searchError}
+            </div>
+          )}
+          {searchTouched && !searchBusy && !searchError && searchQuery.trim() && searchResults.length === 0 && (
+            <div className="reader__search-empty">本书内没有找到“{searchQuery.trim().slice(0, 60)}”</div>
+          )}
+          {searchResults.length > 0 && (
+            <ul className="reader__search-list">
+              {searchResults.map((hit, idx) => (
+                <li key={`${hit.cfiRange}#${idx}`}>
+                  <button
+                    type="button"
+                    data-testid="inbook-search-result"
+                    data-active={idx === searchIndex || undefined}
+                    className={`reader__search-item${idx === searchIndex ? ' reader__search-item--active' : ''}`}
+                    aria-current={idx === searchIndex ? 'true' : undefined}
+                    onClick={() => goToSearchResult(idx)}
+                  >
+                    <span className="reader__search-label">{hit.label}</span>
+                    <span className="reader__search-excerpt">{hit.excerpt || '(无摘要)'}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {showTypography && !isPdf && (
+        <div className="reader__typo" role="group" aria-label="排版预设" data-testid="typography-panel">
+          <div className="reader__typo-row">
+            <span id="typo-lineheight-label">行距</span>
+            <div role="radiogroup" aria-labelledby="typo-lineheight-label">
+              {LINE_HEIGHT_PRESETS.map((preset) => {
+                const label = preset === 1.5 ? '紧凑' : preset === 1.75 ? '标准' : '疏朗'
+                return (
+                  <button
+                    key={preset}
+                    type="button"
+                    className={`button--ghost${typography.lineHeight === preset ? ' reader__tool--active' : ''}`}
+                    data-testid={`typo-lineheight-${preset}`}
+                    aria-pressed={typography.lineHeight === preset}
+                    title={`行距 ${preset}`}
+                    onClick={() => applyTypography({ lineHeight: preset })}
+                  >
+                    {label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+          <div className="reader__typo-row">
+            <span id="typo-margin-label">页边距</span>
+            <div role="radiogroup" aria-labelledby="typo-margin-label">
+              {(['narrow', 'normal', 'wide'] as PageMarginName[]).map((name) => {
+                const label = name === 'narrow' ? '窄' : name === 'normal' ? '标准' : '宽'
+                return (
+                  <button
+                    key={name}
+                    type="button"
+                    className={`button--ghost${typography.margin === name ? ' reader__tool--active' : ''}`}
+                    data-testid={`typo-margin-${name}`}
+                    aria-pressed={typography.margin === name}
+                    onClick={() => applyTypography({ margin: name })}
+                  >
+                    {label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+          <div className="reader__typo-row">
+            <span id="typo-font-label">字体</span>
+            <div role="radiogroup" aria-labelledby="typo-font-label">
+              {(['serif', 'sans'] as FontFamilyName[]).map((name) => (
+                <button
+                  key={name}
+                  type="button"
+                  className={`button--ghost${typography.fontFamily === name ? ' reader__tool--active' : ''}`}
+                  data-testid={`typo-font-${name}`}
+                  aria-pressed={typography.fontFamily === name}
+                  onClick={() => applyTypography({ fontFamily: name })}
+                >
+                  {name === 'serif' ? '衬线' : '无衬线'}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {shortcutsOpen && (
+        <div
+          className="modal-overlay"
+          data-testid="shortcuts-help"
+          onClick={() => setShortcutsOpen(false)}
+        >
+          <div
+            className="modal reader__shortcuts"
+            role="dialog"
+            aria-modal="true"
+            aria-label="键盘快捷键"
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                event.stopPropagation()
+                setShortcutsOpen(false)
+              }
+            }}
+          >
+            <h2>键盘快捷键</h2>
+            <p className="modal__copy">正文内外通用;在输入框里打字时单键快捷键不触发。</p>
+            <dl className="reader__shortcut-list">
+              <div><dt><kbd>→</kbd> / <kbd>PgDn</kbd></dt><dd>下一页</dd></div>
+              <div><dt><kbd>←</kbd> / <kbd>PgUp</kbd></dt><dd>上一页</dd></div>
+              <div><dt><kbd>Ctrl</kbd>+<kbd>F</kbd></dt><dd>书内搜索</dd></div>
+              <div><dt><kbd>{shortcutToc}</kbd></dt><dd>打开 / 关闭目录</dd></div>
+              <div><dt><kbd>{shortcutBookmark}</kbd></dt><dd>加入 / 取消书签</dd></div>
+              <div><dt><kbd>Esc</kbd></dt><dd>回到普通划选并关闭面板</dd></div>
+              <div><dt><kbd>?</kbd></dt><dd>打开本帮助</dd></div>
+            </dl>
+            <div className="reader__shortcut-config">
+              <label>目录键 <input ref={shortcutTocInputRef} data-testid="shortcut-input-toc" defaultValue={shortcutToc} maxLength={1} aria-label="目录快捷键" autoComplete="off" /></label>
+              <label>书签键 <input ref={shortcutBookmarkInputRef} data-testid="shortcut-input-bookmark" defaultValue={shortcutBookmark} maxLength={1} aria-label="书签快捷键" autoComplete="off" /></label>
+              <button
+                type="button"
+                className="button--secondary"
+                data-testid="shortcut-save"
+                onClick={() => saveShortcutMapping(
+                  shortcutTocInputRef.current?.value ?? shortcutToc,
+                  shortcutBookmarkInputRef.current?.value ?? shortcutBookmark
+                )}
+              >
+                保存
+              </button>
+              <button type="button" className="button--ghost" data-testid="shortcut-reset" onClick={resetShortcuts}>
+                恢复默认
+              </button>
+            </div>
+            {shortcutError && (
+              <div className="reader__shortcut-error" role="alert" data-testid="shortcut-error">
+                {shortcutError}
+              </div>
+            )}
+            <div className="modal__actions">
+              <button type="button" className="button--secondary" data-testid="shortcuts-close" onClick={() => setShortcutsOpen(false)}>
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="reader__body">
         {showToc && (
@@ -744,7 +1274,7 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
             <span>{isPdf && visible && !visible.text.trim() ? '此页无可提取文字（扫描页）；暂不支持 OCR' : visible?.chapterLabel ?? ''}</span>
             <span data-testid="page-indicator">
               {visible && visible.totalPages > 0
-                ? `${isPdf ? '' : '约'}第 ${visible.page} / ${visible.totalPages} 页`
+                ? `${isPdf ? '' : '约'}第 ${visible.page} / ${visible.totalPages} 页${!isPdf && visible.chapterPage && visible.chapterTotalPages ? ` · 本章 ${visible.chapterPage}/${visible.chapterTotalPages} 屏` : ''}`
                 : '正在计算页码…'}
             </span>
             {isPdf && visible && <form className="reader__page-jump" onSubmit={(event) => {
@@ -772,6 +1302,7 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
           restoring={restoring}
           spread={spread}
           onSetSpread={setSpreadMode}
+          onNavigate={clearLayoutAnchor}
           onAnnotationState={updateAnnotationState}
         />
       </div>

@@ -9,6 +9,10 @@ export async function startFakeTranslation() {
     texts.push(url.searchParams.get('q') ?? '')
     const send = () => {
       response.setHeader('Content-Type', 'application/json')
+      if (url.pathname === '/jsonapi') {
+        response.end(JSON.stringify({ ec: { word: [{ usphone: 'ˈtest', trs: [{ tr: [{ l: { i: ['n. 这是独立翻译结果。'] } }] }] }] } }))
+        return
+      }
       response.end(JSON.stringify(mode === 'quota'
         ? { responseStatus: 429, quotaFinished: true, responseDetails: 'Limit reached' }
         : { responseStatus: 200, responseData: { translatedText: '这是独立翻译结果。' } }))

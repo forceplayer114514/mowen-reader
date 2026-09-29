@@ -19,6 +19,7 @@ export default function ReadingStatsView({ onBack, onOpenBook, theme, onToggleTh
   const [range, setRange] = useState<7 | 30>(7)
   const [selectedDay, setSelectedDay] = useState<string | null>(null)
   const [now, setNow] = useState(() => new Date())
+  const [goalMinutes, setGoalMinutes] = useState(0)
   const covers = useBookCovers(data?.books ?? EMPTY_BOOKS)
   const load = useCallback(async () => {
     try {
@@ -30,12 +31,15 @@ export default function ReadingStatsView({ onBack, onOpenBook, theme, onToggleTh
   }, [])
   useEffect(() => {
     void load()
+    void window.api.getSetting('readingGoalMinutes').then(value => setGoalMinutes(['10', '20', '30', '60'].includes(value ?? '') ? Number(value) : 0)).catch(() => {})
     const interval = setInterval(() => void load(), 60_000)
     return () => clearInterval(interval)
   }, [load])
 
   const today = localDay(now)
   const dayTotals = new Map(data?.stats.days.map(day => [day.day, day.milliseconds]))
+  const todayMilliseconds = dayTotals.get(today) ?? 0
+  const goalPercent = goalMinutes ? Math.min(100, Math.floor(todayMilliseconds / (goalMinutes * 60_000) * 100)) : 0
   const days = Array.from({ length: range }, (_, i) => {
     const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() - range + i + 1)
     const day = localDay(date)
@@ -73,6 +77,14 @@ export default function ReadingStatsView({ onBack, onOpenBook, theme, onToggleTh
           <p>今日阅读</p>
           <strong data-testid="stats-today">{formatReadingTime(dayTotals.get(today) ?? 0)}</strong>
           <span>{(dayTotals.get(today) ?? 0) > 0 ? '今天，也为自己留了一点阅读时间。' : '从一页开始，今天的故事还在等你。'}</span>
+          <div className="reading-stats__goal">
+            <label>每日目标 <select data-testid="reading-goal" value={goalMinutes} onChange={event => {
+              const next = Number(event.target.value)
+              void window.api.setSetting('readingGoalMinutes', String(next)).then(() => setGoalMinutes(next)).catch(() => setError('阅读目标保存失败，请重试。'))
+            }}><option value={0}>不设置</option><option value={10}>10 分钟</option><option value={20}>20 分钟</option><option value={30}>30 分钟</option><option value={60}>60 分钟</option></select></label>
+            {goalMinutes > 0 && <><span data-testid="reading-goal-progress">{goalPercent >= 100 ? '今日已达成' : `已完成 ${goalPercent}%`}</span>
+              <span className="reading-stats__goal-track" role="progressbar" aria-label="今日阅读目标" aria-valuenow={goalPercent} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${goalPercent}%` }} /></span></>}
+          </div>
         </div>
         <div className="reading-stats__metric"><span>近 7 天</span><strong data-testid="stats-week">{formatReadingTime(recent)}</strong><small>一点一滴，都是收获</small></div>
         <div className="reading-stats__metric"><span>累计阅读</span><strong data-testid="stats-total">{formatReadingTime(total)}</strong><small>属于你的安静时光</small></div>

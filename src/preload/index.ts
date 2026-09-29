@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { CreateHighlightInput, HighlightRecord } from '../shared/highlight-types'
+import type { CreateVocabInput, VocabRecord } from '../shared/vocab-types'
 import type { TranslationSnapshot } from '../shared/translation-types'
 import type { ReadingStats } from '../shared/reading-stats'
 import type {
@@ -25,6 +26,10 @@ import type {
 } from '../shared/types'
 
 const api = {
+  backupStatus: (): Promise<{ folder: string | null; lastBackup: string | null }> => ipcRenderer.invoke('backup:status'),
+  chooseBackupFolder: (): Promise<{ folder: string | null; lastBackup: string | null }> => ipcRenderer.invoke('backup:chooseFolder'),
+  createBackup: (): Promise<{ folder: string | null; lastBackup: string | null }> => ipcRenderer.invoke('backup:create'),
+  restoreBackup: (): Promise<{ restored: boolean }> => ipcRenderer.invoke('backup:restore'),
   setReadingBook: (bookId: string | null): Promise<void> => ipcRenderer.invoke('reading:book', bookId),
   readingStats: (): Promise<ReadingStats> => ipcRenderer.invoke('reading:stats'),
   onReadingStatsError: (callback: (error: string | null) => void): (() => void) => {
@@ -36,6 +41,15 @@ const api = {
   addHighlight: (input: CreateHighlightInput): Promise<HighlightRecord> => ipcRenderer.invoke('highlights:add', input),
   deleteHighlight: (id: string): Promise<void> => ipcRenderer.invoke('highlights:delete', id),
   translationSnapshot: (): Promise<TranslationSnapshot> => ipcRenderer.invoke('translation:snapshot'),
+  dictionarySnapshot: (): Promise<TranslationSnapshot> => ipcRenderer.invoke('dictionary:snapshot'),
+  downloadDictionary: (): Promise<void> => ipcRenderer.invoke('dictionary:download'),
+  cancelDictionaryDownload: (): Promise<void> => ipcRenderer.invoke('dictionary:cancelDownload'),
+  removeDictionary: (): Promise<void> => ipcRenderer.invoke('dictionary:remove'),
+  onDictionaryChanged: (callback: (snapshot: TranslationSnapshot) => void): (() => void) => {
+    const listener = (_event: unknown, snapshot: TranslationSnapshot): void => callback(snapshot)
+    ipcRenderer.on('dictionary:changed', listener)
+    return () => ipcRenderer.off('dictionary:changed', listener)
+  },
   downloadTranslationPack: (): Promise<void> => ipcRenderer.invoke('translation:download'),
   cancelTranslationDownload: (): Promise<void> => ipcRenderer.invoke('translation:cancelDownload'),
   removeTranslationPack: (): Promise<void> => ipcRenderer.invoke('translation:remove'),
@@ -96,6 +110,11 @@ const api = {
   createAnnotation: (input: CreateAnnotationInput): Promise<AnnotationRecord> => ipcRenderer.invoke('annotations:create', input),
   updateAnnotation: (id: string, content: string): Promise<AnnotationRecord> => ipcRenderer.invoke('annotations:update', id, content),
   deleteAnnotation: (id: string): Promise<void> => ipcRenderer.invoke('annotations:delete', id),
+  listVocab: (bookId: string): Promise<VocabRecord[]> => ipcRenderer.invoke('vocab:list', bookId),
+  addVocab: (input: CreateVocabInput): Promise<VocabRecord> => ipcRenderer.invoke('vocab:add', input),
+  deleteVocab: (id: string): Promise<void> => ipcRenderer.invoke('vocab:delete', id),
+  exportExcerpts: (input: { suggestedName: string; markdown: string }): Promise<{ saved: boolean }> =>
+    ipcRenderer.invoke('excerpts:export', input),
   getSetting: (key: string): Promise<string | null> => ipcRenderer.invoke('settings:get', key),
   setSetting: (key: string, value: string): Promise<void> =>
     ipcRenderer.invoke('settings:set', key, value),
@@ -107,6 +126,7 @@ const api = {
     ipcRenderer.invoke('chat:listConversations', bookId),
   listAllConversations: (): Promise<ConversationWithBook[]> =>
     ipcRenderer.invoke('chat:listAllConversations'),
+  searchConversations: (query: string): Promise<string[]> => ipcRenderer.invoke('chat:search', query),
   createConversation: (input: CreateConversationInput): Promise<ConversationRecord> =>
     ipcRenderer.invoke('chat:createConversation', input),
   setConversationMerge: (id: string, mergedEndCfi: string | null): Promise<void> =>

@@ -204,7 +204,12 @@ export async function pressUntilPageChanges(
     const current = await waitForStableText(indicator)
     if (current !== baseline) return i
   }
-  throw new Error(`按了 ${maxPresses} 次「${key}」,页码指示器始终没有变化`)
+  const location = await h.page.evaluate(() => {
+    const rendition = (window as any).__readerRendition
+    const start = rendition?.currentLocation?.()?.start
+    return start ? { index: start.index, displayed: start.displayed, cfi: start.cfi } : null
+  })
+  throw new Error(`按了 ${maxPresses} 次「${key}」,页码指示器始终没有变化；实际排版位置: ${JSON.stringify(location)}`)
 }
 
 /**

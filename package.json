@@ -1,6 +1,6 @@
 {
   "name": "mowen-reader",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "墨问——支持 EPUB、PDF、TXT 的 AI 桌面阅读器",
   "main": "./out/main/index.js",
   "type": "module",

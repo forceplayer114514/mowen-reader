@@ -10,6 +10,7 @@ import {
   listAllConversations,
   listConversations,
   listMessages,
+  searchConversationIds,
   updateConversationMerge
 } from '../../src/main/db/conversations'
 import type { ConversationRecord, MessageRecord } from '../../src/shared/types'
@@ -50,6 +51,19 @@ function msg(id: string, convId: string, over: Partial<MessageRecord> = {}): Mes
 }
 
 describe('对话表', () => {
+  it('能搜索书名、章节、消息和引用，百分号按普通文字处理', () => {
+    const db = openDatabase(':memory:')
+    seedBook(db, '书1')
+    insertConversation(db, conv('a'))
+    insertMessage(db, msg('m1', 'a', { content: '这里有 50% 的可能', quotes: [{ cfiRange: 'cfi', text: '秘密原文' }] }))
+    expect(searchConversationIds(db, '书-书1')).toEqual(['a'])
+    expect(searchConversationIds(db, '那个夏天')).toEqual(['a'])
+    expect(searchConversationIds(db, '50%')).toEqual(['a'])
+    expect(searchConversationIds(db, '秘密原文')).toEqual(['a'])
+    expect(searchConversationIds(db, '%')).toEqual(['a'])
+    expect(searchConversationIds(db, '不存在')).toEqual([])
+    db.close()
+  })
   it('插入后能按 id 取回,字段一致', () => {
     const db = openDatabase(':memory:')
     seedBook(db, '书1')

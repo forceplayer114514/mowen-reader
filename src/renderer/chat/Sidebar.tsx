@@ -6,6 +6,7 @@ import type {
   MessageRecord,
   QuoteRecord
 } from '@shared/types'
+import type { VocabRecord } from '@shared/vocab-types'
 import { conversationsOnPage } from '../reader/anchor'
 import { cfiChapterKey, compareCfi } from '../reader/cfi'
 import type { ReaderEngine, TocItem, VisibleRange } from '../reader/types'
@@ -17,6 +18,7 @@ import { useChat } from './useChat'
 import { DEFAULT_CONTEXT_LIMIT, DEFAULT_SYSTEM_PROMPT } from '../settings/defaults'
 import ConfirmDialog from '../ConfirmDialog'
 import AnnotationView, { AnnotationComposer, type AnnotationDraft } from './AnnotationView'
+import VocabView from './VocabView'
 
 interface Props {
   book: BookRecord
@@ -27,6 +29,7 @@ interface Props {
   restoring?: boolean
   spread?: boolean
   onSetSpread?: (on: boolean) => Promise<void>
+  onNavigate?: () => void
   onAnnotationState?: (dirty: boolean, saving: boolean) => void
 }
 
@@ -59,6 +62,7 @@ export default function Sidebar({
   selection,
   spread = false,
   onSetSpread,
+  onNavigate,
   onAnnotationState
 }: Props) {
   const [conversations, setConversations] = useState<ConversationWithCount[]>([])
@@ -80,7 +84,7 @@ export default function Sidebar({
   const conversationsRequestRef = useRef(0)
   const conversationChosenRef = useRef(false)
   const mergeInProgressRef = useRef(false)
-  const [tab, setTab] = useState<'chat' | 'annotations'>('chat')
+  const [tab, setTab] = useState<'chat' | 'annotations' | 'vocab'>('chat')
   const [annotations, setAnnotations] = useState<AnnotationRecord[]>([])
   const [annotationDraft, setAnnotationDraft] = useState<AnnotationDraft | null>(null)
   const [annotationError, setAnnotationError] = useState<string | null>(null)
@@ -88,6 +92,11 @@ export default function Sidebar({
   const [noteBusy, setNoteBusy] = useState(false)
   const [pendingNoteAction, setPendingNoteAction] = useState<{ run: () => void } | null>(null)
   const [pendingDeleteNote, setPendingDeleteNote] = useState<AnnotationRecord | null>(null)
+  const [vocabs, setVocabs] = useState<VocabRecord[]>([])
+  const [vocabError, setVocabError] = useState<string | null>(null)
+  const [vocabBusy, setVocabBusy] = useState(false)
+  const [pendingDeleteVocab, setPendingDeleteVocab] = useState<VocabRecord | null>(null)
+  const vocabBusyRef = useRef(false)
   const noteBusyRef = useRef(false)
   const notesAliveRef = useRef(false)
   const openNoteRef = useRef<(note: AnnotationRecord) => void>(() => {})
@@ -96,6 +105,18 @@ export default function Sidebar({
     try { return compareCfi(a.startCfi, b.startCfi) || a.createdAt - b.createdAt || a.id.localeCompare(b.id) }
     catch { return a.createdAt - b.createdAt }
   }), [annotations])
+
+  const vocabCfiRanges = useMemo(() => new Set(vocabs.map((item) => item.cfiRange)), [vocabs])
+
+  useEffect(() => {
+    let cancelled = false
+    void window.api.listVocab(book.id).then((items) => {
+      if (!cancelled) { setVocabs(items); setVocabError((old) => old === '生词读取失败，请重新打开图书后重试' ? null : old) }
+    }).catch(() => {
+      if (!cancelled) setVocabError('生词读取失败，请重新打开图书后重试')
+    })
+    return () => { cancelled = true }
+  }, [book.id])
 
   useEffect(() => {
     let cancelled = false
@@ -207,6 +228,49 @@ export default function Sidebar({
     } finally {
       noteBusyRef.current = false
       if (notesAliveRef.current) setNoteBusy(false)
+    }
+  }
+
+  // 生词收藏：只用已落盘的翻译结果与划选 quote 元数据，不再发起任何 AI/翻译请求。
+  async function saveVocab(sources: QuoteRecord[], translation: string): Promise<void> {
+    const first = sources.find((quote) => quote.startCfi)
+    if (!first?.startCfi || vocabBusyRef.current) return
+    vocabBusyRef.current = true
+    setVocabBusy(true)
+    setVocabError(null)
+    try {
+      let chapterLabel: string | null = null
+      try {
+        if (visible && cfiChapterKey(first.startCfi) === cfiChapterKey(visible.startCfi)) chapterLabel = visible.chapterLabel
+      } catch { /* 没有可靠章节信息时不猜章节名。 */ }
+      const saved = await window.api.addVocab({ bookId: book.id, startCfi: first.startCfi,
+        cfiRange: first.cfiRange, sourceText: sources.map((quote) => quote.text).join('\n'),
+        translation, chapterLabel })
+      if (!notesAliveRef.current) return
+      setVocabs((items) => [...items.filter((item) => item.id !== saved.id && item.cfiRange !== saved.cfiRange), saved])
+    } catch {
+      if (notesAliveRef.current) setVocabError('生词收藏失败，请稍后重试')
+    } finally {
+      vocabBusyRef.current = false
+      if (notesAliveRef.current) setVocabBusy(false)
+    }
+  }
+
+  async function removeVocab(vocab: VocabRecord): Promise<void> {
+    if (vocabBusyRef.current) return
+    vocabBusyRef.current = true
+    setVocabBusy(true)
+    try {
+      await window.api.deleteVocab(vocab.id)
+      if (!notesAliveRef.current) return
+      setVocabs((items) => items.filter((item) => item.id !== vocab.id))
+      setVocabError(null)
+      setPendingDeleteVocab(null)
+    } catch {
+      if (notesAliveRef.current) { setPendingDeleteVocab(null); setVocabError('生词删除失败，请稍后重试') }
+    } finally {
+      vocabBusyRef.current = false
+      if (notesAliveRef.current) setVocabBusy(false)
     }
   }
 
@@ -461,13 +525,14 @@ export default function Sidebar({
       <header className="sidebar__header">
         <div>
           <span className="sidebar__eyebrow">墨问助手</span>
-          <div className="sidebar__title">{tab === 'chat' ? '当前位置' : '原文注释'}</div>
+          <div className="sidebar__title">{tab === 'chat' ? '当前位置' : tab === 'annotations' ? '原文注释' : '生词收藏'}</div>
           <div className="sidebar__current-label" data-testid="page-conversations-summary" hidden={tab !== 'chat'}>
             {visible
               ? `附近 ${nearbyConversations.length} · 本章 ${chapterConversations.length} 个对话`
               : '正在加载…'}
           </div>
           {tab === 'annotations' && <div className="sidebar__current-label">本地保存 · 全书 {annotations.length} 条</div>}
+          {tab === 'vocab' && <div className="sidebar__current-label">本地保存 · 全书 {vocabs.length} 条</div>}
         </div>
         <button type="button" className="button--icon" aria-label="收起侧边栏" onClick={toggleCollapsed}>›</button>
       </header>
@@ -476,13 +541,15 @@ export default function Sidebar({
           data-testid="sidebar-tab-chat" onClick={() => setTab('chat')}>对话</button>
         <button type="button" role="tab" id="annotations-tab" aria-selected={tab === 'annotations'} aria-controls="annotations-panel"
           data-testid="sidebar-tab-annotations" onClick={() => setTab('annotations')}>注释 {annotations.length > 0 && <small>{annotations.length}</small>}</button>
+        <button type="button" role="tab" id="vocab-tab" aria-selected={tab === 'vocab'} aria-controls="vocab-panel"
+          data-testid="sidebar-tab-vocab" onClick={() => setTab('vocab')}>生词 {vocabs.length > 0 && <small>{vocabs.length}</small>}</button>
       </div>
       <div className="sidebar__panel" id="chat-panel" role="tabpanel" aria-labelledby="chat-tab" hidden={tab !== 'chat'}>
       <HistoryList
         conversations={chapterConversations}
         activeId={conversationId}
         onSelect={selectConversation}
-        onLocate={(startCfi) => void engine?.display(startCfi)}
+        onLocate={(startCfi) => { onNavigate?.(); void engine?.display(startCfi) }}
         onDelete={setPendingDeleteId}
       />
       <div className="sidebar__current">
@@ -500,6 +567,10 @@ export default function Sidebar({
           onTranslateQuote={translateQuote}
           onAnnotateQuote={annotateQuote}
           annotationBusy={noteBusy || !notesReady}
+          vocabCfiRanges={vocabCfiRanges}
+          vocabBusy={vocabBusy}
+          vocabError={vocabError}
+          onSaveVocab={(sources, translation) => void saveVocab(sources, translation)}
           annotationEditor={tab === 'chat' && annotationDraft ? <AnnotationComposer notes={sortedNotes}
             draft={annotationDraft} active={!collapsed} busy={noteBusy || !notesReady} error={annotationError}
             onContent={(content) => setAnnotationDraft((draft) => draft ? { ...draft, content } : null)}
@@ -512,15 +583,20 @@ export default function Sidebar({
         <AnnotationView notes={sortedNotes} visible={visible} draft={annotationDraft}
           active={tab === 'annotations' && !collapsed} busy={noteBusy || !notesReady} error={annotationError}
           quotes={tab === 'annotations' ? quotes : []} chatBusy={chat.streaming !== null} onEdit={editNote}
-          onLocate={(note) => { void engine?.display(note.startCfi).catch(() => setAnnotationError('原文定位失败，请重开图书后重试')) }}
+          onLocate={(note) => { onNavigate?.(); void engine?.display(note.startCfi).catch(() => setAnnotationError('原文定位失败，请重开图书后重试')) }}
           onDelete={setPendingDeleteNote} onContent={(content) => setAnnotationDraft((draft) => draft ? { ...draft, content } : null)}
           onSubmit={() => void submitAnnotation()} onCancel={cancelAnnotation}
           onRemoveQuote={removeQuote} onTranslateQuote={translateQuote} onAnnotateQuote={annotateQuote} />
       </div>
+      <div className="sidebar__panel" id="vocab-panel" role="tabpanel" aria-labelledby="vocab-tab" hidden={tab !== 'vocab'}>
+        <VocabView vocabs={vocabs} busy={vocabBusy} error={vocabError}
+          onLocate={(vocab) => { onNavigate?.(); void engine?.display(vocab.startCfi).catch(() => setVocabError('原文定位失败，请重开图书后重试')) }}
+          onDelete={setPendingDeleteVocab} />
+      </div>
       </div>
     </aside>
     {pendingTranslation && <ConfirmDialog title="使用免费在线翻译？" tone="neutral"
-      message="只将你选中的文字发送给 MyMemory 翻译服务，不发送书籍全文、聊天记录或 API 密钥。服务有免费额度和网络限制；你也可以在设置中选择离线翻译。"
+      message="只将你选中的单词发送给有道词典，或将选中的句子发送给 MyMemory；不发送书籍全文、聊天记录或 API 密钥。服务有网络与额度限制；也可在设置中选择离线。"
       confirmLabel="同意并翻译" onCancel={() => setPendingTranslation(null)}
       onConfirm={() => void approveTranslation()} busy={translationConsentBusy}
       testId="translation-consent" confirmTestId="translation-consent-yes" />}
@@ -532,6 +608,9 @@ export default function Sidebar({
       : '原文不会改变，注释删除后无法恢复，其余编号会按原文顺序更新。'}
       confirmLabel="删除注释" onCancel={() => setPendingDeleteNote(null)} busy={noteBusy}
       onConfirm={() => void removeAnnotation(pendingDeleteNote)} testId="confirm-note-delete" confirmTestId="confirm-note-delete-yes" />}
+    {pendingDeleteVocab && <ConfirmDialog title="删除这条生词？" message={`「${pendingDeleteVocab.sourceText.slice(0, 40)}」的收藏会删除，原文不会改变，删除后无法恢复。`}
+      confirmLabel="删除生词" onCancel={() => setPendingDeleteVocab(null)} busy={vocabBusy}
+      onConfirm={() => void removeVocab(pendingDeleteVocab)} testId="confirm-vocab-delete" confirmTestId="confirm-vocab-delete-yes" />}
     {pendingDeleteId && <ConfirmDialog
       title="删除这个对话？"
       message="对话中的消息也会一并删除，删除后无法恢复。"

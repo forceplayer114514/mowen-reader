@@ -45,6 +45,7 @@ function makeHarness() {
   }
   const api = {
     listAnnotations: vi.fn(async () => []),
+    listVocab: vi.fn(async () => []),
     listConversations: vi.fn(async () => [conversation]),
     listMessages: vi.fn(async () => [message('old-user')]),
     getSetting: vi.fn(async () => null),

@@ -4,14 +4,19 @@ import { normalizeChapterHref, resolveNavigationHref } from './href'
 import type {
   OpenOptions,
   AnnotationMarker,
+  BookSearchResult,
   PersistentHighlightItem,
   ReaderEngine,
   ReadingTool,
   SelectionPoint,
   ThemeName,
   TocItem,
+  TypographyOptions,
   VisibleRange
 } from './types'
+import { MAX_SEARCH_RESULTS, normalizeSearchQuery, cleanSearchExcerpt, DEFAULT_TYPOGRAPHY, FONT_FAMILY_STACKS, PAGE_MARGIN_PX } from './types'
+
+export { normalizeSearchQuery, cleanSearchExcerpt } from './types'
 
 const THEMES: Record<ThemeName, Record<string, Record<string, string>>> = {
   light: {
@@ -79,6 +84,22 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   let selectionListeners: (
     (cfiRange: string, text: string, point: SelectionPoint | null, startCfi: string) => void
   )[] = []
+  let readPosition: ((text: string) => void) | null = null
+
+  async function handleReadClick(event: MouseEvent, contents: Contents): Promise<void> {
+    if (!readPosition || !book || !rendition?.location || event.button !== 0) return
+    const caret = (event.target as Node | null)?.ownerDocument?.caretRangeFromPoint(event.clientX, event.clientY)
+    if (!caret || caret.startContainer.nodeType !== Node.TEXT_NODE) return
+    const clickedBook = book
+    const callback = readPosition
+    try {
+      const { end } = rendition.location
+      const clickCfi = contents.cfiFromRange(caret)
+      // book.getRange reads a separate parsed chapter document, not the rendered iframe.
+      const text = (await clickedBook.getRange(makeRangeCfi(clickCfi, end.cfi))).toString().replace(/\s+/g, ' ').trim()
+      if (text && book === clickedBook && readPosition === callback) callback(text)
+    } catch { /* 跨章节或点击非正文时，保持点选模式。 */ }
+  }
   // 当前这本书上加过的高亮:范围 -> 点击它时要回调的函数。自己记一份,是因为
   // clearHighlights() 和换主题重画都要逐个范围操作,而 epub.js 的 Annotations
   // 只把它们塞在 _annotations 这类私有字段里(见 node_modules/epubjs/src/annotations.js),
@@ -106,6 +127,10 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   let locationsReady = false
   let locationsError: Error | null = null
   let currentFontSize = 18
+  // EPUB/TXT 排版预设:行距/页边距/字体。行距与字体走 themes.override(随新章节自动
+  // 生效);页边距是 body 内边距,排版引擎每次 layout 都会重写,所以只记值、
+  // 页边距走 epub.js 原生 gap，避免修改 body padding 后与分页步长不一致。
+  let typography: TypographyOptions = { ...DEFAULT_TYPOGRAPHY }
   let sectionLocationCounts: number[] = []
   let annotationMarkers: AnnotationMarker[] = []
   let onAnnotationClick: (id: string) => void = () => {}
@@ -199,10 +224,11 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   let targetLocation: string | null = null
   let targetLocationTimeout: ReturnType<typeof setTimeout> | null = null
   const resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(([entry]) => {
-    pendingSize = {
+    const nextSize = {
       width: Math.round(entry.contentRect.width),
       height: Math.round(entry.contentRect.height)
     }
+    pendingSize = nextSize
     if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
     resizeFrame = requestAnimationFrame(() => {
       resizeFrame = null
@@ -545,7 +571,44 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     }
   }
 
-  /** 章节渲染出来的那一刻要做的两件事,见各自的注释。 */
+  /**
+   * 把当前排版预设写进 epub.js:行距与字体走 themes.override(带 important,
+   * 盖掉出版社样式与 TXT 模板自带的 body{line-height}),新渲染的章节由
+   * hooks.content 自动带上;页边距交给 epub.js 的原生 gap。
+   * themes.override/font 在单元测试的替身 rendition 上可能不存在,按能力检查调用,
+   * 不能让排版把开书本身炸掉。
+   */
+  function applyTypographyOverrides(): void {
+    if (!rendition) return
+    const themes = rendition.themes as unknown as {
+      override?: (name: string, value: string, priority?: boolean) => void
+      font?: (family: string) => void
+    }
+    try {
+      themes.override?.('line-height', String(typography.lineHeight), true)
+      if (typeof themes.font === 'function') {
+        themes.font(FONT_FAMILY_STACKS[typography.fontFamily])
+      } else {
+        themes.override?.('font-family', FONT_FAMILY_STACKS[typography.fontFamily], true)
+      }
+    } catch {
+      // 排版写不进去不该阻塞阅读:正文按默认样式继续显示。
+    }
+  }
+
+  function applyTypography(): void {
+    applyTypographyOverrides()
+    const manager = (rendition as unknown as { manager?: {
+      settings?: { gap?: number }
+      updateLayout?: () => void
+    } })?.manager
+    if (manager?.settings) {
+      manager.settings.gap = 2 * PAGE_MARGIN_PX[typography.margin]
+      manager.updateLayout?.()
+    }
+  }
+
+  /** 章节渲染出来的那一刻要做的三件事,见各自的注释。 */
   function handleRendered(): void {
     pruneClickSwallows()
     syncHighlights()
@@ -704,6 +767,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
   function handleWindowKeydown(e: KeyboardEvent): void {
     const target = e.target as HTMLElement | null
     if (target && (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable)) return
+    if (e.ctrlKey || e.metaKey || e.altKey) return
     notifyKey(e.key)
   }
 
@@ -721,6 +785,14 @@ export function createEngine(container: HTMLElement): ReaderEngine {
    * 文档时自动管理,所以翻页、换章节都不会导致这里的监听重复挂载。
    */
   function handleContentKeydown(e: KeyboardEvent): void {
+    const target = e.target as HTMLElement | null
+    if (target && (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable)) return
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+      e.preventDefault()
+      notifyKey('Find')
+      return
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey) return
     notifyKey(e.key)
   }
 
@@ -765,6 +837,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     staleRendition.off('mouseup', handleContentRelease)
     staleRendition.off('touchend', handleContentRelease)
     staleRendition.off('rendered', handleRendered)
+    staleRendition.off('click', handleReadClick)
     try {
       staleRendition.destroy()
     } catch {
@@ -804,6 +877,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     rendition?.off('mouseup', handleContentRelease)
     rendition?.off('touchend', handleContentRelease)
     rendition?.off('rendered', handleRendered)
+    rendition?.off('click', handleReadClick)
     // rendition.q 里可能还排着一个我们自己调用过、还没跑到的 display() 任务(见
     // ReaderView.boot() 里 `await engine.display(...)`):它是 epub.js 内部靠
     // requestAnimationFrame 驱动的队列,当前这一帧不一定跑得到它。如果不在这里
@@ -853,6 +927,8 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     // 欠着的摘除也跟着这本书一起作废:范围字符串是这本书的,留到下一本书上
     // 只会对着不存在的范围做删除。
     pendingRemovals.clear()
+    // 排版预设跟着这本书走,下一本书重新按自己的存盘值来,不沿用上一本的。
+    typography = { ...DEFAULT_TYPOGRAPHY }
     locationsReady = false
     locationsError = null
     sectionLocationCounts = []
@@ -873,13 +949,15 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       const epoch = ++generation
 
       const nextBook = ePub(data)
+      typography = opts.typography ?? { ...DEFAULT_TYPOGRAPHY }
       const nextRendition = nextBook.renderTo(container, {
         width: '100%',
         height: '100%',
         flow: 'paginated',
         spread: 'none',
+        gap: 2 * PAGE_MARGIN_PX[typography.margin],
         allowScriptedContent: false
-      })
+      } as Parameters<Book['renderTo']>[1])
       // 一次注入两套限定 body 类名的样式，切换只换类名。
       // epub.js 的 addStylesheetRules 是追加而非替换，不能每次 select 都追加配色规则。
       nextRendition.themes.register('default', { ...THEMES.light, ...THEMES.dark })
@@ -889,6 +967,24 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       theme = opts.theme
       nextRendition.themes.fontSize(`${opts.fontSize}px`)
       currentFontSize = opts.fontSize
+      // 首屏即按存下的排版预设渲染,避免先默认后跳变。高亮/注释/位置都不动,
+      // 只是这次 open 之后量出来的分页天然就是新排版下的页码。
+      // 首屏直接按预设排:这时还没有渲染出的章节,override 只进 _overrides 表,
+      // 由 epub.js 的 hooks.content 在每章渲染时自动带上;边距等 rendered 时压。
+      try {
+        const themes = nextRendition.themes as unknown as {
+          override?: (name: string, value: string, priority?: boolean) => void
+          font?: (family: string) => void
+        }
+        themes.override?.('line-height', String(typography.lineHeight), true)
+        if (typeof themes.font === 'function') {
+          themes.font(FONT_FAMILY_STACKS[typography.fontFamily])
+        } else {
+          themes.override?.('font-family', FONT_FAMILY_STACKS[typography.fontFamily], true)
+        }
+      } catch {
+        // 见 applyTypographyOverrides 的注释。
+      }
 
       // 防死锁保护: epub.js 的 Queue.prototype.run 内部调用 this.dequeue().then(...)
       // 时没有 .catch() 异常处理,若队列任务抛错,this.running 会永久停留在 true,
@@ -988,6 +1084,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       // click 吞噬,见 syncHighlights() 和 pruneClickSwallows() 的注释。
       // 和上面两行一样在两次批次号检查之后,被取代的那次 open() 走不到这里。
       nextRendition.on('rendered', handleRendered)
+      nextRendition.on('click', handleReadClick)
     },
 
     async display(target?: string): Promise<void> {
@@ -1074,6 +1171,44 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       notify()
     },
 
+    /**
+     * 切换排版预设(行距/页边距/字体)并重排。和 setFontSize 同一套路:以调用方锁定的
+     * 锚点 CFI 重新落位,保证 CFI 位置与阅读进度不变;高亮按原 CFI 重画,
+     * 注释按原 CFI 重新定位(见 syncHighlights/scheduleAnnotations)。
+     */
+    async setTypography(opts: TypographyOptions, anchorCfi?: string): Promise<void> {
+      if (!rendition) return
+      typography = {
+        lineHeight: opts.lineHeight,
+        margin: opts.margin,
+        fontFamily: opts.fontFamily
+      }
+      const cfi =
+        anchorCfi ??
+        rendition.location?.start?.cfi ??
+        (rendition.currentLocation() as { start?: { cfi?: string } } | undefined)?.start?.cfi
+      applyTypography()
+      const viewsObj = rendition.views()
+      const viewList = Array.isArray(viewsObj)
+        ? viewsObj
+        : typeof (viewsObj as { all?: () => unknown[] })?.all === 'function'
+          ? (viewsObj as { all: () => unknown[] }).all()
+          : []
+      viewList.forEach((v: unknown) => {
+        ;(v as { expand?: () => void }).expand?.()
+      })
+      if (cfi) {
+        await rendition.display(cfi)
+      }
+      if (typeof requestAnimationFrame === 'function') {
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+      }
+      // epub.js 按原生 gap 重排后，重画高亮与注释。
+      syncHighlights()
+      scheduleAnnotations()
+      notify()
+    },
+
     setTheme(name: ThemeName): void {
       theme = name
       rendition?.themes.select(name)
@@ -1129,10 +1264,19 @@ export function createEngine(container: HTMLElement): ReaderEngine {
         : 0
       const width = pendingSize.width || container.clientWidth || 700
       const height = pendingSize.height || container.clientHeight || 600
+      // 页数虽是基于固定位置索引的估算，仍须随实际排版参数变化；否则改行距/边距
+      // 后正文已重排而总页数停在旧值。默认档保持原估算基线，避免升级后旧书页码突变。
+      const horizontalSpace = width - 96 - 2 * (PAGE_MARGIN_PX[typography.margin] - PAGE_MARGIN_PX.normal)
+      const lineHeight = 1.55 * typography.lineHeight / DEFAULT_TYPOGRAPHY.lineHeight
       const charsPerPage = Math.max(1,
-        Math.floor((Math.max(1, width - 96) / (currentFontSize * 0.58)) *
-          (Math.max(1, height - 96) / (currentFontSize * 1.55)))
+        Math.floor((Math.max(1, horizontalSpace) / (currentFontSize * 0.58)) *
+          (Math.max(1, height - 96) / (currentFontSize * lineHeight)))
       )
+      const sectionIndex = (start as { index?: number }).index
+      const displayedPage = (start as { displayed?: { page?: number } }).displayed?.page
+      const displayedTotal = (start as { displayed?: { total?: number } }).displayed?.total
+      // ponytail: 未打开章节按位置索引估算；要精确全书页数需后台逐章排版。
+      // 不用当前章实测值反复改写总数，避免翻译/跳章时总页数乱跳。
       const sectionPages = sectionLocationCounts.map((count) =>
         count > 0 ? Math.max(1, Math.ceil(count * LOCATION_CHUNK / charsPerPage)) : 0
       )
@@ -1142,14 +1286,15 @@ export function createEngine(container: HTMLElement): ReaderEngine {
           : Math.max(1, Math.ceil(locationCount * LOCATION_CHUNK / charsPerPage))
         : 0
       const loc = locationCount > 0 ? locations.locationFromCfi(start.cfi) : -1
-      const sectionIndex = (start as { index?: number }).index
-      const displayedPage = (start as { displayed?: { page?: number } }).displayed?.page
       const page = totalPages > 0
         ? typeof sectionIndex === 'number' && sectionPages[sectionIndex] > 0 &&
           typeof displayedPage === 'number'
           ? Math.min(totalPages,
               sectionPages.slice(0, sectionIndex).reduce((sum, count) => sum + count, 0) +
-              Math.min(sectionPages[sectionIndex], Math.max(1, displayedPage)))
+              (typeof displayedTotal === 'number' && displayedTotal > 0
+                ? Math.min(sectionPages[sectionIndex], Math.max(1,
+                    Math.ceil(displayedPage / displayedTotal * sectionPages[sectionIndex])))
+                : Math.min(sectionPages[sectionIndex], Math.max(1, displayedPage))))
           : loc >= 0
             ? Math.min(totalPages, 1 + Math.floor((loc / Math.max(1, locationCount - 1)) * (totalPages - 1)))
             : 1
@@ -1165,6 +1310,8 @@ export function createEngine(container: HTMLElement): ReaderEngine {
         chapterLabel: entry ? entry.label : null,
         page,
         totalPages,
+        chapterPage: typeof displayedPage === 'number' ? displayedPage : undefined,
+        chapterTotalPages: typeof displayedTotal === 'number' ? displayedTotal : undefined,
         readProgress: locationsReady && rendition.location.atEnd ? 1
           : rendition.location.atStart ? 0
           : Math.max(0, Math.min(0.99, loc / Math.max(1, locationCount - 1)))
@@ -1182,6 +1329,103 @@ export function createEngine(container: HTMLElement): ReaderEngine {
     exportLocations(): string | null {
       if (!book || !locationsReady) return null
       return book.locations.save()
+    },
+
+    /**
+     * 当前书内全文搜索。逐章 load → section.search/find → unload,复用 epub.js
+     * 自带的章节内查找,不引入新依赖、不改分页/进度/高亮/注释、不碰正文 DOM。
+     *
+     * 只读但会短暂占用 spine 章节的 document:load 进来的文档在 finally 里
+     * unload 掉,渲染中的 iframe 用的是自己独立的文档副本,不受影响。
+     * 章节加载失败(损坏的单章)时跳过该章而不是整本书报错;空查询直接返回空数组。
+     */
+    async search(query: string): Promise<BookSearchResult[]> {
+      const q = normalizeSearchQuery(query)
+      const source = book
+      if (!q || !source) return []
+      const results: BookSearchResult[] = []
+      const spine = source.spine as unknown as {
+        length?: number
+        get?: (index: number) => {
+          href?: string
+          load?: (request: (path: string) => Promise<unknown>) => Promise<unknown>
+          unload?: () => void
+          search?: (query: string) => { cfi: string; excerpt: string }[]
+          find?: (query: string) => { cfi: string; excerpt: string }[]
+        }
+      } | undefined
+      const spineRef = spine
+      const total = typeof spineRef?.length === 'number' ? spineRef.length : 0
+      const request = (
+        source as unknown as { load: (path: string) => Promise<unknown> }
+      ).load.bind(source)
+      for (let index = 0; index < total; index++) {
+        if (results.length >= MAX_SEARCH_RESULTS) break
+        // 搜索是跨 open() 的异步循环:中途切书/关书时 book 已被 teardown 置空,
+        // 继续用手上 source 的 spine 读下一章会把旧书的内容混进新书的结果里。
+        if (book !== source) break
+        let section: ReturnType<NonNullable<NonNullable<typeof spineRef>['get']>> | undefined
+        try {
+          section = spineRef?.get?.(index)
+        } catch {
+          continue
+        }
+        if (!section) continue
+        try {
+          await section.load?.(request)
+        } catch {
+          continue
+        }
+        try {
+          let matches: { cfi: string; excerpt: string }[] = []
+          try {
+            matches = section.search?.(q) ?? []
+          } catch {
+            matches = []
+          }
+          // search 只找跨若干元素的命中,单文本节点内的命中可能漏掉时用 find 补齐。
+          // 两边都成功时按 CFI 去重,顺序保持章节内先后。
+          if (typeof section.find === 'function') {
+            try {
+              const extra = section.find(q) ?? []
+              if (matches.length === 0) {
+                matches = extra
+              } else if (extra.length > 0) {
+                const seen = new Set(matches.map((m) => m.cfi))
+                for (const m of extra) {
+                  if (!seen.has(m.cfi)) {
+                    seen.add(m.cfi)
+                    matches.push(m)
+                  }
+                }
+              }
+            } catch {
+              // find 失败不影响 search 已拿到的命中。
+            }
+          }
+          const href = String(section.href ?? spineHrefs[index] ?? '')
+          const entry = href
+            ? toc.find((t) => normalizeChapterHref(t.href) === normalizeChapterHref(href))
+            : undefined
+          const label = entry?.label || href || `第 ${index + 1} 章`
+          for (const m of matches) {
+            if (results.length >= MAX_SEARCH_RESULTS) break
+            if (!m || typeof m.cfi !== 'string' || !m.cfi) continue
+            results.push({
+              cfiRange: m.cfi,
+              excerpt: cleanSearchExcerpt(String(m.excerpt ?? '')),
+              label
+            })
+          }
+        } finally {
+          try {
+            section.unload?.()
+          } catch {
+            // 单章卸载失败不影响已拿到的命中。
+          }
+        }
+      }
+      return results
     },
 
     onRelocated(cb: () => void): () => void {
@@ -1210,6 +1454,11 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       return () => {
         selectionListeners = selectionListeners.filter((x) => x !== cb)
       }
+    },
+
+    onReadPosition(cb) {
+      readPosition = cb
+      return () => { if (readPosition === cb) readPosition = null }
     },
 
     addHighlight(cfiRange: string, onClick: () => void): void {

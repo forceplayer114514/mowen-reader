@@ -12,6 +12,7 @@ interface Props {
   onOpenBook: (book: BookRecord) => void
   onOpenSettings?: () => void
   onOpenConversations?: () => void
+  onOpenExcerpts?: () => void
   onOpenStats?: () => void
   onOpenOnline?: () => void
   onOpenDownloads?: () => void
@@ -24,15 +25,24 @@ interface Props {
 
 type Stager = (sourcePaths: string[]) => Promise<ImportedFile[]>
 
-export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversations, onOpenStats, onOpenOnline, onOpenDownloads, downloadCount, downloadsOpen, revision, theme, onToggleTheme }: Props) {
+export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversations, onOpenExcerpts, onOpenStats, onOpenOnline, onOpenDownloads, downloadCount, downloadsOpen, revision, theme, onToggleTheme }: Props) {
   const [books, setBooks] = useState<BookRecord[]>([])
   const [busy, setBusy] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
+  const [status, setStatus] = useState<'all' | 'unread' | 'reading' | 'finished'>('all')
+  const [sort, setSort] = useState<'recent' | 'title' | 'added'>('recent')
   const coverUrls = useBookCovers(books)
   const search = query.trim().normalize('NFKC').toLowerCase()
-  const filteredBooks = books.filter(book => `${book.title} ${book.author ?? ''}`.normalize('NFKC').toLowerCase().includes(search))
+  const filteredBooks = books.filter(book => {
+    if (!`${book.title} ${book.author ?? ''}`.normalize('NFKC').toLowerCase().includes(search)) return false
+    if (status === 'finished') return (book.readProgress ?? 0) >= 1
+    if (status === 'reading') return (book.readProgress ?? 0) > 0 && (book.readProgress ?? 0) < 1 || book.lastReadAt !== null && (book.readProgress ?? 0) === 0
+    if (status === 'unread') return book.lastReadAt === null && (book.readProgress ?? 0) === 0
+    return true
+  }).sort((a, b) => sort === 'title' ? a.title.localeCompare(b.title, 'zh-Hans-CN')
+    : sort === 'added' ? b.addedAt - a.addedAt : (b.lastReadAt ?? 0) - (a.lastReadAt ?? 0) || b.addedAt - a.addedAt)
   // listBooks 已按最近阅读时间倒序；搜索只筛选书卡，不改变继续阅读的目标。
   const lastBook = books.find(book => book.lastReadAt !== null)
   // 等待用户确认删除的那本书;非 null 时弹出确认框。删除会连带清掉用户复制
@@ -61,6 +71,7 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
     async (sourcePath: string, stage: Stager): Promise<string | null> => {
       let staged: ImportedFile | null = null
       try {
+        if ((await window.api.listBooks()).some(book => book.sourcePath === sourcePath)) return '书架里已有来自同一路径的书籍'
         const [file] = await stage([sourcePath])
         staged = file
         const bytes = await window.api.readStagedFile(file.id)
@@ -94,7 +105,7 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
         for (let i = 0; i < paths.length; i++) {
           setBusy(`正在导入 ${i + 1}/${paths.length}`)
           const failure = await importOne(paths[i], stage)
-          if (failure) failures.push(failure)
+          if (failure) failures.push(`${paths[i].split(/[\\/]/).pop() ?? '未知文件'}：${failure}`)
           else succeeded++
         }
       } finally {
@@ -103,9 +114,7 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
         await refresh()
       }
       if (failures.length > 0) {
-        setError(
-          succeeded > 0 ? `已导入 ${succeeded} 本,${failures.length} 本失败` : failures[0]
-        )
+        setError(`${succeeded > 0 ? `已导入 ${succeeded} 本；` : ''}${failures.length} 本未导入：${failures.slice(0, 3).join('；')}${failures.length > 3 ? `；另有 ${failures.length - 3} 本` : ''}`)
       }
     },
     [importOne, refresh]
@@ -212,6 +221,9 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
           <button type="button" className="button--ghost" data-testid="open-conversations" onClick={onOpenConversations}>
             对话
           </button>
+          <button type="button" className="button--ghost" data-testid="open-excerpts" onClick={onOpenExcerpts}>
+            摘录
+          </button>
           <button type="button" className="button--ghost" data-testid="open-stats" onClick={onOpenStats}>统计</button>
           <button type="button" className="button--ghost" data-testid="open-settings" onClick={onOpenSettings}>
             设置
@@ -237,7 +249,7 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
           <h1>你的书架</h1>
           <p>支持 EPUB、PDF、TXT。在需要时让 AI 帮你理解、翻译和梳理。</p>
         </div>
-        <span className="library__count" data-testid="library-count">{search ? `${filteredBooks.length} / ${books.length}` : books.length} 本书</span>
+        <span className="library__count" data-testid="library-count">{search || status !== 'all' ? `${filteredBooks.length} / ${books.length}` : books.length} 本书</span>
       </section>
 
       <div className="library__tools">
@@ -249,6 +261,12 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
             value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') setQuery('') }} />
           {query && <button type="button" className="button--icon" aria-label="清空搜索" onClick={() => setQuery('')}>×</button>}
         </div>
+        <label className="library__select">状态 <select data-testid="library-status" value={status} onChange={event => setStatus(event.target.value as typeof status)}>
+          <option value="all">全部</option><option value="unread">未开始</option><option value="reading">阅读中</option><option value="finished">已读完</option>
+        </select></label>
+        <label className="library__select">排序 <select data-testid="library-sort" value={sort} onChange={event => setSort(event.target.value as typeof sort)}>
+          <option value="recent">最近阅读</option><option value="added">最近添加</option><option value="title">书名</option>
+        </select></label>
         <button type="button" className="button--primary library__continue" data-testid="continue-reading"
           disabled={!lastBook || error === '书库读取失败，已保存的书籍未删除，请重试'}
           title={lastBook ? `继续阅读（${lastBook.title}）` : '打开一本书后，可从这里接着读'}
@@ -275,8 +293,8 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
       ) : filteredBooks.length === 0 ? (
         <div className="empty" role="status">
           <strong>没有找到匹配的图书</strong>
-          <p>试试其他书名或作者，或清空搜索查看全部书籍。</p>
-          <button type="button" className="button--secondary" onClick={() => setQuery('')}>查看全部书籍</button>
+          <p>试试其他书名或作者，或清除筛选查看全部书籍。</p>
+          <button type="button" className="button--secondary" onClick={() => { setQuery(''); setStatus('all') }}>查看全部书籍</button>
         </div>
       ) : (
         <div className="library__grid">

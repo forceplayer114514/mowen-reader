@@ -21,6 +21,7 @@ import type {
   TranslationStatus,
   PackFileEntry
 } from '../shared/translation-types'
+import { singleEnglishWord } from './dictionary'
 
 /** HF 模型与固定版本（2026-09-27 经 HF API 核验，见 PACK_FILES 注释）。 */
 export const MODEL_ID = 'Xenova/opus-mt-en-zh'
@@ -403,6 +404,13 @@ export function createTranslationService(deps: TranslationServiceDeps) {
     const { source, target } = readPair()
     const mode = deps.getSetting('translation.mode') ?? 'online'
     if (mode !== 'online' && mode !== 'offline') throw new Error(`未知的翻译模式:${mode}`)
+    const word = singleEnglishWord(text)
+    if (deps.lookupWord && word) {
+      if (mode === 'online' && (deps.getSetting('translation.onlineConsent') ?? 'false') !== 'true') {
+        throw new Error('请先同意在线查词（所选单词会发送给有道词典）')
+      }
+      return { text: await deps.lookupWord(word, mode, signal), engine: `${mode}-dictionary` }
+    }
     if (mode === 'offline') {
       const size = await installedSize()
       if (size === null) throw new Error('离线包未安装，请先下载离线包（不会自动下载）')

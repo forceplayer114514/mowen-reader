@@ -12,8 +12,11 @@ import type { ConversationWithBook } from '../../src/shared/types'
 function settingsApi() {
   let done: ((id: string, result: { status: 'finished' | 'stopped' | 'error'; message?: string }) => void) | null = null
   return {
+    backupStatus: vi.fn(async () => ({ folder: null, lastBackup: null })),
     translationSnapshot: vi.fn(async () => ({ status: 'not-installed', received: 0, total: 100, size: 100, message: null })),
     onTranslationChanged: vi.fn(() => () => {}),
+    dictionarySnapshot: vi.fn(async () => ({ status: 'not-installed', received: 0, total: 100, size: 100, message: null })),
+    onDictionaryChanged: vi.fn(() => () => {}),
     getSetting: vi.fn(async () => null),
     hasApiKey: vi.fn(async () => false),
     setSetting: vi.fn(async () => {}),
@@ -254,7 +257,7 @@ describe('Task 12 设置与对话管理', () => {
     window.api = api as never
     await act(async () => {
       root = createRoot(host)
-      root.render(createElement(ConversationsView, { onBack: vi.fn() }))
+      root.render(createElement(ConversationsView, { onBack: vi.fn(), onOpenAt: vi.fn() }))
       await Promise.resolve()
     })
     await vi.waitFor(() => expect(host.querySelector('[data-testid="conversation-book"]')).not.toBeNull())
@@ -292,7 +295,7 @@ describe('Task 12 设置与对话管理', () => {
     window.api = api as never
     await act(async () => {
       root = createRoot(host)
-      root.render(createElement(StrictMode, null, createElement(ConversationsView, { onBack: vi.fn() })))
+      root.render(createElement(StrictMode, null, createElement(ConversationsView, { onBack: vi.fn(), onOpenAt: vi.fn() })))
       await Promise.resolve()
     })
     await vi.waitFor(() => expect(api.listAllConversations).toHaveBeenCalledTimes(2))
@@ -312,7 +315,7 @@ describe('Task 12 设置与对话管理', () => {
     window.api = api as never
     await act(async () => {
       root = createRoot(host)
-      root.render(createElement(ConversationsView, { onBack: vi.fn() }))
+      root.render(createElement(ConversationsView, { onBack: vi.fn(), onOpenAt: vi.fn() }))
       await Promise.resolve()
     })
     act(() => root.unmount())

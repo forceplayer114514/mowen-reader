@@ -101,6 +101,19 @@ function syntheticEnglish(sentences: number): string {
 }
 
 describe('翻译输入校验', () => {
+  it('单词直接查词，不调用句子机翻；标点不会误导路由', async () => {
+    const h = await harness({
+      fetchImpl: (() => { throw new Error('不应调用 MyMemory') }) as typeof fetch,
+      lookupWord: async (word) => `**${word}** /rʌn/\n\n1. 跑\n2. 赛跑`
+    })
+    const service = createTranslationService(h.deps)
+    await expect(service.translate('“run,”')).rejects.toThrow('同意在线查词')
+    h.settings.set('translation.onlineConsent', 'true')
+    expect(await service.translate('“run,”')).toEqual({ text: '**run** /rʌn/\n\n1. 跑\n2. 赛跑', engine: 'online-dictionary' })
+    h.settings.set('translation.mode', 'offline')
+    expect((await service.translate('run')).engine).toBe('offline-dictionary')
+    service.dispose()
+  })
   it('空文本与超长文本直接报错（错误不回显原文）', async () => {
     const h = await harness({ fetchImpl: onlineFetch((q) => q) })
     h.settings.set('translation.onlineConsent', 'true')
