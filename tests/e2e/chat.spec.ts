@@ -84,6 +84,17 @@ test('划选原文后提问,假服务的 user 消息含引用', async () => {
   await ask(h, '请解释这句话')
   const user = fake.requests[0]?.body.messages?.at(-1)?.content ?? ''
   expect(user).toContain(quote!.text)
+  for (const content of [
+    h.page.getByTestId('message-user').locator('.message__quotes span').first(),
+    h.page.getByTestId('message-user').locator('p'),
+    h.page.getByTestId('message-assistant').last().locator('p')
+  ]) {
+    await content.click({ clickCount: 3 })
+    const selected = await h.page.evaluate(() => window.getSelection()?.toString().trim())
+    expect(selected).toBeTruthy()
+    await h.page.keyboard.press(process.platform === 'darwin' ? 'Meta+c' : 'Control+c')
+    expect((await h.app.evaluate(({ clipboard }) => clipboard.readText())).trim()).toBe(selected)
+  }
 })
 
 test('点击已高亮句子取消后,请求不再带该引用', async () => {

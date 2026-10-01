@@ -1583,6 +1583,7 @@ input[type='checkbox'] {
   border-radius: 6px 13px 13px 13px;
   line-height: 1.62;
   overflow-wrap: anywhere;
+  user-select: text;
 }
 
 .message p {
@@ -1591,11 +1592,6 @@ input[type='checkbox'] {
 
 .message p:last-child {
   margin-bottom: 0;
-}
-
-.message pre,
-.message code {
-  user-select: text;
 }
 
 .message code {
