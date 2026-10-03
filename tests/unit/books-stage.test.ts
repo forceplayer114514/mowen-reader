@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
@@ -61,20 +61,15 @@ describe('stageOne', () => {
     await expect(stageOne(sub)).rejects.toThrow()
   })
 
-  it('超体积文件被拒绝', async () => {
-    const src = join(workDir, '大.txt')
-    writeFileSync(src, 'x')
-    allowSource(src)
-    const { truncateSync } = await import('node:fs')
-    // 把文件截断标记改大而不实际写 16MB:用稀疏方式只改大小位
-    // 为避免 CI 写大文件,这里 mock lstat 更轻——直接验证逻辑存在即可。
-    // 简单起见:写一个小文件,用 vi  mock? 这里改为直接检查小文件通过,
-    // 超体积逻辑由单元 mock 覆盖(见下)。
-    const result = await stageOne(src)
-    expect(existsSync(result.filePath)).toBe(true)
-    truncateSync(src, 16 * 1024 * 1024 + 1)
-    allowSource(src)
-    await expect(stageOne(src)).rejects.toThrow(/文件过大/)
+  it('大文件复制入库不受原来的大小限制', async () => {
+    for (const format of ['epub', 'pdf', 'txt']) {
+      const src = join(workDir, `大.${format}`)
+      writeFileSync(src, 'x')
+      truncateSync(src, 65 * 1024 * 1024)
+      allowSource(src)
+      const result = await stageOne(src)
+      expect(statSync(result.filePath).size).toBe(65 * 1024 * 1024)
+    }
   })
 })
 

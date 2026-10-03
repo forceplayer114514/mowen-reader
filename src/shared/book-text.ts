@@ -1,7 +1,6 @@
 /** UTF-8 first; recognize UTF-16 BOM, and fall back to common Chinese GB18030 TXT. */
 export function decodeText(data: ArrayBuffer): string {
   const bytes = new Uint8Array(data)
-  if (bytes.byteLength > 16 * 1024 * 1024) throw new Error('TXT 文件不能超过 16 MB')
   let text: string
   if (bytes[0] === 0xff && bytes[1] === 0xfe) text = new TextDecoder('utf-16le', { fatal: true }).decode(bytes)
   else if (bytes[0] === 0xfe && bytes[1] === 0xff) text = new TextDecoder('utf-16be', { fatal: true }).decode(bytes)

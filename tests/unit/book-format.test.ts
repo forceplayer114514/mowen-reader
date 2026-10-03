@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bookFormat, maxBookBytes, supportedBookExtensions } from '../../src/shared/book-format'
+import { bookFormat, supportedBookExtensions } from '../../src/shared/book-format'
 
 describe('bookFormat', () => {
   it('识别 epub/pdf/txt,大小写不敏感', () => {
@@ -28,9 +28,4 @@ describe('bookFormat', () => {
     expect([...supportedBookExtensions].sort()).toEqual(['epub', 'pdf', 'txt'])
   })
 
-  it('体积上限:EPUB/PDF 64MB,TXT 16MB', () => {
-    expect(maxBookBytes.epub).toBe(64 * 1024 * 1024)
-    expect(maxBookBytes.pdf).toBe(64 * 1024 * 1024)
-    expect(maxBookBytes.txt).toBe(16 * 1024 * 1024)
-  })
 })

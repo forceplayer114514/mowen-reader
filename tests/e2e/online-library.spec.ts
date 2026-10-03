@@ -14,14 +14,25 @@ test.beforeAll(async () => {
   const brokenZip = await JSZip.loadAsync(bytes)
   brokenZip.remove('OEBPS/content.opf')
   const brokenBytes = await brokenZip.generateAsync({ type: 'nodebuffer' })
+  const pdf = buildFixturePdf()
+  const trailer = pdf.indexOf('startxref')
+  // Whitespace after the xref table keeps its original offsets and the EOF marker valid.
+  const largePdf = Buffer.concat([pdf.subarray(0, trailer), Buffer.alloc(65 * 1024 * 1024, ' '), pdf.subarray(trailer)])
   server = createServer((req, res) => {
     if (req.url === '/') {
       res.setHeader('Content-Type', 'text/html; charset=utf-8')
-      res.end('<h1>在线书库测试</h1><a href="/book.epub">下载 EPUB</a> <a href="/bad.epub">错误页面</a> <a href="/broken.epub">损坏电子书</a> <a href="/slow.epub">慢速下载</a> <a href="/book.pdf">PDF</a> <a href="/valid.pdf">下载 PDF</a> <a href="/text.txt">下载 TXT</a>')
+      res.end('<h1>在线书库测试</h1><a href="/book.epub">下载 EPUB</a> <a href="/bad.epub">错误页面</a> <a href="/broken.epub">损坏电子书</a> <a href="/slow.epub">慢速下载</a> <a href="/book.pdf">PDF</a> <a href="/valid.pdf">下载 PDF</a> <a href="/text.txt">下载 TXT</a> <a href="/large.pdf">大 PDF</a> <a href="/large-chunked.pdf">未知大小 PDF</a>')
       return
     }
     res.setHeader('Content-Disposition', `attachment; filename="${req.url?.slice(1)}"`)
     res.setHeader('Content-Type', 'application/epub+zip')
+    if (req.url === '/large.pdf' || req.url === '/large-chunked.pdf') {
+      res.setHeader('Content-Type', 'application/pdf')
+      if (req.url === '/large.pdf') res.setHeader('Content-Length', largePdf.length)
+      else res.setHeader('Transfer-Encoding', 'chunked')
+      res.end(largePdf)
+      return
+    }
     if (req.url === '/bad.epub') { res.end('<html>Login required</html>'); return }
     if (req.url === '/book.pdf') { res.end('%PDF'); return }
     if (req.url === '/valid.pdf') { res.end(buildFixturePdf()); return }
@@ -127,6 +138,29 @@ test('PDF/TXT downloads import in their original format and pending PDF recovers
   const books = await h.page.evaluate(() => window.api.listBooks())
   expect(books.map((b) => b.filePath.slice(-4)).sort()).toEqual(['.pdf', '.txt'])
   await h.page.getByTestId('book-card').filter({ hasText: 'PDF Reading Test' }).click()
+  await expect(h.page.getByTestId('page-indicator')).toHaveText('第 1 / 3 页')
+})
+
+test('downloads over 64 MB survive restart, import and open with known or unknown length', async () => {
+  let h = await launch(undefined, { READER_ONLINE_URL: url })
+  const remote = await site(h)
+  await h.page.getByLabel('下载后自动入库').uncheck()
+  await remote.getByRole('link', { name: '大 PDF', exact: true }).click()
+  await expect(h.page.getByTestId('download-task')).toContainText('待入库')
+  const task = (await h.page.evaluate(() => window.api.onlineSnapshot())).tasks[0]
+  expect(task.received).toBeGreaterThan(64 * 1024 * 1024)
+  const profile = h.userData
+  await h.app.close()
+  h = await launch(profile, { READER_ONLINE_URL: url })
+  await h.page.getByTestId('open-downloads').click()
+  await expect(h.page.getByTestId('download-task')).toContainText('待入库')
+  await h.page.getByLabel('下载后自动入库').check()
+  await expect(h.page.getByTestId('book-card')).toHaveCount(1)
+  const restartedRemote = await site(h)
+  await restartedRemote.getByRole('link', { name: '未知大小 PDF', exact: true }).click()
+  await expect(h.page.getByTestId('download-task').last()).toContainText('未重复添加')
+  await h.page.getByRole('button', { name: '← 书架', exact: true }).click()
+  await h.page.getByTestId('book-card').click()
   await expect(h.page.getByTestId('page-indicator')).toHaveText('第 1 / 3 页')
 })
 

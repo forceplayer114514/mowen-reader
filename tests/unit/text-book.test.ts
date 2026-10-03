@@ -11,10 +11,9 @@ describe('TXT books', () => {
     expect(decodeText(Uint8Array.from([0xfe, 0xff, 0x4f, 0x60, 0x59, 0x7d]).buffer)).toBe('你好')
     expect(decodeText(Uint8Array.from([0xc4, 0xe3, 0xba, 0xc3]).buffer)).toBe('你好')
   })
-  it('rejects empty, binary and oversized files', () => {
+  it('rejects empty and binary files', () => {
     expect(() => decodeText(utf8(' \n'))).toThrow(/没有可阅读/)
     expect(() => decodeText(utf8('hello\u0000world'))).toThrow(/二进制/)
-    expect(() => decodeText(new ArrayBuffer(16 * 1024 * 1024 + 1))).toThrow(/16 MB/)
   })
   it('escapes markup and creates deterministic chapter paths and paragraph DOM', async () => {
     const data = utf8('第一章 开始\n<script>alert("x")</script>\n第二章 结束\n你好 & 再见')

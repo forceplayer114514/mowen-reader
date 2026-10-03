@@ -1,12 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdirSync, readdirSync } from 'node:fs'
+import { createReadStream, mkdirSync, readdirSync } from 'node:fs'
 import { lstat, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { BrowserWindow, DownloadItem, ipcMain, shell, WebContentsView } from 'electron'
 import type { DownloadMetadata, DownloadTask, OnlineAction, OnlineBounds, OnlineSnapshot } from '../shared/types'
 import { copyBookIntoLibrary, discardStagedFile, stripBookExtension } from './books/import'
-import { MAX_DOWNLOAD_BYTES, validateDownloadedBook } from './books/validate-download'
-import { bookFormat, maxBookBytes } from '../shared/book-format'
+import { validateDownloadedBook } from './books/validate-download'
+import { bookFormat } from '../shared/book-format'
 import { listBooks } from './db/books'
 import { getSetting, setSetting } from './db/settings'
 import { database, finishBookImport } from './ipc'
@@ -105,7 +105,7 @@ export function attachOnlineLibrary(win: BrowserWindow): void {
     const next = validations.then(async () => {
       try {
         const stat = await lstat(job.path)
-        if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_DOWNLOAD_BYTES) throw new Error('下载文件无效或超过 64 MB')
+        if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('下载文件无效')
         const bytes = await readFile(job.path)
         await validateDownloadedBook(bytes, job.path)
         job.hash = createHash('sha256').update(bytes).digest('hex')
@@ -183,13 +183,12 @@ export function attachOnlineLibrary(win: BrowserWindow): void {
       }
       const name = item.getFilename().replace(/[\x00-\x1f]/g, '').slice(0, 180)
       const format = bookFormat(name)
-      const limit = format ? maxBookBytes[format] : MAX_DOWNLOAD_BYTES
       const pending = [...jobs.values()].filter(j => !['imported', 'cancelled'].includes(j.status) && j.canImport !== false).length
-      if (!format || !item.getURLChain().every(safeUrl) || item.getTotalBytes() > limit || pending >= 5) {
+      if (!format || !item.getURLChain().every(safeUrl) || pending >= 5) {
         event.preventDefault()
         const id = randomUUID()
         jobs.set(id, { id, name, path: join(root, `${id}.epub`), status: 'error', received: 0, total: 0,
-          canImport: false, message: pending >= 5 ? '最多保留 5 个待处理下载，请先入库或移除' : '仅支持 EPUB / PDF（64 MB 内）或 TXT（16 MB 内）' })
+          canImport: false, message: pending >= 5 ? '最多保留 5 个待处理下载，请先入库或移除' : '仅支持 EPUB、PDF 或 TXT，且下载地址必须安全' })
         publish(); return
       }
       const id = randomUUID()
@@ -198,7 +197,6 @@ export function attachOnlineLibrary(win: BrowserWindow): void {
       item.setSavePath(job.path)
       item.on('updated', () => {
         job.received = item.getReceivedBytes(); job.total = item.getTotalBytes()
-        if (job.received > limit) { job.message = `电子书超过 ${limit / 1024 / 1024} MB 限制`; item.cancel() }
         publish()
       })
       item.once('done', (_event, state) => {
@@ -326,7 +324,10 @@ export function attachOnlineLibrary(win: BrowserWindow): void {
         else {
           staged = await copyBookIntoLibrary(job.path)
           const stat = await lstat(staged.filePath)
-          if (!stat.isFile() || stat.size > MAX_DOWNLOAD_BYTES || createHash('sha256').update(await readFile(staged.filePath)).digest('hex') !== job.hash) {
+          if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('下载文件已改变，请重新下载')
+          const hash = createHash('sha256')
+          for await (const chunk of createReadStream(staged.filePath)) hash.update(chunk)
+          if (hash.digest('hex') !== job.hash) {
             throw new Error('下载文件已改变，请重新下载')
           }
           const book = await finishBookImport({ ...meta, id: staged.id, sourcePath, title: meta.title || stripBookExtension(job.name) })

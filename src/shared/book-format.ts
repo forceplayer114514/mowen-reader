@@ -4,13 +4,6 @@ export type BookFormat = 'epub' | 'pdf' | 'txt'
 /** 文件选择器/文件夹扫描/拖拽导入共用的白名单,保持三处入口一致。 */
 export const supportedBookExtensions: readonly BookFormat[] = ['epub', 'pdf', 'txt']
 
-/** 各格式的体积上限:EPUB/PDF 64MB,TXT 16MB。 */
-export const maxBookBytes: Record<BookFormat, number> = {
-  epub: 64 * 1024 * 1024,
-  pdf: 64 * 1024 * 1024,
-  txt: 16 * 1024 * 1024
-}
-
 /**
  * 按文件扩展名推断书籍格式,大小写不敏感。
  * 不支持的扩展名、无扩展名、末尾是点的文件都返回 null。
