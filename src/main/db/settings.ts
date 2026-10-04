@@ -12,6 +12,7 @@ import type { Db } from './index'
  */
 export const ALLOWED_SETTING_KEYS = [
   'fontSize',
+  'pdfView',
   'theme',
   'lineHeight',
   'pageMargin',

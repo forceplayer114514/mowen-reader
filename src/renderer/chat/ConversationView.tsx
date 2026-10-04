@@ -67,6 +67,7 @@ interface Props {
   vocabBusy?: boolean
   vocabError?: string | null
   onSaveVocab?: (quotes: QuoteRecord[], translation: string) => void
+  emptyHint?: string
 }
 
 export default function ConversationView({
@@ -81,6 +82,7 @@ export default function ConversationView({
   vocabBusy,
   vocabError,
   onSaveVocab,
+  emptyHint,
   onNewConversation
 }: Props) {
   const [text, setText] = useState('')
@@ -111,7 +113,7 @@ export default function ConversationView({
           <div className="conversation__empty">
             <span>✦</span>
             <strong>从当前位置开始提问</strong>
-            <p>选中文字可引用或翻译，也可以直接询问当前内容。</p>
+            <p>{emptyHint ?? '选中文字可引用或翻译，也可以直接询问当前内容。'}</p>
           </div>
         )}
         {chat.messages.filter((message) => !busy || message.id !== chat.streamingMessageId).map((message, index) => (

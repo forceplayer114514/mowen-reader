@@ -25,9 +25,11 @@ interface Props {
   visible: VisibleRange | null
   onNext: () => void
   engine: ReaderEngine | null
+  unavailableReason?: string
+  onPickPosition?: () => void
 }
 
-export default function ReadAloud({ visible, onNext, engine }: Props) {
+export default function ReadAloud({ visible, onNext, engine, unavailableReason, onPickPosition }: Props) {
   const [open, setOpen] = useState(false)
   const [state, setState] = useState<'stopped' | 'playing' | 'paused'>('stopped')
   const [rate, setRate] = useState(1)
@@ -149,21 +151,22 @@ export default function ReadAloud({ visible, onNext, engine }: Props) {
   return (
     <div className="read-aloud">
       <button type="button" className="button--ghost" data-testid="read-aloud-toggle" aria-expanded={open}
+        disabled={Boolean(unavailableReason) && state === 'stopped'} title={unavailableReason}
         aria-pressed={state !== 'stopped'} onClick={() => setOpen((value) => !value)}>
         {state === 'playing' ? '朗读中' : state === 'paused' ? '已暂停' : '朗读'}
       </button>
       {open && <div className="read-aloud__panel" data-testid="read-aloud-panel">
         <div className="read-aloud__heading">语音朗读 <span>系统语音 · 连续翻页</span></div>
         <div className="read-aloud__actions">
-          <button type="button" className="button--primary" data-testid="read-aloud-play" disabled={!visible || !('speechSynthesis' in window)} onClick={toggle}>
+          <button type="button" className="button--primary" data-testid="read-aloud-play" disabled={!visible || !visible.text.trim() || !('speechSynthesis' in window)} onClick={toggle}>
             {state === 'playing' ? '暂停' : state === 'paused' ? '继续' : '开始朗读'}
           </button>
           <button type="button" className="button--secondary" data-testid="read-aloud-stop" disabled={state === 'stopped'} onClick={stop}>停止</button>
         </div>
         <button type="button" className="button--secondary" data-testid="read-aloud-pick"
-          disabled={!visible || visible.approximate || !engine || !('speechSynthesis' in window)}
+          disabled={!visible || !visible.text.trim() || visible.approximate || !engine || !('speechSynthesis' in window)}
           aria-pressed={picking}
-          onClick={() => { if (picking) setPicking(false); else { stop(); setPicking(true); setNotice('请点击当前页要开始朗读的文字。') } }}>
+          onClick={() => { if (picking) setPicking(false); else { stop(); onPickPosition?.(); setPicking(true); setNotice('请点击当前页要开始朗读的文字。') } }}>
           {picking ? '取消点选' : '点选正文起点'}
         </button>
         <label>语速 <select aria-label="朗读语速" value={rate} onChange={(event) => setRate(Number(event.target.value))}>

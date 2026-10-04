@@ -72,6 +72,7 @@ import { addHighlight, deleteHighlight, listHighlights } from './db/highlights'
 import type { CreateHighlightInput } from '../shared/highlight-types'
 import { sanitizeExcerptFilename } from '../shared/excerpts'
 import { createBackup, installRestore, prepareRestore, readBackupConfig, RestoreRollbackError, writeBackupConfig } from './backup'
+import { disposePdfOcr, registerPdfOcrIpc } from './pdf-ocr-ipc'
 
 let db: Db | null = null
 let backupBusy = false
@@ -108,6 +109,7 @@ function annotationContent(value: unknown): asserts value is string {
 export function abortAllChats(): void {
   sessions.abortAll()
   disposeTranslation()
+  disposePdfOcr()
 }
 
 export async function finishBookImport(input: FinishImportInput): Promise<BookRecord> {
@@ -168,6 +170,7 @@ export function registerIpc(): void {
     }
   }))
   registerTranslationIpc(database)
+  registerPdfOcrIpc(database)
   ipcMain.handle('highlights:list', (_event, bookId: string) => {
     annotationId(bookId)
     return listHighlights(database(), bookId)

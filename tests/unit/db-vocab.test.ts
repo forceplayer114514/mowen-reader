@@ -4,13 +4,13 @@ import { insertBook, deleteBook } from '../../src/main/db/books'
 import { createVocab, deleteVocab, listVocab } from '../../src/main/db/vocab'
 
 describe('本地生词收藏', () => {
-  it('schema 版本为 8 且内存库带 vocabularies 表', () => {
-    expect(SCHEMA_VERSION).toBe(8)
+  it('当前 schema 保留 vocabularies 表', () => {
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(8)
     const db = openDatabase(':memory:')
     const tables = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'vocabularies'`).all()
     expect(tables).toHaveLength(1)
     const { user_version: version } = db.prepare('PRAGMA user_version').get() as { user_version: number }
-    expect(version).toBe(8)
+    expect(version).toBe(SCHEMA_VERSION)
     db.close()
   })
 

@@ -3,6 +3,7 @@ import type { CreateHighlightInput, HighlightRecord } from '../shared/highlight-
 import type { CreateVocabInput, VocabRecord } from '../shared/vocab-types'
 import type { TranslationSnapshot } from '../shared/translation-types'
 import type { ReadingStats } from '../shared/reading-stats'
+import type { PdfOcrInput, PdfOcrResult, PdfOcrProgress, PdfPosition } from '../shared/pdf-ocr-types'
 import type {
   AppendMessageInput,
   AnnotationRecord,
@@ -26,6 +27,16 @@ import type {
 } from '../shared/types'
 
 const api = {
+  pdfOcr: (input: PdfOcrInput): Promise<PdfOcrResult> => ipcRenderer.invoke('pdf:ocr', input),
+  cancelPdfOcr: (requestId: string): Promise<void> => ipcRenderer.invoke('pdf:cancelOcr', requestId),
+  getPdfOcr: (bookId: string, page: number): Promise<PdfOcrResult[]> => ipcRenderer.invoke('pdf:getOcr', bookId, page),
+  getPdfPosition: (bookId: string): Promise<PdfPosition | null> => ipcRenderer.invoke('pdf:getPosition', bookId),
+  savePdfPosition: (bookId: string, position: PdfPosition): Promise<void> => ipcRenderer.invoke('pdf:savePosition', bookId, position),
+  onPdfOcrProgress: (callback: (event: PdfOcrProgress) => void): (() => void) => {
+    const listener = (_event: unknown, event: PdfOcrProgress): void => callback(event)
+    ipcRenderer.on('pdf:ocrProgress', listener)
+    return () => ipcRenderer.off('pdf:ocrProgress', listener)
+  },
   backupStatus: (): Promise<{ folder: string | null; lastBackup: string | null }> => ipcRenderer.invoke('backup:status'),
   chooseBackupFolder: (): Promise<{ folder: string | null; lastBackup: string | null }> => ipcRenderer.invoke('backup:chooseFolder'),
   createBackup: (): Promise<{ folder: string | null; lastBackup: string | null }> => ipcRenderer.invoke('backup:create'),

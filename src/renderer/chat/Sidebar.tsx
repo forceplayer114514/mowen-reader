@@ -562,6 +562,8 @@ export default function Sidebar({
         )}
         <ConversationView
           chat={chat}
+          emptyHint={visible?.pdfView && !visible.text.trim()
+            ? '本页没有文字层，助手暂时看不到页面图片。可以输入问题或手动粘贴原文。' : undefined}
           quotes={tab === 'chat' ? quotes : []}
           onRemoveQuote={removeQuote}
           onTranslateQuote={translateQuote}

@@ -1,4 +1,36 @@
+import type { PdfOcrRegion, PdfOcrResult } from '../../shared/pdf-ocr-types'
+
 export type ThemeName = 'light' | 'dark'
+
+/** PDF keeps physical pages; scale is absolute, not an EPUB font-size multiplier. */
+export interface PdfViewSettings {
+  mode: 'page' | 'width' | 'custom'
+  scale: number
+  contrast?: number
+}
+
+export function normalizePdfView(raw: unknown): PdfViewSettings {
+  if (typeof raw === 'string') {
+    try { raw = JSON.parse(raw) } catch { raw = null }
+  }
+  const value = raw && typeof raw === 'object' ? raw as Partial<PdfViewSettings> : {}
+  return {
+    mode: value.mode === 'width' || value.mode === 'custom' ? value.mode : 'page',
+    scale: typeof value.scale === 'number' && Number.isFinite(value.scale)
+      ? Math.min(4, Math.max(0.25, value.scale)) : 1,
+    contrast: typeof value.contrast === 'number' && Number.isFinite(value.contrast)
+      ? Math.min(2, Math.max(1, value.contrast)) : 1
+  }
+}
+
+/** Keep paper white while darkening faint ink, then apply the night palette. */
+export function pdfImageFilter(theme: ThemeName, contrast = 1): string {
+  const strength = normalizePdfView({ contrast }).contrast ?? 1
+  const cssContrast = 2 * strength - 1
+  // brightness before contrast maps x to strength*x + 1-strength.
+  // Plain contrast() clips pale ink to white (or black after night inversion).
+  return `brightness(${strength / cssContrast}) contrast(${cssContrast})${theme === 'dark' ? ' invert(.9) hue-rotate(180deg)' : ''}`
+}
 
 export interface TocItem {
   label: string
@@ -38,6 +70,14 @@ export interface VisibleRange {
   chapterTotalPages?: number
   /** 固定正文位置进度，不依赖排版页码；索引未就绪时为 0，真正末页才为 1。 */
   readProgress: number
+  /** PDF only: active fit mode and actual rendered scale. */
+  pdfView?: PdfViewSettings
+  /** The visible scan uses a cached local OCR text layer, not native PDF text. */
+  pdfOcr?: boolean
+  /** Visible physical pages whose original PDF has no native text layer. */
+  pdfScanPages?: number[]
+  /** Visible physical pages still lacking usable native or cached OCR text. */
+  pdfMissingTextPages?: number[]
 }
 
 /**
@@ -157,6 +197,12 @@ export interface OpenOptions {
   savedLocations: string | null
   /** EPUB/TXT 首屏即按此排版;PDF 忽略 */
   typography?: TypographyOptions
+  pdfView?: PdfViewSettings
+  /** Cached OCR only: never starts recognition or a model download. */
+  getPdfOcr?: (page: number) => Promise<PdfOcrResult[]>
+  onPdfViewChange?: (settings: PdfViewSettings) => void
+  pdfPosition?: { page: number; x: number; y: number } | null
+  onPdfPositionChange?: (position: { page: number; x: number; y: number }) => void
 }
 
 export interface SelectionPoint {
@@ -171,7 +217,7 @@ export interface AnnotationMarker {
 }
 
 /** 正文阅读工具:普通划选 / 荧光笔 / 橡皮,三者互斥。 */
-export type ReadingTool = 'select' | 'highlight' | 'erase'
+export type ReadingTool = 'select' | 'highlight' | 'erase' | 'pan'
 
 /** 持久高亮在引擎侧的最小形状:按 id 回调,整块擦除。 */
 export interface PersistentHighlightItem {
@@ -287,6 +333,17 @@ export interface ReaderEngine {
   prev(): Promise<void>
   setSpread(on: boolean): Promise<void>
   setFontSize(px: number, anchorCfi?: string): void | Promise<void>
+  /** Only fixed-layout PDF engines expose viewport controls. */
+  setPdfView?(settings: PdfViewSettings): Promise<void>
+  /** Includes pending wheel zoom, which may not have finished rendering yet. */
+  getPdfView?(): PdfViewSettings
+  capturePdfPage?(region?: PdfOcrRegion, page?: number): Promise<{ page: number; image: ArrayBuffer }>
+  onPdfRegion?(cb: (page: number, region: PdfOcrRegion) => void): () => void
+  onPdfOcrNeeded?(cb: (page: number) => boolean): () => void
+  selectPdfRegion?(page: number, region: PdfOcrRegion): boolean
+  refreshPdfOcr?(): Promise<void>
+  pdfOcrQuote?(resultId: string): { cfiRange: string; startCfi: string } | null
+  getPdfPosition?(): { page: number; x: number; y: number } | null
   /**
    * EPUB/TXT 排版预设:行距/页边距/字体。以锚点 CFI 重新落位,重排分页;
    * 高亮与注释按原 CFI 重画重定位,不改存盘位置之外的任何东西。

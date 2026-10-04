@@ -110,12 +110,32 @@ CREATE TABLE IF NOT EXISTS vocabularies (
 );
 
 CREATE INDEX IF NOT EXISTS idx_vocabularies_book ON vocabularies(book_id);
+
+CREATE TABLE IF NOT EXISTS pdf_ocr (
+  id TEXT PRIMARY KEY,
+  book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  page INTEGER NOT NULL,
+  cache_key TEXT NOT NULL,
+  language TEXT NOT NULL,
+  region TEXT,
+  text TEXT NOT NULL,
+  words TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  UNIQUE(book_id, page, cache_key)
+);
+CREATE INDEX IF NOT EXISTS idx_pdf_ocr_page ON pdf_ocr(book_id, page);
+CREATE TABLE IF NOT EXISTS pdf_positions (
+  book_id TEXT PRIMARY KEY REFERENCES books(id) ON DELETE CASCADE,
+  page INTEGER NOT NULL,
+  x REAL NOT NULL,
+  y REAL NOT NULL
+);
 `
 
 export type Db = DatabaseSync
 
-/** SQLite user_version：v2 对话、v3 书签、v4 注释、v5 高亮、v6 阅读时长、v7 阅读进度、v8 生词收藏。 */
-export const SCHEMA_VERSION = 8
+/** SQLite user_version：v2 对话、v3 书签、v4 注释、v5 高亮、v6 阅读时长、v7 阅读进度、v8 生词收藏、v9 PDF OCR/视口。 */
+export const SCHEMA_VERSION = 9
 
 /** 打开数据库并确保表结构存在。传 ':memory:' 得到一个测试用的临时库。 */
 export function openDatabase(file: string): Db {

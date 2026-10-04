@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { BookmarkRecord, BookRecord, QuoteRecord } from '@shared/types'
 import type { HighlightRecord } from '@shared/highlight-types'
+import type { PdfOcrLanguage, PdfOcrProgress, PdfOcrRegion } from '@shared/pdf-ocr-types'
 import TocPanel from './TocPanel'
 import { conversationsOnPage } from './anchor'
 import { createEngine } from './engine'
@@ -8,12 +9,13 @@ import { createPdfEngine } from './pdf-engine'
 import { textToEpub } from './text-book'
 import { bookFormat } from '@shared/book-format'
 import { createSelectionStore, type SelectionStore } from './selection'
-import type { BookSearchResult, FontFamilyName, PageMarginName, ReaderEngine, ReadingTool, ThemeName, TocItem, TypographyOptions, VisibleRange } from './types'
+import type { BookSearchResult, FontFamilyName, PageMarginName, PdfViewSettings, ReaderEngine, ReadingTool, ThemeName, TocItem, TypographyOptions, VisibleRange } from './types'
 import {
   DEFAULT_SHORTCUTS,
   DEFAULT_TYPOGRAPHY,
   LINE_HEIGHT_PRESETS,
   normalizeShortcutKey,
+  normalizePdfView,
   normalizeTypography,
   validateShortcutMapping
 } from './types'
@@ -23,6 +25,7 @@ import ReadAloud from './ReadAloud'
 
 const FONT_MIN = 14
 const FONT_MAX = 28
+const PDF_SCALES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4]
 /** 恢复阅读位置时,校验落点最多重试这么多次(见 boot() 里的用法和注释)。 */
 const MAX_POSITION_VERIFY_ATTEMPTS = 3
 /** 打开书之后一直拿不到一次成功的 getVisible(),等这么久就判定书是真的读不出来。 */
@@ -107,6 +110,20 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
   const searchInputRef = useRef<HTMLInputElement>(null)
   const searchToggleRef = useRef<HTMLButtonElement>(null)
   const [fontSize, setFontSize] = useState(18)
+  const pdfTargetRef = useRef<PdfViewSettings | null>(null)
+  const pdfView = visible?.pdfView ?? normalizePdfView(null)
+  const pdfScale = Math.round(pdfView.scale * 100) / 100
+  const scanPage = isPdf && Boolean(visible && !visible.text.trim())
+  const missingPdfText = isPdf ? visible?.pdfMissingTextPages ?? [] : []
+  const [ocrLanguage, setOcrLanguage] = useState<PdfOcrLanguage>('chi_sim+eng')
+  const [ocrBusy, setOcrBusy] = useState(false)
+  const [ocrProgress, setOcrProgress] = useState<PdfOcrProgress | null>(null)
+  const [ocrError, setOcrError] = useState<string | null>(null)
+  const [ocrSourcePage, setOcrSourcePage] = useState(0)
+  const ocrRequestRef = useRef<{ id: string; page: number; language: PdfOcrLanguage; region?: PdfOcrRegion; selection?: PdfOcrRegion } | null>(null)
+  const ocrSettledRef = useRef<Promise<void>>(Promise.resolve())
+  const ocrAttemptedRef = useRef(new Set<string>())
+  const ocrRetryRef = useRef<{ page: number; region?: PdfOcrRegion } | null>(null)
   // 排版预设(EPUB/TXT 三档小面板):行距/页边距/字体;PDF 固定版式不受影响,面板直接隐藏。
   // 存盘键见 db/settings.ts 白名单(lineHeight/pageMargin/fontFamily),读回非法值退回默认。
   const [typography, setTypographyState] = useState<TypographyOptions>({ ...DEFAULT_TYPOGRAPHY })
@@ -357,6 +374,7 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
     setHighlightError(null)
     toolRef.current = 'select'
     setReadingToolState('select')
+    pdfTargetRef.current = null
 
     function clearStuckTimer(): void {
       if (stuckTimer !== null) {
@@ -393,6 +411,8 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
       if (!hostRef.current) return
       try {
         const savedFont = isPdf ? 18 : Number((await window.api.getSetting('fontSize')) ?? 18)
+        const savedPdfView = isPdf ? normalizePdfView(await window.api.getSetting('pdfView')) : undefined
+        const savedPdfPosition = isPdf ? await window.api.getPdfPosition(book.id) : null
         // 排版预设只对 EPUB/TXT 读盘:PDF 固定版式不受影响,也不让旧脏数据污染界面。
         const savedTypo: TypographyOptions = isPdf ? { ...DEFAULT_TYPOGRAPHY } : normalizeTypography({
           lineHeight: await window.api.getSetting('lineHeight'),
@@ -517,7 +537,22 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
           theme: themeRef.current,
           savedLocations,
           // PDF 引擎忽略该字段(固定版式不受影响),EPUB 首屏即按预设排。
-          typography: isPdf ? undefined : savedTypo
+          typography: isPdf ? undefined : savedTypo,
+          pdfView: savedPdfView,
+          pdfPosition: savedPdfPosition ?? undefined,
+          getPdfOcr: isPdf ? (page) => window.api.getPdfOcr(book.id, page) : undefined,
+          onPdfViewChange: isPdf ? (settings) => {
+            if (cancelled) return
+            void window.api.setSetting('pdfView', JSON.stringify(settings)).catch(() => {
+              if (!cancelled) setError('PDF 显示设置没有保存，请重试')
+            })
+          } : undefined,
+          onPdfPositionChange: isPdf ? (position) => {
+            if (cancelled || restoreGate.restoring) return
+            void window.api.savePdfPosition(book.id, position).catch(() => {
+              if (!cancelled) setError('PDF 阅读位置没有保存，请重试')
+            })
+          } : undefined
         })
         if (cancelled) return
         // 打开期间也可能切主题；发布引擎后由上面的 effect 应用最新主题。
@@ -618,6 +653,8 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
 
     void boot()
     return () => {
+      const position = engine?.getPdfPosition?.()
+      if (position && !restoreGate.restoring) void window.api.savePdfPosition(book.id, position).catch(() => {})
       cancelled = true
       // 高亮读写按代际失效:切书/卸载后回来的读取与保存一律丢弃,不写进新书。
       hlGenRef.current++
@@ -680,6 +717,26 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
       return size
     })
   }, [isPdf])
+
+  const applyPdfView = (settings: Partial<PdfViewSettings>): void => {
+    const engine = engineRef.current
+    if (!engine?.setPdfView) return
+    const target = normalizePdfView({ ...(pdfTargetRef.current ?? engine.getPdfView?.() ?? pdfView), ...settings })
+    pdfTargetRef.current = target
+    setError(null)
+    fontChainRef.current = fontChainRef.current.then(async () => {
+      if (engineRef.current !== engine) return
+      await engine.setPdfView!(target)
+      if (engineRef.current !== engine) return
+      await window.api.setSetting('pdfView', JSON.stringify(target))
+    }).catch(() => {
+      if (engineRef.current === engine) setError('PDF 显示设置调整或保存失败，请重试')
+    }).finally(() => { if (pdfTargetRef.current === target) pdfTargetRef.current = null })
+  }
+
+  const changePdfScale = (delta: number): void => {
+    applyPdfView({ mode: 'custom', scale: (pdfTargetRef.current?.scale ?? engineRef.current?.getPdfView?.().scale ?? pdfView.scale) + delta })
+  }
 
   const removeBookmark = useCallback(async (id: string) => {
     if (bookmarkDeletingRef.current) return
@@ -815,10 +872,122 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
 
   // 阅读工具三选一、互斥切换;点已选中的工具回到普通划选,Esc 同样回到普通划选。
   const setTool = useCallback((tool: ReadingTool): void => {
+    if (tool !== 'select' && ocrRequestRef.current) ocrRequestRef.current.selection = undefined
     toolRef.current = tool
     setReadingToolState(tool)
     engineRef.current?.setReadingTool(tool)
   }, [])
+
+  const cancelOcr = useCallback(() => {
+    const job = ocrRequestRef.current
+    ocrRequestRef.current = null
+    if (job) {
+      // Explicit cancellation also pauses hover preparation on this page until
+      // another drag or a leave/return cycle; it must not instantly restart.
+      ocrAttemptedRef.current.add(`${job.page}:${job.language}`)
+      void window.api.cancelPdfOcr(job.id).catch(() => {})
+    }
+    setOcrBusy(false)
+    setOcrProgress(null)
+  }, [])
+
+  const runOcr = useCallback((page: number, region?: PdfOcrRegion, retry = false) => {
+    const engine = engineRef.current
+    if (!engine?.capturePdfPage || toolRef.current !== 'select') return false
+    if (!region && ocrError && !retry) return true
+    if (region && engine.selectPdfRegion?.(page, region)) return true
+    const active = ocrRequestRef.current
+    if (active) {
+      if (!region) return active.page === page && !active.region
+      // Keep a running whole-page job; replay only the latest drag once its words arrive.
+      if (active.page === page && !active.region) {
+        active.selection = region; ocrRetryRef.current = { page, region }; return true
+      }
+      cancelOcr()
+    }
+    const attempt = `${page}:${ocrLanguage}`
+    if (!region && ocrAttemptedRef.current.has(attempt)) return true
+    if (!region) ocrAttemptedRef.current.add(attempt)
+    const job = { id: crypto.randomUUID(), page, language: ocrLanguage, region, selection: region }
+    ocrRequestRef.current = job
+    ocrRetryRef.current = { page, region }
+    setOcrBusy(true); setOcrError(null); setOcrProgress(null); setOcrSourcePage(page)
+    const previous = ocrSettledRef.current
+    // Cancellation terminates the worker asynchronously. Wait for the previous
+    // request's cleanup before claiming the single OCR worker with a new request.
+    const work = (async () => {
+      const current = (): boolean => ocrRequestRef.current === job && engineRef.current === engine
+      try {
+        await previous
+        if (!current()) return
+        const capture = await engine.capturePdfPage!(region, page)
+        if (!current()) return
+        const result = await window.api.pdfOcr({ requestId: job.id, bookId: book.id, page: capture.page,
+          image: capture.image, language: ocrLanguage, region: region ?? null })
+        if (!current()) return
+        const shown = await engine.getVisible()
+        if (shown.page !== page && !shown.pdfScanPages?.includes(page)) return
+        if (!result.text.trim() || !result.words.length) {
+          setOcrError('没有识别到可定位的文字，请拖选更清晰的区域，或换一种语言重试。'); return
+        }
+        await engine.refreshPdfOcr?.()
+        if (!current()) return
+        if (job.selection && toolRef.current === 'select') {
+          if (!region && engine.selectPdfRegion?.(page, job.selection)) return
+          const source = region ? engine.pdfOcrQuote?.(result.id) : null
+          if (source && selectionStore) {
+            if (!selectionStore.list().some(quote => quote.cfiRange === source.cfiRange)) {
+              selectionStore.toggle(source.cfiRange, result.text.trim(), source.startCfi)
+            }
+          } else setOcrError('选区内未找到文字，请重新拖选文字所在的区域。')
+        }
+      } catch (error) {
+        if (current()) setOcrError(error instanceof Error ? error.message : '文字识别失败，请重试')
+      } finally {
+        if (current()) { ocrRequestRef.current = null; setOcrBusy(false); setOcrProgress(null) }
+      }
+    })()
+    ocrSettledRef.current = work
+    return true
+  }, [book.id, ocrLanguage, ocrError, selectionStore, cancelOcr])
+
+  useEffect(() => readerEngine?.onPdfRegion?.((page, region) => { void runOcr(page, region) }), [readerEngine, runOcr])
+  useEffect(() => readerEngine?.onPdfOcrNeeded?.(page => runOcr(page)), [readerEngine, runOcr])
+  useEffect(() => {
+    if (!isPdf) return
+    return window.api.onPdfOcrProgress((progress) => {
+      if (progress.requestId === ocrRequestRef.current?.id) setOcrProgress(progress)
+    })
+  }, [isPdf])
+  useEffect(() => {
+    ocrAttemptedRef.current.clear(); ocrRetryRef.current = null; setOcrError(null)
+    return () => {
+      const job = ocrRequestRef.current
+      ocrRequestRef.current = null
+      if (job) void window.api.cancelPdfOcr(job.id).catch(() => {})
+    }
+  }, [book.id])
+  useEffect(() => {
+    const job = ocrRequestRef.current
+    if (job && visible && job.page !== visible.page && !visible.pdfScanPages?.includes(job.page)) cancelOcr()
+    if (visible) {
+      const shownPages = [visible.page, ...(visible.pdfScanPages ?? [])]
+      for (const key of ocrAttemptedRef.current) {
+        if (!shownPages.includes(Number(key.split(':')[0]))) ocrAttemptedRef.current.delete(key)
+      }
+    }
+    setOcrError(null)
+  }, [visible?.page, visible?.pdfScanPages?.join(','), cancelOcr])
+  useEffect(() => {
+    const cancel = (event: KeyboardEvent): void => { if (event.key === 'Escape') cancelOcr() }
+    window.addEventListener('keydown', cancel)
+    const off = readerEngine?.onKey(key => { if (key === 'Escape') cancelOcr() })
+    return () => { window.removeEventListener('keydown', cancel); off?.() }
+  }, [readerEngine, cancelOcr])
+
+  useEffect(() => {
+    if (scanPage && (toolRef.current === 'highlight' || toolRef.current === 'erase')) setTool('select')
+  }, [scanPage, setTool])
 
   useEffect(() => {
     if (!readerEngine || readingTool !== 'highlight') return
@@ -985,7 +1154,8 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
           className={`button--ghost${readingTool === 'highlight' ? ' reader__tool--active' : ''}`}
           type="button"
           data-testid="tool-highlight"
-          disabled={!readerEngine || !highlightsReady}
+          disabled={!readerEngine || !highlightsReady || scanPage}
+          title={scanPage ? '此页没有文字层，暂不能按句子高亮' : '选中句子添加高亮'}
           aria-pressed={readingTool === 'highlight'}
           onClick={() => setTool(readingTool === 'highlight' ? 'select' : 'highlight')}
         >
@@ -995,7 +1165,7 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
           className={`button--ghost${readingTool === 'erase' ? ' reader__tool--active' : ''}`}
           type="button"
           data-testid="tool-erase"
-          disabled={!readerEngine || !highlightsReady}
+          disabled={!readerEngine || !highlightsReady || scanPage}
           aria-pressed={readingTool === 'erase'}
           onClick={() => setTool(readingTool === 'erase' ? 'select' : 'erase')}
         >
@@ -1013,20 +1183,60 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
         )}
         <span className="reader__title">{book.title}</span>
         <span className="reader__spacer" />
-        <ReadAloud key={book.id} visible={visible} onNext={next} engine={readerEngine} />
+        <ReadAloud key={book.id} visible={visible} onNext={next} engine={readerEngine}
+          unavailableReason={scanPage ? '此页没有文字层，识别文字后才能朗读' : undefined}
+          onPickPosition={() => setTool('select')} />
         <div className="reader__controls" aria-label="阅读设置">
-        <button className="button--icon" onClick={() => changeFont(-2)} aria-label={isPdf ? '缩小 PDF' : '缩小字号'}>
-          {isPdf ? '−' : 'A−'}
+        {!isPdf && <>
+        <button className="button--icon" onClick={() => changeFont(-2)} aria-label="缩小字号">
+          A−
         </button>
         <span className="reader__fontsize" data-testid="font-size">
-          {isPdf ? `${Math.round(fontSize / 18 * 100)}%` : fontSize}
+          {fontSize}
         </span>
-        <button className="button--icon" onClick={() => changeFont(2)} aria-label={isPdf ? '放大 PDF' : '放大字号'}>
-          {isPdf ? '＋' : 'A+'}
+        <button className="button--icon" onClick={() => changeFont(2)} aria-label="放大字号">
+          A+
         </button>
+        </>}
         <button type="button" className="button--ghost" data-testid="toggle-theme" onClick={onToggleTheme}>{theme === 'light' ? '夜间模式' : '日间模式'}</button>
         </div>
       </header>
+
+      {isPdf && <div className="reader__pdf-tools" data-testid="pdf-view-controls" role="group" aria-label="PDF 原版阅读设置">
+        <span className="reader__pdf-label">PDF · 原版阅读</span>
+        <div className="reader__pdf-fit">
+          <button type="button" className="button--ghost" disabled={!visible} aria-pressed={pdfView.mode === 'page'}
+            onClick={() => applyPdfView({ mode: 'page', scale: pdfScale })}>适合整页</button>
+          <button type="button" className="button--ghost" disabled={!visible} aria-pressed={pdfView.mode === 'width'}
+            onClick={() => applyPdfView({ mode: 'width', scale: pdfScale })}>适合宽度</button>
+        </div>
+        <div className="reader__pdf-zoom">
+          <button type="button" className="button--icon" aria-label="缩小 PDF" disabled={!visible || pdfScale <= 0.25}
+            onClick={() => changePdfScale(-0.25)}>−</button>
+          <select aria-label="PDF 缩放比例" data-testid="pdf-scale" disabled={!visible} value={String(pdfScale)}
+            onChange={(event) => applyPdfView({ mode: 'custom', scale: Number(event.target.value) })}>
+            {Array.from(new Set([...PDF_SCALES, pdfScale])).sort((a, b) => a - b).map((scale) =>
+              <option value={String(scale)} key={scale}>{Math.round(scale * 100)}%</option>)}
+          </select>
+          <button type="button" className="button--icon" aria-label="放大 PDF" disabled={!visible || pdfScale >= 4}
+            onClick={() => changePdfScale(0.25)}>＋</button>
+        </div>
+        <button type="button" className={`button--ghost${readingTool === 'pan' ? ' reader__tool--active' : ''}`}
+          data-testid="tool-pan" disabled={!visible} aria-pressed={readingTool === 'pan'}
+          onClick={() => setTool(readingTool === 'pan' ? 'select' : 'pan')}>拖动页面</button>
+        <label className="reader__pdf-contrast">对比度 <select aria-label="PDF 对比度" data-testid="pdf-contrast"
+          value={String(pdfView.contrast ?? 1)} disabled={!visible}
+          onChange={(event) => applyPdfView({ contrast: Number(event.target.value) })}>
+          <option value="1">原图</option><option value="1.25">增强</option><option value="1.5">较强</option><option value="2">强</option>
+        </select></label>
+        <div className="reader__pdf-ocr-tools">
+          <select aria-label="文字识别语言" value={ocrLanguage} disabled={ocrBusy}
+            onChange={(event) => setOcrLanguage(event.target.value as PdfOcrLanguage)}>
+            <option value="chi_sim+eng">中文 + 英文</option><option value="eng">英文</option>
+          </select>
+        </div>
+        <span className="reader__pdf-hint">{readingTool === 'pan' ? '拖动查看 · Esc 返回选择' : '直接拖选文字 · Ctrl/⌘ + 滚轮缩放'}</span>
+      </div>}
 
       {searchOpen && (
         <div className="reader__search" role="search" aria-label="书内搜索">
@@ -1262,6 +1472,23 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
         )}
         <div className="reader__reading">
           <div className="reader__stage">
+            {isPdf && (missingPdfText.length > 0 || ocrBusy || ocrError) && <div className="reader__ocr-status" data-testid="pdf-ocr-status" role="status">
+              {ocrBusy ? <>
+                <span>第 {ocrSourcePage} 页 · {ocrProgress?.status ?? '正在准备选字…'}<small>首次使用下载语言包；书页不上传</small></span>
+                <progress max="1" value={ocrProgress?.progress ?? 0} aria-label="文字识别进度" />
+                <button type="button" className="button--ghost" onClick={cancelOcr}>取消识别</button>
+              </> : ocrError ? <>
+                <span className="reader__ocr-error">{ocrError}</span>
+                <button type="button" className="button--ghost" onClick={() => {
+                  const retry = ocrRetryRef.current
+                  if (!retry) return
+                  ocrAttemptedRef.current.delete(`${retry.page}:${ocrLanguage}`); runOcr(retry.page, retry.region, true)
+                }}>重试识别</button>
+                <button type="button" className="button--ghost" aria-label="关闭识别提示" onClick={() => setOcrError(null)}>×</button>
+              </> : <span data-testid="pdf-scan-notice">
+                {missingPdfText.length === 1 && visible?.page === missingPdfText[0] ? '此页没有文字层' : `第 ${missingPdfText.join('、')} 页没有文字层`} · 直接拖选文字，自动识别
+              </span>}
+            </div>}
             <button className="reader__nav reader__nav--prev" onClick={prev} aria-label="上一页">
               ‹
             </button>
@@ -1271,7 +1498,7 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
             </button>
           </div>
           <footer className="reader__foot" data-testid="reader-foot">
-            <span>{isPdf && visible && !visible.text.trim() ? '此页无可提取文字（扫描页）；暂不支持 OCR' : visible?.chapterLabel ?? ''}</span>
+            <span>{visible?.chapterLabel ?? ''}{scanPage ? ' · 扫描页面' : ''}</span>
             <span data-testid="page-indicator">
               {visible && visible.totalPages > 0
                 ? `${isPdf ? '' : '约'}第 ${visible.page} / ${visible.totalPages} 页${!isPdf && visible.chapterPage && visible.chapterTotalPages ? ` · 本章 ${visible.chapterPage}/${visible.chapterTotalPages} 屏` : ''}`

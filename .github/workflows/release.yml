@@ -30,6 +30,7 @@ jobs:
       - run: npm run dist -- ${{ matrix.target }}
       - run: npx tsx scripts/smoke-offline-translation.ts
       - run: node scripts/smoke-packaged-runtime.cjs
+      - run: node scripts/smoke-packaged-ocr.cjs
       - uses: actions/upload-artifact@v4
         with:
           name: installers-${{ matrix.os }}

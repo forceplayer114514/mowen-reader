@@ -276,6 +276,13 @@ export default function SettingsView({ onBack }: Props) {
         <BackupSettings />
         <TranslationSettings />
         <div className="settings__section">
+          <div className="settings__section-head"><div>
+            <h2>扫描 PDF 选字</h2>
+            <p>像普通文字一样拖选，不需要先点击识别按钮。</p>
+          </div></div>
+          <p className="settings__hint">鼠标停留在未识别的扫描页时，会在后台准备本页文字层；也可以直接拖选区域，自动识别并引用。首次使用需联网下载所选语言包，之后可离线使用。识别在本机完成，不上传书页；语言包与离线翻译词典互不替代。成功结果随书库保存，不改变原图排版或页码。</p>
+        </div>
+        <div className="settings__section">
           <div className="settings__section-head">
             <div>
               <h2>模型连接</h2>
