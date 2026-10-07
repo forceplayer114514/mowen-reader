@@ -22,6 +22,7 @@ import {
 import Sidebar from '../chat/Sidebar'
 import ConfirmDialog from '../ConfirmDialog'
 import ReadAloud from './ReadAloud'
+import { useBookTranslation } from './useBookTranslation'
 
 const FONT_MIN = 14
 const FONT_MAX = 28
@@ -179,6 +180,17 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
   }, [])
   const targetFontRef = useRef<number>(18)
   const appliedFontRef = useRef<number>(18)
+  // 整书 AI 翻译：书架按书独立手动开启，默认关闭；阅读页点“开始翻译”后逐页增量翻译。
+  const [translationEnabled, setTranslationEnabled] = useState(Boolean(book.translationEnabled))
+  const [translationStarted, setTranslationStarted] = useState(false)
+  const [translationView, setTranslationView] = useState<'original' | 'translated'>('original')
+  const translation = useBookTranslation({
+    bookId: book.id,
+    enabled: translationEnabled,
+    started: translationStarted,
+    visible,
+    isPdf
+  })
 
   // 正文成功显示后计时；字号/位置等保存失败不代表用户停止阅读。
   const readingReady = Boolean(visible && !restoring)
@@ -206,6 +218,24 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
     setSearchError(null)
     setSearchTouched(false)
   }, [book.id])
+
+  // 切书时翻译状态清零；开关以库为准（书架上传入的 prop 可能滞后），默认关闭、按书独立。
+  useEffect(() => {
+    let cancelled = false
+    setTranslationEnabled(Boolean(book.translationEnabled))
+    setTranslationStarted(false)
+    setTranslationView('original')
+    void window.api.getBookTranslationEnabled(book.id).then((enabled) => {
+      if (!cancelled) {
+        setTranslationEnabled(enabled)
+        if (!enabled) {
+          setTranslationStarted(false)
+          setTranslationView('original')
+        }
+      }
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [book.id, book.translationEnabled])
 
   const closeSearch = useCallback(() => {
     searchGenRef.current++
@@ -1181,6 +1211,35 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
             撤销擦除
           </button>
         )}
+        {translationEnabled && (
+          <>
+            <button
+              className="button--ghost"
+              type="button"
+              data-testid="translation-start"
+              disabled={!visible || translation.busy || translationStarted}
+              title={translationStarted ? '已开始逐页翻译，翻页后自动翻译下一页' : '开始 AI 翻译：只译本页，译完自动开始下一页，不会一次性全书翻译'}
+              onClick={() => {
+                setTranslationStarted(true)
+                // 首次点击即切到译文：有缓存秒显，无缓存显示“正在翻译”。
+                setTranslationView('translated')
+              }}
+            >
+              {translation.busy ? '翻译中…' : translationStarted ? '翻译已开启' : '开始翻译'}
+            </button>
+            <button
+              className={`button--ghost${translationView === 'translated' ? ' reader__translation-toggle--active' : ''}`}
+              type="button"
+              data-testid="translation-toggle"
+              aria-pressed={translationView === 'translated'}
+              disabled={!visible}
+              title="切换原文 / 译文"
+              onClick={() => setTranslationView((v) => (v === 'translated' ? 'original' : 'translated'))}
+            >
+              {translationView === 'translated' ? '译文' : '原文'}
+            </button>
+          </>
+        )}
         <span className="reader__title">{book.title}</span>
         <span className="reader__spacer" />
         <ReadAloud key={book.id} visible={visible} onNext={next} engine={readerEngine}
@@ -1201,6 +1260,28 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
         <button type="button" className="button--ghost" data-testid="toggle-theme" onClick={onToggleTheme}>{theme === 'light' ? '夜间模式' : '日间模式'}</button>
         </div>
       </header>
+
+      {translationEnabled && (
+        <div className="reader__translation-bar" data-testid="translation-bar" role="status" aria-live="polite">
+          <span>AI 翻译 · 逐页增量 · 缓存保留</span>
+          <span
+            className={`reader__translation-status${translation.error ? ' reader__translation-status--error' : ''}`}
+            data-testid="translation-status"
+          >
+            {translation.error
+              ? translation.error
+              : translation.busyKey
+                ? '正在翻译本页，译完自动开始下一页…'
+                : !translationStarted
+                  ? '点击“开始翻译”后只译本页，翻页后自动译下一页'
+                  : translation.current
+                    ? `本页译文就绪 · 已缓存 ${translation.count} 页`
+                    : visible && !visible.text.trim()
+                      ? '本页没有可翻译的文字'
+                      : `正在准备本页译文 · 已缓存 ${translation.count} 页`}
+          </span>
+        </div>
+      )}
 
       {isPdf && <div className="reader__pdf-tools" data-testid="pdf-view-controls" role="group" aria-label="PDF 原版阅读设置">
         <span className="reader__pdf-label">PDF · 原版阅读</span>
@@ -1493,6 +1574,30 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
               ‹
             </button>
             <div className="reader__page" ref={hostRef} data-testid="reader-page" />
+            {translationEnabled && translationView === 'translated' && (
+              <div
+                className="reader__translation reader__translation--overlay"
+                data-testid="translation-view"
+                role="region"
+                aria-label="本页译文"
+              >
+                <p className="reader__translation-head">
+                  {translation.current
+                    ? `译文 · 第 ${visible?.page ?? '?'} 页 · AI 翻译仅供参考`
+                    : translation.busyKey
+                      ? '正在翻译本页，译完自动开始下一页…'
+                      : translation.error ?? '暂无本页译文'}
+                </p>
+                {translation.current && (
+                  <p className="reader__translation-body">{translation.current.translatedText}</p>
+                )}
+                {translation.current && (
+                  <p className="reader__translation-foot">
+                    {`已缓存 ${translation.count} 页 · 关闭后保留，下次直接显示`}
+                  </p>
+                )}
+              </div>
+            )}
             <button className="reader__nav reader__nav--next" onClick={next} aria-label="下一页">
               ›
             </button>

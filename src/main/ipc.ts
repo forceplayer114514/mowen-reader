@@ -73,6 +73,7 @@ import type { CreateHighlightInput } from '../shared/highlight-types'
 import { sanitizeExcerptFilename } from '../shared/excerpts'
 import { createBackup, installRestore, prepareRestore, readBackupConfig, RestoreRollbackError, writeBackupConfig } from './backup'
 import { disposePdfOcr, registerPdfOcrIpc } from './pdf-ocr-ipc'
+import { registerBookTranslationIpc } from './book-translation-ipc'
 
 let db: Db | null = null
 let backupBusy = false
@@ -120,7 +121,7 @@ export async function finishBookImport(input: FinishImportInput): Promise<BookRe
   const record: BookRecord = {
     id: input.id, title: input.title || stripBookExtension(basename(input.sourcePath)), author: input.author,
     coverPath: cover, filePath, sourcePath: input.sourcePath,
-    addedAt: Date.now(), lastReadCfi: null, lastReadAt: null
+    addedAt: Date.now(), lastReadCfi: null, lastReadAt: null, translationEnabled: false
   }
   try { insertBook(database(), record) }
   catch (error) {
@@ -171,6 +172,7 @@ export function registerIpc(): void {
   }))
   registerTranslationIpc(database)
   registerPdfOcrIpc(database)
+  registerBookTranslationIpc(database)
   ipcMain.handle('highlights:list', (_event, bookId: string) => {
     annotationId(bookId)
     return listHighlights(database(), bookId)

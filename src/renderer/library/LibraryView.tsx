@@ -49,6 +49,7 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
   // 进库的文件副本,不可撤销,所以必须先经过这一步确认,不能点了就删。
   const [pendingDelete, setPendingDelete] = useState<BookRecord | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [togglingTranslationId, setTogglingTranslationId] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -160,6 +161,22 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
   }, [])
 
   const cancelDelete = useCallback(() => setPendingDelete(null), [])
+
+  // AI 整书翻译按书独立手动开启，默认关闭；开关只影响阅读页入口，已缓存译文保留不删。
+  const toggleTranslation = useCallback(async (e: React.MouseEvent, book: BookRecord) => {
+    e.stopPropagation()
+    if (togglingTranslationId) return
+    setTogglingTranslationId(book.id)
+    setError(null)
+    try {
+      const enabled = await window.api.setBookTranslationEnabled(book.id, !book.translationEnabled)
+      setBooks((items) => items.map((item) => item.id === book.id ? { ...item, translationEnabled: enabled } : item))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '翻译开关保存失败')
+    } finally {
+      setTogglingTranslationId(null)
+    }
+  }, [togglingTranslationId])
 
   const confirmDelete = useCallback(async () => {
     if (!pendingDelete) return
@@ -312,6 +329,18 @@ export default function LibraryView({ onOpenBook, onOpenSettings, onOpenConversa
                 onClick={(e) => requestDelete(e, book)}
               >
                 删除
+              </button>
+              <button
+                type="button"
+                className={`book-card__translate${book.translationEnabled ? ' book-card__translate--active' : ''}`}
+                data-testid="toggle-translation"
+                aria-pressed={Boolean(book.translationEnabled)}
+                aria-label={`${book.translationEnabled ? '关闭' : '开启'}《${book.title}》的 AI 翻译`}
+                title={book.translationEnabled ? 'AI 翻译已开启（点击关闭，仅隐藏入口，缓存保留）' : '开启本书的 AI 翻译（逐页翻译，缓存保留）'}
+                disabled={togglingTranslationId === book.id}
+                onClick={(e) => void toggleTranslation(e, book)}
+              >
+                {book.translationEnabled ? '译·开' : '译·关'}
               </button>
               <button type="button" className="book-card__open" aria-label={`打开《${book.title}》`} onClick={() => onOpenBook(book)}>
                 <div className="book-card__cover">

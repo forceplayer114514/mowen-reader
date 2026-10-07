@@ -1941,3 +1941,103 @@ input[type='checkbox'] {
 .vocab-save .button--ghost { min-height: 28px; padding: 0 10px; font-size: 11px; color: var(--accent); }
 .vocab-save .button--ghost:disabled { color: var(--fg-muted); }
 .vocab-card__translation { user-select: text; }
+
+/* 书架 AI 翻译开关：左上小圆角 pill，与右上删除按钮对称，平时半透明，hover/开启时实色。 */
+.book-card__translate {
+  position: absolute;
+  z-index: 2;
+  top: 8px;
+  left: 8px;
+  min-height: 28px;
+  padding: 0 9px;
+  color: var(--fg-muted);
+  background: var(--bg-overlay);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: var(--shadow-sm);
+  font-size: 11px;
+  opacity: 0;
+  backdrop-filter: blur(10px);
+}
+.book-card:hover .book-card__translate,
+.book-card:focus-within .book-card__translate,
+.book-card__translate:focus-visible,
+.book-card__translate--active {
+  opacity: 1;
+}
+.book-card__translate--active {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+
+/* 阅读页 AI 翻译：顶部切换 + 译文视图，复用主题变量，不发明新色。 */
+.reader__translation-toggle--active {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.reader__translation-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.reader__translation-bar .button--ghost,
+.reader__translation-bar .button--secondary {
+  min-height: 30px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+.reader__translation-status {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reader__translation-status--error {
+  color: var(--danger);
+}
+.reader__translation {
+  min-width: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px clamp(20px, 5vw, 72px) 40px;
+  background: var(--reader-bg);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border) 42%, transparent);
+  user-select: text;
+}
+.reader__translation--overlay {
+  position: absolute;
+  z-index: 2;
+  inset: 10px 42px;
+  flex: none;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  border: 1px solid var(--border);
+}
+.reader__translation-head {
+  margin: 0 0 12px;
+  color: var(--fg-muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+.reader__translation-body {
+  margin: 0;
+  color: var(--fg);
+  font-family: Georgia, 'Songti SC', 'STSong', 'Noto Serif CJK SC', serif;
+  font-size: 18px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.reader__translation-foot {
+  margin: 16px 0 0;
+  color: var(--fg-muted);
+  font-size: 11px;
+}

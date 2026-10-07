@@ -12,6 +12,7 @@ interface Row {
   last_read_cfi: string | null
   last_read_at: number | null
   read_progress: number
+  translation_enabled: number | null
 }
 
 function toRecord(row: Row): BookRecord {
@@ -25,16 +26,17 @@ function toRecord(row: Row): BookRecord {
     addedAt: row.added_at,
     lastReadCfi: row.last_read_cfi,
     lastReadAt: row.last_read_at,
-    readProgress: Math.max(0, Math.min(1, row.read_progress ?? 0))
+    readProgress: Math.max(0, Math.min(1, row.read_progress ?? 0)),
+    translationEnabled: (row.translation_enabled ?? 0) === 1
   }
 }
 
-const SELECT = `SELECT id, title, author, cover_path, file_path, source_path, added_at, last_read_cfi, last_read_at, read_progress FROM books`
+const SELECT = `SELECT id, title, author, cover_path, file_path, source_path, added_at, last_read_cfi, last_read_at, read_progress, translation_enabled FROM books`
 
 export function insertBook(db: Db, book: BookRecord): void {
   db.prepare(
-    `INSERT INTO books (id, title, author, cover_path, file_path, source_path, added_at, last_read_cfi, last_read_at, read_progress)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO books (id, title, author, cover_path, file_path, source_path, added_at, last_read_cfi, last_read_at, read_progress, translation_enabled)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     book.id,
     book.title,
@@ -45,7 +47,8 @@ export function insertBook(db: Db, book: BookRecord): void {
     book.addedAt,
     book.lastReadCfi,
     book.lastReadAt,
-    book.readProgress ?? 0
+    book.readProgress ?? 0,
+    book.translationEnabled ? 1 : 0
   )
 }
 
@@ -94,6 +97,23 @@ export function getLocations(db: Db, id: string): string | null {
     | { locations: string | null }
     | undefined
   return row?.locations ?? null
+}
+
+/**
+ * 整书 AI 翻译开关：书架按书独立手动开启，默认关闭。
+ * 开关只影响阅读页是否提供翻译入口，不删除已缓存的逐页译文。
+ */
+export function getTranslationEnabled(db: Db, id: string): boolean {
+  const row = db.prepare('SELECT translation_enabled FROM books WHERE id = ?').get(id) as
+    | { translation_enabled: number | null }
+    | undefined
+  return (row?.translation_enabled ?? 0) === 1
+}
+
+export function setTranslationEnabled(db: Db, id: string, enabled: boolean): void {
+  if (typeof id !== 'string' || !id) throw new Error('书籍 id 无效')
+  const info = db.prepare('UPDATE books SET translation_enabled = ? WHERE id = ?').run(enabled ? 1 : 0, id)
+  if (info.changes === 0) throw new Error('书籍不存在')
 }
 
 export function setLocations(db: Db, id: string, json: string): void {

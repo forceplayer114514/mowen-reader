@@ -9,6 +9,8 @@ export interface BookRecord {
   lastReadCfi: string | null
   lastReadAt: number | null
   readProgress?: number
+  /** AI 整书翻译开关：书架上按书独立手动开启，默认关闭。 */
+  translationEnabled?: boolean
 }
 
 export interface ImportedFile {

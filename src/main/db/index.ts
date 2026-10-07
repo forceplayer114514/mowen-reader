@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS books (
   added_at      INTEGER NOT NULL,
   last_read_cfi TEXT,
   last_read_at  INTEGER,
-  read_progress REAL NOT NULL DEFAULT 0
+  read_progress REAL NOT NULL DEFAULT 0,
+  translation_enabled INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -130,12 +131,24 @@ CREATE TABLE IF NOT EXISTS pdf_positions (
   x REAL NOT NULL,
   y REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS book_translations (
+  id TEXT PRIMARY KEY,
+  book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  page_key TEXT NOT NULL,
+  source_text TEXT NOT NULL,
+  translated_text TEXT NOT NULL,
+  engine TEXT NOT NULL DEFAULT 'ai',
+  updated_at INTEGER NOT NULL,
+  UNIQUE(book_id, page_key)
+);
+CREATE INDEX IF NOT EXISTS idx_book_translations_book ON book_translations(book_id, updated_at);
 `
 
 export type Db = DatabaseSync
 
-/** SQLite user_version：v2 对话、v3 书签、v4 注释、v5 高亮、v6 阅读时长、v7 阅读进度、v8 生词收藏、v9 PDF OCR/视口。 */
-export const SCHEMA_VERSION = 9
+/** SQLite user_version：v2 对话、v3 书签、v4 注释、v5 高亮、v6 阅读时长、v7 阅读进度、v8 生词收藏、v9 PDF OCR/视口、v10 整书 AI 翻译开关与逐页缓存。 */
+export const SCHEMA_VERSION = 10
 
 /** 打开数据库并确保表结构存在。传 ':memory:' 得到一个测试用的临时库。 */
 export function openDatabase(file: string): Db {
@@ -155,8 +168,10 @@ export function openDatabase(file: string): Db {
   try {
     const oldBookColumns = db.prepare('PRAGMA table_info(books)').all() as { name: string }[]
     const hadProgress = oldBookColumns.some(column => column.name === 'read_progress')
+    const hadTranslationEnabled = oldBookColumns.some(column => column.name === 'translation_enabled')
     db.exec(SCHEMA)
     if (version < 7 && oldBookColumns.length > 0 && !hadProgress) db.exec('ALTER TABLE books ADD COLUMN read_progress REAL NOT NULL DEFAULT 0')
+    if (oldBookColumns.length > 0 && !hadTranslationEnabled) db.exec('ALTER TABLE books ADD COLUMN translation_enabled INTEGER NOT NULL DEFAULT 0')
     // 幂等 schema 补齐新增表，所有迁移成功后才升级版本号。
     if (version < SCHEMA_VERSION) db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
     db.exec('COMMIT')

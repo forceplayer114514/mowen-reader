@@ -28,6 +28,7 @@ function make(id: string, over: Partial<BookRecord> = {}): BookRecord {
     lastReadCfi: null,
     lastReadAt: null,
     readProgress: 0,
+    translationEnabled: false,
     ...over
   }
 }
