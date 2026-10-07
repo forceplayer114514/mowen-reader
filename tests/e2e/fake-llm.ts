@@ -74,7 +74,19 @@ export async function startFakeLlm(): Promise<FakeLlm> {
       'cache-control': 'no-cache',
       connection: 'keep-alive'
     })
-    const answer = '这是假的回答。'
+    // 整书翻译走编号分段协议（见 src/main/book-segments.ts）：按输入段数逐段编号回译，
+    // 使端到端能覆盖“请求—解析—组装—缓存”整条链路；普通对话仍返回固定回答。
+    const messages = body.messages ?? []
+    const isSegmentedTranslation = messages.some(
+      (m) => typeof m.content === 'string' && m.content.includes('逐段翻译')
+    )
+    let answer = '这是假的回答。'
+    if (isSegmentedTranslation) {
+      const lastUser = [...messages].reverse().find((m) => m.role === 'user')?.content ?? ''
+      const count = lastUser.split('\n').filter((line) => /^\s*\(?（?\d+[\)）]?[\.\、:：\s]/.test(line)).length
+      const n = count > 0 ? count : 1
+      answer = Array.from({ length: n }, (_, i) => `${i + 1}. 这是假的回答。`).join('\n')
+    }
     const delay = mode === 'slow' ? 180 : 12
     let index = 0
     const writeNext = (): void => {

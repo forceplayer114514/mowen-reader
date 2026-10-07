@@ -8,6 +8,7 @@ import { createEngine } from './engine'
 import { createPdfEngine } from './pdf-engine'
 import { textToEpub } from './text-book'
 import { bookFormat } from '@shared/book-format'
+import { nextPdfPage } from '@shared/book-translation'
 import { createSelectionStore, type SelectionStore } from './selection'
 import type { BookSearchResult, FontFamilyName, PageMarginName, PdfViewSettings, ReaderEngine, ReadingTool, ThemeName, TocItem, TypographyOptions, VisibleRange } from './types'
 import {
@@ -180,16 +181,110 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
   }, [])
   const targetFontRef = useRef<number>(18)
   const appliedFontRef = useRef<number>(18)
-  // 整书 AI 翻译：书架按书独立手动开启，默认关闭；阅读页点“开始翻译”后逐页增量翻译。
+  // 整书 AI 翻译：书架按书独立手动开启，默认关闭；阅读页点“开始翻译”后逐分句增量翻译。
   const [translationEnabled, setTranslationEnabled] = useState(Boolean(book.translationEnabled))
   const [translationStarted, setTranslationStarted] = useState(false)
   const [translationView, setTranslationView] = useState<'original' | 'translated'>('original')
+  // 预取回调与影子引擎要用的最新正文/书字节：放 ref 里，回调保持引用稳定。
+  const visibleRef = useRef(visible)
+  visibleRef.current = visible
+  const bookDataRef = useRef<ArrayBuffer | null>(null)
+  const peekNextPageText = useCallback(async (): Promise<string | null> => {
+    const engine = engineRef.current
+    const current = visibleRef.current
+    if (!engine || !current) return null
+    try {
+      if (isPdf) {
+        // PDF 版式固定：直接读下一物理页文本，不翻页、不渲染。
+        const next = nextPdfPage(current, true)
+        if (next === null) return null
+        const text = await engine.getPageText?.(next)
+        return text && text.trim() ? text : null
+      }
+      // EPUB/TXT 重排页：影子引擎在同样尺寸下独立翻到下一页，主引擎不动
+      // （无闪烁、不污染阅读进度与对话上下文；缓存是追加写入，不存在竞态）。
+      // 盒模型必须与主容器逐项一致（border-box 尺寸 + 内边距），否则量出的分页
+      // 与主引擎差几行，预取的文本就对不上用户翻页后看到的，复用率大跌。
+      const host = hostRef.current
+      const hostWidth = host?.clientWidth ?? 0
+      const hostHeight = host?.clientHeight ?? 0
+      const bytes = bookDataRef.current
+      if (!bytes || hostWidth < 1 || hostHeight < 1) return null
+      const anchor = engine.currentCfi()
+      if (!anchor) return null
+      const computed = host ? getComputedStyle(host) : null
+      const ghost = document.createElement('div')
+      ghost.setAttribute('aria-hidden', 'true')
+      Object.assign(ghost.style, {
+        position: 'fixed', left: '-30000px', top: '0px',
+        width: `${hostWidth}px`, height: `${hostHeight}px`,
+        padding: computed?.padding ?? '0px',
+        boxSizing: computed?.boxSizing ?? 'content-box',
+        border: 'none', margin: '0px', visibility: 'hidden'
+      })
+      document.body.appendChild(ghost)
+      // 影子 open 会覆盖调试用的全局引擎引用，结束后原样还回去。
+      const prevRendition = (window as unknown as { __readerRendition?: unknown }).__readerRendition
+      const prevBook = (window as unknown as { __readerBook?: unknown }).__readerBook
+      let ghostEngine: ReaderEngine | null = null
+      try {
+        ghostEngine = createEngine(ghost)
+        await ghostEngine.open(bytes.slice(0), {
+          fontSize: targetFontRef.current,
+          theme: themeRef.current,
+          savedLocations: engine.exportLocations(),
+          typography: { ...targetTypoRef.current }
+        })
+        // display() resolve 早于 epub.js 的最终 relocated（见 boot 注释同例）：
+        // 轮询到 getVisible() 成功为止，否则紧接着的 next() 会空转。
+        const ghostVisible = async (timeoutMs: number): Promise<VisibleRange | null> => {
+          const start = Date.now()
+          for (;;) {
+            try {
+              return await ghostEngine!.getVisible()
+            } catch {
+              if (Date.now() - start > timeoutMs) return null
+              await new Promise((r) => setTimeout(r, 60))
+            }
+          }
+        }
+        await ghostEngine.display(anchor)
+        const before = await ghostVisible(3000)
+        if (!before) return null
+        // next() 翻页是异步的：立刻 getVisible() 读回的还是旧位置，必须轮询到
+        // startCfi 变化为止；超时说明已在末页（或翻不动），返回 null。
+        for (let attempt = 0; attempt < 2; attempt++) {
+          await ghostEngine.next()
+          const deadline = Date.now() + 2000
+          for (;;) {
+            const after = await ghostVisible(Math.max(0, deadline - Date.now()))
+            if (!after) return null
+            if (after.startCfi !== before.startCfi) {
+              return after.text.trim() ? after.text : null
+            }
+            if (Date.now() >= deadline) break
+            await new Promise((r) => setTimeout(r, 80))
+          }
+        }
+        return null
+      } finally {
+        try { ghostEngine?.destroy() } catch { /* 影子引擎销毁失败不影响正文 */ }
+        ghost.remove()
+        ;(window as unknown as { __readerRendition?: unknown }).__readerRendition = prevRendition
+        ;(window as unknown as { __readerBook?: unknown }).__readerBook = prevBook
+      }
+    } catch {
+      return null
+    }
+  }, [isPdf, book.id])
   const translation = useBookTranslation({
     bookId: book.id,
     enabled: translationEnabled,
     started: translationStarted,
     visible,
-    isPdf
+    isPdf,
+    peekNextPageText,
+    peekAllowed: Boolean(visible && !restoring && readerEngine)
   })
 
   // 正文成功显示后计时；字号/位置等保存失败不代表用户停止阅读。
@@ -465,6 +560,8 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
         const original = await window.api.readBookFile(book.id)
         const data = format === 'txt' ? await textToEpub(original, book.title) : original
         if (cancelled) return
+        // 影子引擎预取下一页时复用同一份书字节（打开时再 slice 拷贝，不与主引擎争用）。
+        bookDataRef.current = data
 
         engine = isPdf ? createPdfEngine(hostRef.current) : createEngine(hostRef.current)
         engineRef.current = engine
@@ -703,6 +800,7 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
       delete (window as unknown as SelectionTestHooks).__E2E_QUOTES__
       engine?.destroy()
       engineRef.current = null
+      bookDataRef.current = null
     }
   }, [book, format, isPdf, next, prev])
 
@@ -1218,7 +1316,7 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
               type="button"
               data-testid="translation-start"
               disabled={!visible || translation.busy || translationStarted}
-              title={translationStarted ? '已开始逐页翻译，翻页后自动翻译下一页' : '开始 AI 翻译：只译本页，译完自动开始下一页，不会一次性全书翻译'}
+              title={translationStarted ? '已开始逐句翻译，翻页秒显，下一页后台预取' : '开始 AI 翻译：按内容分句缓存，只译未译过的分句，不会一次性全书翻译'}
               onClick={() => {
                 setTranslationStarted(true)
                 // 首次点击即切到译文：有缓存秒显，无缓存显示“正在翻译”。
@@ -1263,7 +1361,7 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
 
       {translationEnabled && (
         <div className="reader__translation-bar" data-testid="translation-bar" role="status" aria-live="polite">
-          <span>AI 翻译 · 逐页增量 · 缓存保留</span>
+          <span>AI 翻译 · 按句缓存 · 改字号不重翻</span>
           <span
             className={`reader__translation-status${translation.error ? ' reader__translation-status--error' : ''}`}
             data-testid="translation-status"
@@ -1271,14 +1369,14 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
             {translation.error
               ? translation.error
               : translation.busyKey
-                ? '正在翻译本页，译完自动开始下一页…'
+                ? '正在翻译本页新增的分句…'
                 : !translationStarted
-                  ? '点击“开始翻译”后只译本页，翻页后自动译下一页'
+                  ? '点击“开始翻译”后按内容分句翻译，翻页秒显，下一页后台预取'
                   : translation.current
-                    ? `本页译文就绪 · 已缓存 ${translation.count} 页`
+                    ? `本页译文就绪 · 已缓存 ${translation.segCount} 段 · 下一页后台预取中`
                     : visible && !visible.text.trim()
                       ? '本页没有可翻译的文字'
-                      : `正在准备本页译文 · 已缓存 ${translation.count} 页`}
+                      : `正在准备本页译文 · 已缓存 ${translation.segCount} 段`}
           </span>
         </div>
       )}
@@ -1589,11 +1687,11 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
                       : translation.error ?? '暂无本页译文'}
                 </p>
                 {translation.current && (
-                  <p className="reader__translation-body">{translation.current.translatedText}</p>
+                  <p className="reader__translation-body">{translation.current.text}</p>
                 )}
                 {translation.current && (
                   <p className="reader__translation-foot">
-                    {`已缓存 ${translation.count} 页 · 关闭后保留，下次直接显示`}
+                    {`已缓存 ${translation.segCount} 段 · 关闭后保留，下次直接显示`}
                   </p>
                 )}
               </div>

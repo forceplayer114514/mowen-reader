@@ -335,6 +335,11 @@ export interface ReaderEngine {
   setFontSize(px: number, anchorCfi?: string): void | Promise<void>
   /** Only fixed-layout PDF engines expose viewport controls. */
   setPdfView?(settings: PdfViewSettings): Promise<void>
+  /**
+   * 不翻页、不渲染，直接取指定物理页的文本（与 getVisible 同一提取公式，
+   * 含已缓存的整页 OCR 回退）。供整书翻译后台预取下一页；无文本返回 null。
+   */
+  getPageText?(page: number): Promise<string | null>
   /** Includes pending wheel zoom, which may not have finished rendering yet. */
   getPdfView?(): PdfViewSettings
   capturePdfPage?(region?: PdfOcrRegion, page?: number): Promise<{ page: number; image: ArrayBuffer }>

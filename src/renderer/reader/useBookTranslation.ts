@@ -1,6 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import type { BookTranslationRecord } from '@shared/book-translation'
-import { bookTranslationKey } from '@shared/book-translation'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  joinSegmentTranslations,
+  normalizeBookText,
+  splitBookSegments,
+  visiblePageKey
+} from '@shared/book-translation'
 import type { VisibleRange } from './types'
 
 interface Args {
@@ -10,130 +14,196 @@ interface Args {
   started: boolean
   visible: VisibleRange | null
   isPdf: boolean
+  /** 后台预取下一页原文（不翻页、不污染进度）；取不到返回 null。 */
+  peekNextPageText?: (() => Promise<string | null>) | null
+  /** 允许预取（正文就绪且未在恢复位置时为 true）。 */
+  peekAllowed?: boolean
 }
 
-function normalize(text: string): string {
-  return text.replace(/\s+/g, ' ').trim()
+export interface BookTranslationPage {
+  key: string
+  text: string
+  segmentCount: number
 }
+
+/** 翻页后等正文稳定再请求，避免快速连翻时为路过的页面调模型。 */
+const SETTLE_MS = 350
+/** 当前页就绪后，闲置这么久再预取下一页。 */
+const PEEK_IDLE_MS = 600
 
 /**
- * 整书 AI 翻译的逐页增量调度（渲染层）。
+ * 整书 AI 翻译的内容分句调度（渲染层）。
  *
- * - 默认不翻译；用户点“开始翻译”后 `started` 置 true，才开始为当前页请求译文。
- * - 一次只译一页（并发 1），翻页过快时只保留最新的一页排队，即“本页 + 下一页”
- *   的 2 页窗口，译完当前自动开始下一页，绝不一次性全书翻译。
- * - 缓存优先：先读本地缓存，命中且原文一致直接展示，不再计费；未命中才走
- *   `translateBookPage`（主进程内同样先查缓存，命中不调模型）。
- * - 缓存永久保留：关闭/禁用/重开均不删除，重开后命中即秒显。
+ * - 缓存单位是内容分句（与排版无关）：翻回已译页全命中 → 零 IPC、零模型调用；
+ *   改字号只会让新露出的分句未命中，只翻译新增部分。
+ * - 一次只跑一个 ensure（并发 1），翻页过快时只保留最新一页排队，
+ *   即“本页 + 下一页”的 2 页窗口，译完当前自动开始下一页，绝不全书翻译。
+ * - 当前页就绪且闲置时，后台预取下一页原文并翻译（不翻页），翻页即秒显。
  */
-export function useBookTranslation({ bookId, enabled, started, visible, isPdf }: Args) {
-  const [cache, setCache] = useState<Map<string, BookTranslationRecord>>(new Map())
+export function useBookTranslation({ bookId, enabled, started, visible, isPdf, peekNextPageText, peekAllowed }: Args) {
+  const [segCache, setSegCache] = useState<Map<string, string>>(new Map())
+  const [cacheVersion, setCacheVersion] = useState(0)
   const [busyKey, setBusyKey] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [count, setCount] = useState(0)
+  const [segCount, setSegCount] = useState(0)
   const genRef = useRef(0)
   const busyRef = useRef(false)
-  const pendingRef = useRef<{ pageKey: string; sourceText: string } | null>(null)
-  const cacheRef = useRef(cache)
-  cacheRef.current = cache
-  const visibleRef = useRef(visible)
-  visibleRef.current = visible
+  const peekBusyRef = useRef(false)
+  const pendingRef = useRef<{ key: string; segments: string[] } | null>(null)
+  const cacheRef = useRef(segCache)
+  cacheRef.current = segCache
 
   const active = enabled && started
 
-  const putCache = useCallback((record: BookTranslationRecord) => {
-    setCache((prev) => {
+  const putSegments = useCallback((translations: Map<string, string>) => {
+    if (translations.size === 0) return
+    setSegCache((prev) => {
       const next = new Map(prev)
-      next.set(record.pageKey, record)
+      for (const [k, v] of translations) next.set(k, v)
       return next
     })
+    setCacheVersion((v) => v + 1)
   }, [])
 
   // 切书/开关变化时清掉内存态，重新计数；在途请求回来后按代际丢弃。
   useEffect(() => {
     genRef.current++
     busyRef.current = false
+    peekBusyRef.current = false
     pendingRef.current = null
-    setCache(new Map())
+    setSegCache(new Map())
+    setCacheVersion((v) => v + 1)
     setBusyKey(null)
     setError(null)
-    setCount(0)
+    setSegCount(0)
     if (!bookId) return
     const gen = genRef.current
-    void window.api.countBookTranslations(bookId).then((n) => {
-      if (gen === genRef.current) setCount(n)
+    void window.api.countBookSegments(bookId).then((n) => {
+      if (gen === genRef.current) setSegCount(n)
     }).catch(() => {})
   }, [bookId, enabled])
 
-  const runOne = useCallback(async (pageKey: string, sourceText: string, gen: number): Promise<void> => {
+  const pageKey = visible ? visiblePageKey(visible, isPdf) : null
+  const segments = useMemo(() => (visible ? splitBookSegments(visible.text ?? '') : []), [visible])
+
+  // 当前页组装：分句全命中才展示，否则显示加载态（不等半页译文）。
+  // 依赖 cacheVersion：后台预取填缓存后，已停留的页面能即时组装出来。
+  const current: BookTranslationPage | null = useMemo(() => {
+    if (!pageKey || segments.length === 0) return null
+    const cache = cacheRef.current
+    const translated: string[] = []
+    for (const seg of segments) {
+      const hit = cache.get(normalizeBookText(seg))
+      if (!hit) return null
+      translated.push(hit)
+    }
+    return { key: pageKey, text: joinSegmentTranslations(translated), segmentCount: segments.length }
+  }, [pageKey, segments, cacheVersion])
+  // 布尔形态供预取 effect 依赖：避免每次填缓存都因对象身份变化重复预取。
+  const currentReady = current !== null
+
+  const runEnsure = useCallback(async (key: string, segs: string[], gen: number, background: boolean): Promise<void> => {
     if (gen !== genRef.current) return
     busyRef.current = true
-    setBusyKey(pageKey)
-    setError(null)
+    if (!background) {
+      setBusyKey(key)
+      setError(null)
+    }
     try {
-      const text = sourceText.trim()
-      if (!text) {
-        if (gen === genRef.current) setError('本页没有可翻译的文字')
-        return
-      }
-      // 缓存优先：命中且原文一致直接用，不调模型。
-      try {
-        const hit = await window.api.getBookTranslation(bookId, pageKey)
-        if (gen !== genRef.current) return
-        if (hit && normalize(hit.sourceText) === normalize(text)) {
-          putCache(hit)
-          return
-        }
-      } catch {
-        // 读缓存失败不阻塞翻译，走正常翻译路径。
-      }
+      // 执行前复查内存：排队期间影子预取可能已填好，命中则连 IPC 都省了。
+      const unique = [...new Set(segs.map(normalizeBookText).filter(Boolean))]
+      const fresh = unique.filter((seg) => !cacheRef.current.has(seg))
+      if (fresh.length === 0) return
+      const { translations, translatedNow } = await window.api.ensureBookSegments(bookId, fresh)
       if (gen !== genRef.current) return
-      const saved = await window.api.translateBookPage(bookId, pageKey, text)
-      if (gen !== genRef.current) return
-      putCache(saved)
-      setCount((n) => n + 1)
-      // 计数以库为准（upsert 更新时不应重复累加），顺手校准一次。
-      void window.api.countBookTranslations(bookId).then((n) => {
-        if (gen === genRef.current) setCount(n)
-      }).catch(() => {})
+      const map = new Map<string, string>()
+      fresh.forEach((seg, i) => {
+        if (translations[i]) map.set(seg, translations[i])
+      })
+      putSegments(map)
+      if (translatedNow > 0) {
+        setSegCount((n) => n + translatedNow)
+        // upsert 更新不增加行数，顺手按库校准一次。
+        void window.api.countBookSegments(bookId).then((n) => {
+          if (gen === genRef.current) setSegCount(n)
+        }).catch(() => {})
+      }
     } catch (e) {
-      if (gen === genRef.current) setError(e instanceof Error ? e.message : '翻译失败，请稍后重试')
+      // 后台预取失败不打扰阅读：翻页到达时前台链路会重试并展示错误。
+      if (!background && gen === genRef.current) {
+        setError(e instanceof Error ? e.message : '翻译失败，请稍后重试')
+      }
     } finally {
       if (gen !== genRef.current) return
       busyRef.current = false
-      setBusyKey((current) => (current === pageKey ? null : current))
+      if (!background) setBusyKey((current) => (current === key ? null : current))
       // 译完当前自动开始下一页（排队的那一页，即翻页后的最新页）。
       const next = pendingRef.current
       pendingRef.current = null
       if (next && active) {
-        // 排队的是翻页后的最新页；若用户又翻走了，visible 效应会重新排队，这里只跑一次。
-        void runOne(next.pageKey, next.sourceText, gen)
+        void runEnsure(next.key, next.segments, gen, false)
       }
     }
-  }, [active, bookId, putCache])
+  }, [active, bookId, putSegments])
 
-  // 可见页变化时确保当前页已翻译；在译中则把最新页排队（只保留一页，即下一页）。
+  // 可见页变化：内存全命中即秒显；缺失则等正文稳定后 ensure；
+  // 前台/后台任一在跑都把最新页排队（影子预取进行中时到达也不抢跑，等它落定后复用）。
   useEffect(() => {
-    if (!active || !visible) return
-    const sourceText = visible.text ?? ''
-    if (!sourceText.trim()) return
-    const pageKey = bookTranslationKey(visible, isPdf)
-    const gen = genRef.current
-    // 已有缓存且原文一致，无需请求。
-    const hit = cacheRef.current.get(pageKey)
-    if (hit && normalize(hit.sourceText) === normalize(sourceText)) return
-    if (busyRef.current) {
-      pendingRef.current = { pageKey, sourceText }
+    if (!active || !visible || !pageKey || segments.length === 0) return
+    const cache = cacheRef.current
+    if (segments.every((seg) => cache.has(normalizeBookText(seg)))) return
+    if (busyRef.current || peekBusyRef.current) {
+      pendingRef.current = { key: pageKey, segments }
       return
     }
-    void runOne(pageKey, sourceText, gen)
-  }, [active, visible, isPdf, runOne])
+    const gen = genRef.current
+    const timer = setTimeout(() => {
+      if (gen !== genRef.current) return
+      // 防抖期间用户可能已翻到缓存页：复查一次，命中则无需请求。
+      const latest = cacheRef.current
+      if (segments.every((seg) => latest.has(normalizeBookText(seg)))) return
+      if (busyRef.current || peekBusyRef.current) {
+        pendingRef.current = { key: pageKey, segments }
+        return
+      }
+      void runEnsure(pageKey, segments, gen, false)
+    }, SETTLE_MS)
+    return () => clearTimeout(timer)
+  }, [active, visible, pageKey, segments, runEnsure])
 
-  const currentKey = visible ? bookTranslationKey(visible, isPdf) : null
-  const current = currentKey ? cache.get(currentKey) ?? null : null
-  // 同一键命中但排版导致正文变化时，视为未命中（主进程会更新缓存），避免展示错位译文。
-  const currentUsable =
-    current && visible && normalize(current.sourceText) === normalize(visible.text ?? '') ? current : null
+  // 后台预取：当前页已就绪且闲置时，取下一页原文并翻译（不翻页、不污染进度）。
+  useEffect(() => {
+    if (!active || !peekAllowed || !peekNextPageText || !currentReady) return
+    const gen = genRef.current
+    const timer = setTimeout(() => {
+      if (gen !== genRef.current || busyRef.current || peekBusyRef.current) return
+      peekBusyRef.current = true
+      void (async () => {
+        try {
+          const text = await peekNextPageText()
+          if (gen !== genRef.current || !text || !normalizeBookText(text)) return
+          const segs = splitBookSegments(text)
+          if (segs.length === 0) return
+          const latest = cacheRef.current
+          if (segs.every((seg) => latest.has(normalizeBookText(seg)))) return
+          await runEnsure(`peek:${Date.now()}`, segs, gen, true)
+        } catch {
+          // 预取失败静默：到达该页时前台链路会正常翻译。
+        } finally {
+          if (gen === genRef.current) peekBusyRef.current = false
+        }
+      })()
+    }, PEEK_IDLE_MS)
+    return () => clearTimeout(timer)
+  }, [active, peekAllowed, peekNextPageText, currentReady, pageKey, runEnsure])
 
-  return { current: currentUsable, currentKey, busyKey, busy: busyKey !== null, error, count, cache }
+  return {
+    current,
+    currentKey: pageKey,
+    busyKey,
+    busy: busyKey !== null,
+    error,
+    segCount,
+    segmentCount: segments.length
+  }
 }

@@ -708,6 +708,36 @@ export function createPdfEngine(container: HTMLElement): ReaderEngine {
       return null
     },
     getPdfPosition() { for (const view of views) rememberPosition(view); return getPosition() },
+    /**
+     * 免渲染取页文本：已渲染的页直接复用其文本（与 getVisible 同一字符串），
+     * 未渲染的页用 pdfjs 取文本层（与渲染/搜索同一提取公式），扫描页回退到
+     * 已缓存的整页 OCR。只读：不改当前页/缩放/高亮/注释，不碰正文 DOM。
+     */
+    async getPageText(pageNo: number): Promise<string | null> {
+      const rendered = views.find((v) => v.number === pageNo)
+      if (rendered) return rendered.text.trim() ? rendered.text : null
+      const source = pdf
+      if (!source || destroyed) return null
+      if (!Number.isInteger(pageNo) || pageNo < 1 || pageNo > source.numPages) return null
+      try {
+        const page = await source.getPage(pageNo)
+        try {
+          if (destroyed || pdf !== source) return null
+          const content = await page.getTextContent()
+          let text = content.items
+            .map((item) => 'str' in item ? `${item.str}${item.hasEOL ? '\n' : ' '}` : '')
+            .join('').trim()
+          if (!text && cachedOcr) text = (await cachedOcr(pageNo)).find((r) => !r.region)?.text ?? ''
+          return text.trim() ? text : null
+        } finally {
+          try {
+            await (page as unknown as { cleanup?: () => unknown }).cleanup?.()
+          } catch { /* 单页清理失败不影响已拿到的文本。 */ }
+        }
+      } catch {
+        return null
+      }
+    },
     // PDF 是固定版式:行距/边距/字体预设不适用,空实现,界面侧直接隐藏排版面板。
     setTypography() {},
     setTheme(name) { theme = name; views.forEach((v) => { v.doc.documentElement.classList.toggle('dark', name === 'dark'); applyImageStyle(v) }); drawMarks() },

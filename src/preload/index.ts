@@ -1,6 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { CreateHighlightInput, HighlightRecord } from '../shared/highlight-types'
-import type { BookTranslationRecord } from '../shared/book-translation'
 import type { CreateVocabInput, VocabRecord } from '../shared/vocab-types'
 import type { TranslationSnapshot } from '../shared/translation-types'
 import type { ReadingStats } from '../shared/reading-stats'
@@ -110,11 +109,9 @@ const api = {
   getBookTranslationEnabled: (id: string): Promise<boolean> => ipcRenderer.invoke('books:getTranslationEnabled', id),
   setBookTranslationEnabled: (id: string, enabled: boolean): Promise<boolean> =>
     ipcRenderer.invoke('books:setTranslationEnabled', id, enabled),
-  getBookTranslation: (bookId: string, pageKey: string): Promise<BookTranslationRecord | null> =>
-    ipcRenderer.invoke('book-translation:get', bookId, pageKey),
-  countBookTranslations: (bookId: string): Promise<number> => ipcRenderer.invoke('book-translation:count', bookId),
-  translateBookPage: (bookId: string, pageKey: string, sourceText: string): Promise<BookTranslationRecord> =>
-    ipcRenderer.invoke('book-translation:translate', bookId, pageKey, sourceText),
+  ensureBookSegments: (bookId: string, segments: string[]): Promise<{ translations: string[]; translatedNow: number }> =>
+    ipcRenderer.invoke('book-segments:ensure', bookId, segments),
+  countBookSegments: (bookId: string): Promise<number> => ipcRenderer.invoke('book-segments:count', bookId),
   saveProgress: (id: string, cfi: string, progress = 0): Promise<void> =>
     ipcRenderer.invoke('books:saveProgress', id, cfi, progress),
   getLocations: (id: string): Promise<string | null> =>

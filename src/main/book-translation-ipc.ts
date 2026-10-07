@@ -1,35 +1,35 @@
 import { ipcMain } from 'electron'
-import { MAX_BOOK_PAGE_CHARS, type BookTranslationRecord } from '../shared/book-translation'
+import {
+  batchSegments,
+  MAX_BOOK_PAGE_CHARS,
+  MAX_SEGMENTS_PER_ENSURE,
+  MAX_SEGMENT_BATCH_CHARS,
+  normalizeBookText
+} from '../shared/book-translation'
 import type { Db } from './db'
 import { getBook, getTranslationEnabled, setTranslationEnabled } from './db/books'
-import {
-  countBookTranslations,
-  getBookTranslation,
-  saveBookTranslation
-} from './db/book-translations'
+import { countBookSegments, getBookSegments, saveBookSegments, segHashOf } from './db/book-segments'
 import { getSetting } from './db/settings'
+import {
+  formatNumberedRequest,
+  parseNumberedTranslations,
+  TRANSLATE_STRICT_PROMPT,
+  TRANSLATE_SYSTEM_PROMPT
+} from './book-segments'
 import { streamChat } from './llm/client'
 import { assertKeyBoundToEndpoint, assertSafeLlmEndpoint, llmEndpointOrigin } from './llm/endpoint'
 import { readApiKey } from './secrets'
 
 const TRANSLATE_TIMEOUT_MS = 60_000
 
-const SYSTEM_PROMPT =
-  '你是书籍翻译助手。将用户提供的书籍正文翻译成简体中文。保持段落换行与标点，只输出译文，不要解释、不要加前后缀。如果原文已经是简体中文，直接返回原文。'
-
-function assertPageKey(pageKey: unknown): asserts pageKey is string {
-  if (typeof pageKey !== 'string' || !pageKey || pageKey.length > 4096) throw new Error('翻译页键无效')
-  if (!pageKey.startsWith('pdf-page-') && !pageKey.startsWith('epub-')) throw new Error('翻译页键无效')
+export interface EnsureSegmentsResult {
+  /** 与输入分句一一对齐的译文（顺序一致，空分句对应空串）。 */
+  translations: string[]
+  /** 本次实际调用模型新翻译的分句数（0 表示全部命中缓存）。 */
+  translatedNow: number
 }
 
-function assertSourceText(text: unknown): asserts text is string {
-  if (typeof text !== 'string' || !text.trim()) throw new Error('本页没有可翻译的文字')
-  if (text.length > MAX_BOOK_PAGE_CHARS) {
-    throw new Error('本页文字过多（超过 10000 字），请调大字号使单页变短后重试')
-  }
-}
-
-async function translateWithLlm(sourceText: string, db: Db): Promise<{ text: string; engine: string }> {
+function requireLlm(db: Db): { endpoint: string; model: string; apiKey: string } {
   const endpoint = getSetting(db, 'llmEndpoint') ?? ''
   const model = getSetting(db, 'llmModel') ?? ''
   if (!endpoint && !model) throw new Error('还没有配置接口地址和模型名，请先到设置里填写 AI 模型')
@@ -39,26 +39,37 @@ async function translateWithLlm(sourceText: string, db: Db): Promise<{ text: str
   const stored = readApiKey()
   if (!stored) throw new Error('还没有填写 API 密钥，请先到设置里填写 AI 模型')
   assertKeyBoundToEndpoint(stored.origin, endpoint)
+  return { endpoint, model, apiKey: stored.key }
+}
 
-  let collected = ''
-  await streamChat({
-    endpoint,
-    model,
-    apiKey: stored.key,
-    messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: sourceText }
-    ],
-    signal: AbortSignal.timeout(TRANSLATE_TIMEOUT_MS),
-    onChunk: (text) => {
-      collected += text
-    }
-  })
-  const out = collected.trim()
-  if (!out) throw new Error('AI 没有返回译文，请稍后重试')
-  // 流式模型偶尔会在结尾补一句解释，截断到合理长度后仍保留全文。
-  if (out.length > 40000) throw new Error('AI 返回的译文过长，请调大字号使单页变短后重试')
-  return { text: out, engine: `ai:${llmEndpointOrigin(endpoint)}:${model}`.slice(0, 200) }
+/** 一批分句一次模型调用：编号去、编号回，对不齐则换更严格的提示重试一次。 */
+async function translateBatch(
+  llm: { endpoint: string; model: string; apiKey: string },
+  batch: string[]
+): Promise<string[]> {
+  const request = formatNumberedRequest(batch)
+  const run = async (system: string): Promise<string[] | null> => {
+    let collected = ''
+    await streamChat({
+      endpoint: llm.endpoint,
+      model: llm.model,
+      apiKey: llm.apiKey,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: request }
+      ],
+      signal: AbortSignal.timeout(TRANSLATE_TIMEOUT_MS),
+      onChunk: (text) => {
+        collected += text
+      }
+    })
+    return parseNumberedTranslations(collected, batch.length)
+  }
+  const first = await run(TRANSLATE_SYSTEM_PROMPT)
+  if (first) return first
+  const second = await run(TRANSLATE_STRICT_PROMPT)
+  if (second) return second
+  throw new Error('AI 返回的段落数量不符，请稍后重试')
 }
 
 export function registerBookTranslationIpc(database: () => Db): void {
@@ -76,43 +87,72 @@ export function registerBookTranslationIpc(database: () => Db): void {
     return enabled
   })
 
-  ipcMain.handle(
-    'book-translation:get',
-    (_e, bookId: string, pageKey: string): BookTranslationRecord | null => {
-      if (!getBook(database(), bookId)) throw new Error('书籍不存在')
-      assertPageKey(pageKey)
-      return getBookTranslation(database(), bookId, pageKey)
-    }
-  )
-
-  ipcMain.handle('book-translation:count', (_e, bookId: string): number => {
+  ipcMain.handle('book-segments:count', (_e, bookId: string): number => {
     if (!getBook(database(), bookId)) throw new Error('书籍不存在')
-    return countBookTranslations(database(), bookId)
+    return countBookSegments(database(), bookId)
   })
 
   ipcMain.handle(
-    'book-translation:translate',
-    async (_e, bookId: string, pageKey: string, sourceText: string): Promise<BookTranslationRecord> => {
+    'book-segments:ensure',
+    async (_e, bookId: string, segments: string[]): Promise<EnsureSegmentsResult> => {
       const db = database()
-      const book = getBook(db, bookId)
-      if (!book) throw new Error('书籍不存在')
-      assertPageKey(pageKey)
-      assertSourceText(sourceText)
+      if (!getBook(db, bookId)) throw new Error('书籍不存在')
       if (!getTranslationEnabled(db, bookId)) {
         throw new Error('本书的 AI 翻译尚未开启，请先在书架上为本书开启翻译')
       }
-      const normalized = sourceText.replace(/\s+/g, ' ').trim()
-      // 缓存优先：同一页、同一原文直接复用，不再计费；排版变化导致正文变化时重新翻译并更新。
-      const cached = getBookTranslation(db, bookId, pageKey)
-      if (cached && cached.sourceText.replace(/\s+/g, ' ').trim() === normalized) return cached
-      const { text, engine } = await translateWithLlm(sourceText.trim(), db)
-      return saveBookTranslation(db, {
+      if (!Array.isArray(segments) || segments.length === 0 || segments.length > MAX_SEGMENTS_PER_ENSURE) {
+        throw new Error('待翻译分句无效')
+      }
+      const normalized = segments.map((s) => (typeof s === 'string' ? normalizeBookText(s) : ''))
+      // 整页上限：与划词翻译一致，避免超大页面一次性计费过多。
+      const total = normalized.join('').length
+      if (total === 0) throw new Error('本页没有可翻译的文字')
+      if (total > MAX_BOOK_PAGE_CHARS) {
+        throw new Error('本页文字过多（超过 10000 字），请调大字号使单页变短后重试')
+      }
+      for (const s of normalized) {
+        if (s.length > 2000) throw new Error('存在过长分句，请稍后重试')
+      }
+
+      // 记号检查：缓存行存在即已翻译，直接复用，不调模型。
+      const hashes = normalized.map((s) => (s ? segHashOf(bookId, s) : ''))
+      const cached = getBookSegments(
+        db,
         bookId,
-        pageKey,
-        sourceText: sourceText.trim(),
-        translatedText: text,
-        engine
+        hashes.filter((h) => h)
+      )
+      const missingIndexes: number[] = []
+      const missingSegments: string[] = []
+      const seen = new Set<string>()
+      normalized.forEach((s, i) => {
+        if (!s || cached.has(hashes[i])) return
+        if (seen.has(hashes[i])) return
+        seen.add(hashes[i])
+        missingIndexes.push(i)
+        missingSegments.push(s)
       })
+      if (missingSegments.length > 0) {
+        const llm = requireLlm(db)
+        const engineTag = `ai:${llmEndpointOrigin(llm.endpoint)}:${llm.model}`.slice(0, 200)
+        // 已完成的分批即时落盘：后一批失败不影响前一批的缓存。
+        for (const batch of batchSegments(missingSegments, MAX_SEGMENT_BATCH_CHARS)) {
+          const translated = await translateBatch(llm, batch)
+          saveBookSegments(
+            db,
+            batch.map((sourceText, i) => ({ bookId, sourceText, translatedText: translated[i], engine: engineTag }))
+          )
+        }
+        // 批量写入后统一重读，保证返回与库一致（含并发写入的覆盖）。
+        const fresh = getBookSegments(db, bookId, missingSegments.map((s) => segHashOf(bookId, s)))
+        for (const [hash, record] of fresh) cached.set(hash, record)
+      }
+      const translations = normalized.map((s, i) => {
+        if (!s) return ''
+        const record = cached.get(hashes[i])
+        if (!record) throw new Error('译文组装失败，请稍后重试')
+        return record.translatedText
+      })
+      return { translations, translatedNow: missingSegments.length }
     }
   )
 }

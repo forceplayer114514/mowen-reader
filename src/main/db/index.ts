@@ -132,23 +132,23 @@ CREATE TABLE IF NOT EXISTS pdf_positions (
   y REAL NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS book_translations (
+CREATE TABLE IF NOT EXISTS book_segments (
   id TEXT PRIMARY KEY,
   book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
-  page_key TEXT NOT NULL,
+  seg_hash TEXT NOT NULL,
   source_text TEXT NOT NULL,
   translated_text TEXT NOT NULL,
   engine TEXT NOT NULL DEFAULT 'ai',
   updated_at INTEGER NOT NULL,
-  UNIQUE(book_id, page_key)
+  UNIQUE(book_id, seg_hash)
 );
-CREATE INDEX IF NOT EXISTS idx_book_translations_book ON book_translations(book_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_book_segments_book ON book_segments(book_id, updated_at);
 `
 
 export type Db = DatabaseSync
 
-/** SQLite user_version：v2 对话、v3 书签、v4 注释、v5 高亮、v6 阅读时长、v7 阅读进度、v8 生词收藏、v9 PDF OCR/视口、v10 整书 AI 翻译开关与逐页缓存。 */
-export const SCHEMA_VERSION = 10
+/** SQLite user_version：v2 对话、v3 书签、v4 注释、v5 高亮、v6 阅读时长、v7 阅读进度、v8 生词收藏、v9 PDF OCR/视口、v10 整书 AI 翻译开关、v11 内容分句缓存（退役按页缓存）。 */
+export const SCHEMA_VERSION = 11
 
 /** 打开数据库并确保表结构存在。传 ':memory:' 得到一个测试用的临时库。 */
 export function openDatabase(file: string): Db {
@@ -172,6 +172,9 @@ export function openDatabase(file: string): Db {
     db.exec(SCHEMA)
     if (version < 7 && oldBookColumns.length > 0 && !hadProgress) db.exec('ALTER TABLE books ADD COLUMN read_progress REAL NOT NULL DEFAULT 0')
     if (oldBookColumns.length > 0 && !hadTranslationEnabled) db.exec('ALTER TABLE books ADD COLUMN translation_enabled INTEGER NOT NULL DEFAULT 0')
+    // v11：缓存单位从“页”改为“内容分句”，旧按页缓存无法复用，直接退役
+    // （升级后各页首次查看时重新翻译一次，之后永久复用）。
+    db.exec('DROP TABLE IF EXISTS book_translations')
     // 幂等 schema 补齐新增表，所有迁移成功后才升级版本号。
     if (version < SCHEMA_VERSION) db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
     db.exec('COMMIT')
