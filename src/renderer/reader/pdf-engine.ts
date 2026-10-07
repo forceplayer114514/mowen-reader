@@ -5,6 +5,7 @@ import { loadPdf, pdfError } from './pdf'
 import { makeRangeCfi } from './cfi'
 import { layoutPdfOcrWords, mergePdfTextRects } from './pdf-selection'
 import type { PdfOcrRegion, PdfOcrResult } from '../../shared/pdf-ocr-types'
+import { splitPdfParagraphs } from '../../shared/book-translation'
 import type { AnnotationMarker, BookSearchResult, PersistentHighlightItem, ReaderEngine, ReadingTool, SelectionPoint, ThemeName, TocItem, VisibleRange, PdfViewSettings, OpenOptions } from './types'
 import { MAX_SEARCH_RESULTS, normalizePdfView, normalizeSearchQuery, pdfImageFilter, searchPdfPages } from './types'
 
@@ -745,8 +746,13 @@ export function createPdfEngine(container: HTMLElement): ReaderEngine {
       if (!views.length || !pdf) throw new Error('PDF 尚未显示')
       const first = views[0], last = views.at(-1)!
       const startCfi = first.start, endCfi = last.end
-      return { text: views.map((v) => v.text).join('\n\n'), startCfi, endCfi,
+      // 段落与 text 同源：每页视觉行启发式组段后拼接，翻译按段落组装译文。
+      const viewParagraphs = views.map((v) => splitPdfParagraphs(v.text))
+      const paragraphs = viewParagraphs.flat()
+      const text = views.map((v) => v.text).join('\n\n')
+      return { text, startCfi, endCfi,
         rangeCfi: first === last ? makeRangeCfi(startCfi, endCfi) : '', approximate: false,
+        paragraphs: paragraphs.length > 0 ? paragraphs : (text.trim() ? [text.trim()] : []),
         chapterHref: `pdf-page-${first.number}`, chapterLabel: outline.find((i) => i.href === `pdf-page-${first.number}`)?.label ?? `第 ${first.number} 页`,
         page: first.number, totalPages: pdf.numPages,
         readProgress: last.number === pdf.numPages ? 1 : (first.number - 1) / pdf.numPages,

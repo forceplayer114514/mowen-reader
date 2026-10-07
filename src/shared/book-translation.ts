@@ -82,6 +82,37 @@ export function joinSegmentTranslations(translated: string[]): string {
 }
 
 /**
+ * PDF 文本按视觉行组段落：连续行累积，遇到句末标点结尾的行或空行即断段。
+ * 纯启发式（PDF 文本层没有段落标记），断错仅影响译文换行位置，不影响分句缓存。
+ */
+export function splitPdfParagraphs(text: string): string[] {
+  const out: string[] = []
+  let buf = ''
+  const flush = (): void => {
+    const t = normalizeBookText(buf)
+    if (t) out.push(t)
+    buf = ''
+  }
+  for (const rawLine of text.split('\n')) {
+    const line = normalizeBookText(rawLine)
+    if (!line) {
+      flush()
+      continue
+    }
+    if (!buf) {
+      buf = line
+    } else if (/[\u3400-\u9fff\u3000-\u303f\uf900-\ufaff]/.test(buf.slice(-1)) || /[\u3400-\u9fff\u3000-\u303f\uf900-\ufaff]/.test(line[0])) {
+      buf += line
+    } else {
+      buf += ` ${line}`
+    }
+    if (/[。！？!?.…；;:"”’）】」』]$/.test(line)) flush()
+  }
+  flush()
+  return out
+}
+
+/**
  * 把缺失分句按字符量装箱：每批不超过 maxChars，分句不拆散（单个超长分句自成一批）。
  * 纯函数，调用方一批对应一次模型调用。
  */

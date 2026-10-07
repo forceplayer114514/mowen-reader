@@ -3,6 +3,7 @@ import {
   joinSegmentTranslations,
   normalizeBookText,
   splitBookSegments,
+  splitPdfParagraphs,
   visiblePageKey
 } from '@shared/book-translation'
 import type { VisibleRange } from './types'
@@ -14,8 +15,8 @@ interface Args {
   started: boolean
   visible: VisibleRange | null
   isPdf: boolean
-  /** 后台预取下一页原文（不翻页、不污染进度）；取不到返回 null。 */
-  peekNextPageText?: (() => Promise<string | null>) | null
+  /** 后台预取下一页段落（不翻页、不污染进度）；取不到返回 null。 */
+  peekNextPageParagraphs?: (() => Promise<string[] | null>) | null
   /** 允许预取（正文就绪且未在恢复位置时为 true）。 */
   peekAllowed?: boolean
 }
@@ -36,11 +37,12 @@ const PEEK_IDLE_MS = 600
  *
  * - 缓存单位是内容分句（与排版无关）：翻回已译页全命中 → 零 IPC、零模型调用；
  *   改字号只会让新露出的分句未命中，只翻译新增部分。
+ * - 译文按段落组装（段落间空行分隔），与原文版式对应，不挤在一起。
  * - 一次只跑一个 ensure（并发 1），翻页过快时只保留最新一页排队，
  *   即“本页 + 下一页”的 2 页窗口，译完当前自动开始下一页，绝不全书翻译。
- * - 当前页就绪且闲置时，后台预取下一页原文并翻译（不翻页），翻页即秒显。
+ * - 当前页就绪且闲置时，后台预取下一页段落并翻译（不翻页），翻页即秒显。
  */
-export function useBookTranslation({ bookId, enabled, started, visible, isPdf, peekNextPageText, peekAllowed }: Args) {
+export function useBookTranslation({ bookId, enabled, started, visible, isPdf, peekNextPageParagraphs, peekAllowed }: Args) {
   const [segCache, setSegCache] = useState<Map<string, string>>(new Map())
   const [cacheVersion, setCacheVersion] = useState(0)
   const [busyKey, setBusyKey] = useState<string | null>(null)
@@ -84,21 +86,46 @@ export function useBookTranslation({ bookId, enabled, started, visible, isPdf, p
   }, [bookId, enabled])
 
   const pageKey = visible ? visiblePageKey(visible, isPdf) : null
-  const segments = useMemo(() => (visible ? splitBookSegments(visible.text ?? '') : []), [visible])
 
-  // 当前页组装：分句全命中才展示，否则显示加载态（不等半页译文）。
+  // 本页段落：引擎给结构化段落直接用，否则 PDF 按视觉行分组，其余回退整页文本。
+  const pageParagraphs = useMemo<string[]>(() => {
+    if (!visible) return []
+    if (visible.paragraphs && visible.paragraphs.length > 0) {
+      return visible.paragraphs.map((p) => normalizeBookText(p)).filter(Boolean)
+    }
+    const text = visible.text ?? ''
+    if (!normalizeBookText(text)) return []
+    if (isPdf) return splitPdfParagraphs(text)
+    return [normalizeBookText(text)]
+  }, [visible, isPdf])
+
+  // 每段切分句（过滤空段）；扁平去重后即本页待保障的分句集合。
+  const paraSegments = useMemo<string[][]>(
+    () => pageParagraphs.map((para) => splitBookSegments(para)).filter((arr) => arr.length > 0),
+    [pageParagraphs]
+  )
+  const flatUnique = useMemo<string[]>(
+    () => [...new Set(paraSegments.flat().map((seg) => normalizeBookText(seg)).filter(Boolean))],
+    [paraSegments]
+  )
+
+  // 当前页组装：分句全命中才展示（按段落拼回空行分隔），否则显示加载态。
   // 依赖 cacheVersion：后台预取填缓存后，已停留的页面能即时组装出来。
   const current: BookTranslationPage | null = useMemo(() => {
-    if (!pageKey || segments.length === 0) return null
+    if (!pageKey || paraSegments.length === 0) return null
     const cache = cacheRef.current
-    const translated: string[] = []
-    for (const seg of segments) {
-      const hit = cache.get(normalizeBookText(seg))
-      if (!hit) return null
-      translated.push(hit)
+    const paras: string[] = []
+    for (const segs of paraSegments) {
+      const translated: string[] = []
+      for (const seg of segs) {
+        const hit = cache.get(normalizeBookText(seg))
+        if (!hit) return null
+        translated.push(hit)
+      }
+      paras.push(joinSegmentTranslations(translated))
     }
-    return { key: pageKey, text: joinSegmentTranslations(translated), segmentCount: segments.length }
-  }, [pageKey, segments, cacheVersion])
+    return { key: pageKey, text: paras.join('\n\n'), segmentCount: flatUnique.length }
+  }, [pageKey, paraSegments, flatUnique, cacheVersion])
   // 布尔形态供预取 effect 依赖：避免每次填缓存都因对象身份变化重复预取。
   const currentReady = current !== null
 
@@ -149,11 +176,11 @@ export function useBookTranslation({ bookId, enabled, started, visible, isPdf, p
   // 可见页变化：内存全命中即秒显；缺失则等正文稳定后 ensure；
   // 前台/后台任一在跑都把最新页排队（影子预取进行中时到达也不抢跑，等它落定后复用）。
   useEffect(() => {
-    if (!active || !visible || !pageKey || segments.length === 0) return
+    if (!active || !visible || !pageKey || flatUnique.length === 0) return
     const cache = cacheRef.current
-    if (segments.every((seg) => cache.has(normalizeBookText(seg)))) return
+    if (flatUnique.every((seg) => cache.has(seg))) return
     if (busyRef.current || peekBusyRef.current) {
-      pendingRef.current = { key: pageKey, segments }
+      pendingRef.current = { key: pageKey, segments: flatUnique }
       return
     }
     const gen = genRef.current
@@ -161,31 +188,33 @@ export function useBookTranslation({ bookId, enabled, started, visible, isPdf, p
       if (gen !== genRef.current) return
       // 防抖期间用户可能已翻到缓存页：复查一次，命中则无需请求。
       const latest = cacheRef.current
-      if (segments.every((seg) => latest.has(normalizeBookText(seg)))) return
+      if (flatUnique.every((seg) => latest.has(seg))) return
       if (busyRef.current || peekBusyRef.current) {
-        pendingRef.current = { key: pageKey, segments }
+        pendingRef.current = { key: pageKey, segments: flatUnique }
         return
       }
-      void runEnsure(pageKey, segments, gen, false)
+      void runEnsure(pageKey, flatUnique, gen, false)
     }, SETTLE_MS)
     return () => clearTimeout(timer)
-  }, [active, visible, pageKey, segments, runEnsure])
+  }, [active, visible, pageKey, flatUnique, runEnsure])
 
-  // 后台预取：当前页已就绪且闲置时，取下一页原文并翻译（不翻页、不污染进度）。
+  // 后台预取：当前页已就绪且闲置时，取下一页段落并翻译（不翻页、不污染进度）。
   useEffect(() => {
-    if (!active || !peekAllowed || !peekNextPageText || !currentReady) return
+    if (!active || !peekAllowed || !peekNextPageParagraphs || !currentReady) return
     const gen = genRef.current
     const timer = setTimeout(() => {
       if (gen !== genRef.current || busyRef.current || peekBusyRef.current) return
       peekBusyRef.current = true
       void (async () => {
         try {
-          const text = await peekNextPageText()
-          if (gen !== genRef.current || !text || !normalizeBookText(text)) return
-          const segs = splitBookSegments(text)
+          const paragraphs = await peekNextPageParagraphs()
+          if (gen !== genRef.current || !paragraphs || paragraphs.length === 0) return
+          const segs = [...new Set(
+            paragraphs.map((p) => splitBookSegments(p)).flat().map((seg) => normalizeBookText(seg)).filter(Boolean)
+          )]
           if (segs.length === 0) return
           const latest = cacheRef.current
-          if (segs.every((seg) => latest.has(normalizeBookText(seg)))) return
+          if (segs.every((seg) => latest.has(seg))) return
           await runEnsure(`peek:${Date.now()}`, segs, gen, true)
         } catch {
           // 预取失败静默：到达该页时前台链路会正常翻译。
@@ -195,7 +224,7 @@ export function useBookTranslation({ bookId, enabled, started, visible, isPdf, p
       })()
     }, PEEK_IDLE_MS)
     return () => clearTimeout(timer)
-  }, [active, peekAllowed, peekNextPageText, currentReady, pageKey, runEnsure])
+  }, [active, peekAllowed, peekNextPageParagraphs, currentReady, pageKey, runEnsure])
 
   return {
     current,
@@ -204,6 +233,6 @@ export function useBookTranslation({ bookId, enabled, started, visible, isPdf, p
     busy: busyKey !== null,
     error,
     segCount,
-    segmentCount: segments.length
+    segmentCount: flatUnique.length
   }
 }

@@ -52,6 +52,11 @@ export interface VisibleRange {
   /** 范围 CFI；EPUB 跨章无法合成时 approximate 为 true。PDF 并排两页也为空，但 text 是准确的两页全文。 */
   rangeCfi: string
   /**
+   * 结构化段落（与 text 同内容，仅保留块级分段）：EPUB 按块元素提取，
+   * PDF 按视觉行启发式分组。整书翻译按段落组装译文；缺失时调用方回退为整页文本。
+   */
+  paragraphs?: string[]
+  /**
    * text 是否只是近似值——true 时它是整份章节文档的全文,而不是屏幕上精确可见
    * 的那一小段;此时 rangeCfi 也会是空字符串。调用方(包括下一阶段拿 text 喂给
    * 模型的场景)在信任这段文本的精确边界之前,必须先检查这个字段。

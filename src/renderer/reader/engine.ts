@@ -18,6 +18,68 @@ import { MAX_SEARCH_RESULTS, normalizeSearchQuery, cleanSearchExcerpt, DEFAULT_T
 
 export { normalizeSearchQuery, cleanSearchExcerpt } from './types'
 
+/** 块级段落选择器：叶子块逐个成段（父块含子块时不重复计入）。div/section 也收：纯行内内容的 div 本身就是一段，容器 div 因含子块被自动排除。 */
+const BLOCK_PARAGRAPH_SELECTOR = 'p,h1,h2,h3,h4,h5,h6,li,blockquote,pre,dt,dd,figcaption,div,section,article'
+
+/**
+ * 叶子块内的文本按 <br/> 还原分段：单个 <br/> 只是行内折行（按空格处理），
+ * 连续 2+ <br/> 才是段落分隔。文本节点里的换行一律视为源码排版缩进（压成空格），
+ * 不参与分段——否则 <br/> 后的源码换行会拼出假空行。
+ */
+function leafParagraphs(el: Element): string[] {
+  let buf = ''
+  const walk = (node: Node): void => {
+    if (node.nodeType === 3) {
+      buf += (node.textContent ?? '').replace(/\s+/g, ' ')
+      return
+    }
+    if (node.nodeType !== 1) return
+    const child = node as Element
+    if (child.tagName === 'BR') {
+      buf += '\n'
+      return
+    }
+    for (const grandchild of Array.from(child.childNodes)) walk(grandchild)
+  }
+  walk(el)
+  return buf
+    .split(/\n\s*\n/)
+    .map((chunk) => chunk.replace(/\s+/g, ' ').trim())
+    .filter((chunk) => chunk.length > 0)
+}
+
+/**
+ * 从 DOM 节点提取结构化段落（只读文本，不改 DOM、不依赖排版）。
+ *
+ * 用叶子块策略避免重复：同一段文字不会因嵌套块被收录两次。用 div 式排版的书
+ * 取不到叶子块时回退为整块文本（与旧 text 一致，不比原来更差）。
+ * Range（book.getRange 的独立解析文档）先经 rangeParagraphs 装进临时容器，
+ * 再走同一套策略；范围切在段落中间时，首尾是自然的内容片段（与可见页精确对应）。
+ */
+function blockParagraphs(root: ParentNode): string[] {
+  try {
+    const leaves = Array.from(root.querySelectorAll(BLOCK_PARAGRAPH_SELECTOR)).filter(
+      (el) => !el.querySelector(BLOCK_PARAGRAPH_SELECTOR)
+    )
+    const out: string[] = []
+    for (const el of leaves) out.push(...leafParagraphs(el))
+    if (out.length > 0) return out
+  } catch {
+    // 查询失败走回退，不让段落提取挡住正文。
+  }
+  const whole = (root.textContent ?? '').replace(/\s+/g, ' ').trim()
+  return whole ? [whole] : []
+}
+
+/** 从 DOM Range 提取段落：cloneContents 到临时容器后走同一套叶子块策略。 */
+function rangeParagraphs(range: Range): string[] {
+  const doc = range.commonAncestorContainer.ownerDocument
+  if (!doc) return []
+  const holder = doc.createElement('div')
+  holder.appendChild(range.cloneContents())
+  return blockParagraphs(holder)
+}
+
 const THEMES: Record<ThemeName, Record<string, Record<string, string>>> = {
   light: {
     'html:has(> body.light), body.light': { color: '#29231e !important', 'background-color': '#fffdf9 !important' },
@@ -1228,11 +1290,16 @@ export function createEngine(container: HTMLElement): ReaderEngine {
       // text 就是整份章节文档的全文这种近似值,调用方必须能分辨这两种情况
       // (见 types.ts 里 VisibleRange.approximate 的注释)。
       let approximate = false
+      // 结构化段落（与 text 同内容，仅保留块级分段，供整书翻译按段落组装译文）。
+      // text 的计算方式不动：已有分句缓存按旧文本切分，改动它会导致一次性重翻。
+      let paragraphs: string[] = []
       try {
         // makeRangeCfi 在 CFI 不合法、缺少章节分隔符、或起止跨越两个章节时会抛错
         rangeCfi = makeRangeCfi(start.cfi, end.cfi)
         const range = await book.getRange(rangeCfi)
         text = range.toString().replace(/\s+/g, ' ').trim()
+        paragraphs = rangeParagraphs(range)
+        if (paragraphs.length === 0 && text) paragraphs = [text]
       } catch {
         // 退化方案:范围合成或取值失败(常见于可见区域跨越两个章节文档)时,
         // 直接读取当前渲染的第一个文档的全文作为近似正文——注意这通常会超过一屏的内容,
@@ -1245,6 +1312,8 @@ export function createEngine(container: HTMLElement): ReaderEngine {
         // 注:翻页动画进行中 getContents() 可能瞬时返回空数组,此时 body 取不到,text 会退化成空字符串。
         const body = contents[0]?.document?.body
         text = (body?.textContent ?? '').replace(/\s+/g, ' ').trim()
+        paragraphs = body ? blockParagraphs(body) : []
+        if (paragraphs.length === 0 && text) paragraphs = [text]
       }
 
       const href = String(start.href ?? '')
@@ -1306,6 +1375,7 @@ export function createEngine(container: HTMLElement): ReaderEngine {
         startCfi: start.cfi,
         endCfi: end.cfi,
         rangeCfi,
+        paragraphs,
         chapterHref: href,
         chapterLabel: entry ? entry.label : null,
         page,

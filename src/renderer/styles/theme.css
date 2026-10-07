@@ -1080,8 +1080,19 @@ input[type='checkbox'] {
   z-index: 20;
 }
 
+/* 顶栏按钮：字小、不换行、不被挤压，挤压时优先压缩标题（标题自带省略号）。 */
+.reader__bar .button--ghost,
+.reader__bar .button--icon {
+  flex: none;
+  min-height: 32px;
+  padding: 0 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .reader__title {
   max-width: 40vw;
+  min-width: 0;
   overflow: hidden;
   margin-left: 8px;
   font-family: 'Songti SC', 'STSong', serif;
@@ -1971,37 +1982,22 @@ input[type='checkbox'] {
   border-color: transparent;
 }
 
-/* 阅读页 AI 翻译：顶部切换 + 译文视图，复用主题变量，不发明新色。 */
+/* 阅读页 AI 翻译：顶栏紧凑分组（开关 + 开始/原文译文切换），译文覆盖层沿用主题变量。 */
+.reader__translation-group {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+.reader__translation-group .button--ghost {
+  min-height: 30px;
+  padding: 0 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
 .reader__translation-toggle--active {
   color: var(--accent);
   background: var(--accent-soft);
-}
-.reader__translation-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 14px;
-  background: var(--bg-raised);
-  border-bottom: 1px solid var(--border);
-  font-size: 12px;
-  color: var(--fg-muted);
-}
-.reader__translation-bar .button--ghost,
-.reader__translation-bar .button--secondary {
-  min-height: 30px;
-  padding: 0 12px;
-  font-size: 12px;
-}
-.reader__translation-status {
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.reader__translation-status--error {
-  color: var(--danger);
 }
 .reader__translation {
   min-width: 0;

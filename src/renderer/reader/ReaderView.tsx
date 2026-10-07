@@ -8,7 +8,7 @@ import { createEngine } from './engine'
 import { createPdfEngine } from './pdf-engine'
 import { textToEpub } from './text-book'
 import { bookFormat } from '@shared/book-format'
-import { nextPdfPage } from '@shared/book-translation'
+import { nextPdfPage, normalizeBookText, splitPdfParagraphs } from '@shared/book-translation'
 import { createSelectionStore, type SelectionStore } from './selection'
 import type { BookSearchResult, FontFamilyName, PageMarginName, PdfViewSettings, ReaderEngine, ReadingTool, ThemeName, TocItem, TypographyOptions, VisibleRange } from './types'
 import {
@@ -189,7 +189,24 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
   const visibleRef = useRef(visible)
   visibleRef.current = visible
   const bookDataRef = useRef<ArrayBuffer | null>(null)
-  const peekNextPageText = useCallback(async (): Promise<string | null> => {
+  // 阅读页直接开关本书翻译（与书架开关同一落盘位，按书独立；关不断缓存）。
+  const [translationToggling, setTranslationToggling] = useState(false)
+  const toggleTranslationEnabled = useCallback(async () => {
+    if (translationToggling) return
+    setTranslationToggling(true)
+    try {
+      const next = await window.api.setBookTranslationEnabled(book.id, !translationEnabled)
+      setTranslationEnabled(next)
+      // 关即回原文；重开时按会话意图恢复译文（started 保留，缓存即时组装）。
+      if (!next) setTranslationView('original')
+      else if (translationStarted) setTranslationView('translated')
+    } catch {
+      setError('翻译开关保存失败，请重试')
+    } finally {
+      setTranslationToggling(false)
+    }
+  }, [book.id, translationEnabled, translationStarted, translationToggling])
+  const peekNextPageParagraphs = useCallback(async (): Promise<string[] | null> => {
     const engine = engineRef.current
     const current = visibleRef.current
     if (!engine || !current) return null
@@ -199,7 +216,9 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
         const next = nextPdfPage(current, true)
         if (next === null) return null
         const text = await engine.getPageText?.(next)
-        return text && text.trim() ? text : null
+        if (!text || !normalizeBookText(text)) return null
+        const paragraphs = splitPdfParagraphs(text)
+        return paragraphs.length > 0 ? paragraphs : null
       }
       // EPUB/TXT 重排页：影子引擎在同样尺寸下独立翻到下一页，主引擎不动
       // （无闪烁、不污染阅读进度与对话上下文；缓存是追加写入，不存在竞态）。
@@ -260,7 +279,10 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
             const after = await ghostVisible(Math.max(0, deadline - Date.now()))
             if (!after) return null
             if (after.startCfi !== before.startCfi) {
-              return after.text.trim() ? after.text : null
+              const paragraphs = (after.paragraphs ?? []).map((p) => normalizeBookText(p)).filter(Boolean)
+              if (paragraphs.length > 0) return paragraphs
+              const fallback = normalizeBookText(after.text)
+              return fallback ? [fallback] : null
             }
             if (Date.now() >= deadline) break
             await new Promise((r) => setTimeout(r, 80))
@@ -283,7 +305,7 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
     started: translationStarted,
     visible,
     isPdf,
-    peekNextPageText,
+    peekNextPageParagraphs,
     peekAllowed: Boolean(visible && !restoring && readerEngine)
   })
 
@@ -1309,22 +1331,35 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
             撤销擦除
           </button>
         )}
-        {translationEnabled && (
-          <>
+        <div className="reader__translation-group" role="group" aria-label="AI 翻译">
+          <button
+            className={`button--ghost${translationEnabled ? ' reader__translation-toggle--active' : ''}`}
+            type="button"
+            data-testid="translation-enable"
+            aria-pressed={translationEnabled}
+            disabled={translationToggling}
+            title={translationEnabled ? '关闭本书 AI 翻译（与书架开关同步，缓存保留）' : '开启本书 AI 翻译（与书架开关同步）'}
+            onClick={() => void toggleTranslationEnabled()}
+          >
+            {translationEnabled ? '译·开' : '译·关'}
+          </button>
+          {translationEnabled && !translationStarted && (
             <button
               className="button--ghost"
               type="button"
               data-testid="translation-start"
-              disabled={!visible || translation.busy || translationStarted}
-              title={translationStarted ? '已开始逐句翻译，翻页秒显，下一页后台预取' : '开始 AI 翻译：按内容分句缓存，只译未译过的分句，不会一次性全书翻译'}
+              disabled={!visible || translation.busy}
+              title="开始 AI 翻译：按内容分句缓存，只译未译过的分句，不会一次性全书翻译"
               onClick={() => {
                 setTranslationStarted(true)
                 // 首次点击即切到译文：有缓存秒显，无缓存显示“正在翻译”。
                 setTranslationView('translated')
               }}
             >
-              {translation.busy ? '翻译中…' : translationStarted ? '翻译已开启' : '开始翻译'}
+              {translation.busy ? '翻译中…' : '翻译'}
             </button>
+          )}
+          {translationEnabled && translationStarted && (
             <button
               className={`button--ghost${translationView === 'translated' ? ' reader__translation-toggle--active' : ''}`}
               type="button"
@@ -1336,8 +1371,8 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
             >
               {translationView === 'translated' ? '译文' : '原文'}
             </button>
-          </>
-        )}
+          )}
+        </div>
         <span className="reader__title">{book.title}</span>
         <span className="reader__spacer" />
         <ReadAloud key={book.id} visible={visible} onNext={next} engine={readerEngine}
@@ -1358,28 +1393,6 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
         <button type="button" className="button--ghost" data-testid="toggle-theme" onClick={onToggleTheme}>{theme === 'light' ? '夜间模式' : '日间模式'}</button>
         </div>
       </header>
-
-      {translationEnabled && (
-        <div className="reader__translation-bar" data-testid="translation-bar" role="status" aria-live="polite">
-          <span>AI 翻译 · 按句缓存 · 改字号不重翻</span>
-          <span
-            className={`reader__translation-status${translation.error ? ' reader__translation-status--error' : ''}`}
-            data-testid="translation-status"
-          >
-            {translation.error
-              ? translation.error
-              : translation.busyKey
-                ? '正在翻译本页新增的分句…'
-                : !translationStarted
-                  ? '点击“开始翻译”后按内容分句翻译，翻页秒显，下一页后台预取'
-                  : translation.current
-                    ? `本页译文就绪 · 已缓存 ${translation.segCount} 段 · 下一页后台预取中`
-                    : visible && !visible.text.trim()
-                      ? '本页没有可翻译的文字'
-                      : `正在准备本页译文 · 已缓存 ${translation.segCount} 段`}
-          </span>
-        </div>
-      )}
 
       {isPdf && <div className="reader__pdf-tools" data-testid="pdf-view-controls" role="group" aria-label="PDF 原版阅读设置">
         <span className="reader__pdf-label">PDF · 原版阅读</span>
@@ -1681,9 +1694,9 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
               >
                 <p className="reader__translation-head">
                   {translation.current
-                    ? `译文 · 第 ${visible?.page ?? '?'} 页 · AI 翻译仅供参考`
+                    ? `译文 · 第 ${visible?.page ?? '?'} 页`
                     : translation.busyKey
-                      ? '正在翻译本页，译完自动开始下一页…'
+                      ? '正在翻译…'
                       : translation.error ?? '暂无本页译文'}
                 </p>
                 {translation.current && (
@@ -1716,9 +1729,9 @@ export default function ReaderView({ book, onBack, theme, onToggleTheme }: Props
                 defaultValue={visible.page} required aria-label="PDF 跳转页码" /></label>
               <button type="submit" className="button--ghost">前往</button>
             </form>}
-            {(error && visible) || bookmarkError || highlightError || statsError ? (
+            {(error && visible) || bookmarkError || highlightError || statsError || translation.error ? (
               <span className="reader__foot-error" data-testid="settings-error">
-                {error ?? bookmarkError ?? highlightError ?? statsError}
+                {error ?? bookmarkError ?? highlightError ?? statsError ?? translation.error}
               </span>
             ) : null}
           </footer>

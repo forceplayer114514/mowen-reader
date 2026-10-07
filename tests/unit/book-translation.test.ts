@@ -12,6 +12,7 @@ import {
   nextPdfPage,
   normalizeBookText,
   splitBookSegments,
+  splitPdfParagraphs,
   visiblePageKey
 } from '../../src/shared/book-translation'
 
@@ -56,6 +57,18 @@ describe('内容分句', () => {
 
   it('译文按原文顺序拼接（中文不加空格）', () => {
     expect(joinSegmentTranslations(['你好世界。', '这是第二句！'])).toBe('你好世界。这是第二句！')
+  })
+
+  it('PDF 视觉行按句末标点组段，空行断段', () => {
+    expect(splitPdfParagraphs('第一行没有标点\n第二行结束了。\n第三行新段。')).toEqual([
+      '第一行没有标点第二行结束了。',
+      '第三行新段。'
+    ])
+    expect(splitPdfParagraphs('第一段。\n\n第二段。')).toEqual(['第一段。', '第二段。'])
+    expect(splitPdfParagraphs('   \n  ')).toEqual([])
+    expect(splitPdfParagraphs('')).toEqual([])
+    // 英文行之间补空格。
+    expect(splitPdfParagraphs('Hello\nworld.')).toEqual(['Hello world.'])
   })
 
   it('分批装箱不拆分句、不超限', () => {
